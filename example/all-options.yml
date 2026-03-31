@@ -1,0 +1,136 @@
+# Complete example showing every available option (YAML format).
+
+# Global log prefix format (space-separated tokens, applied in order).
+# Tokens: "timestamp" (UTC timestamp), "service" ([name] tag).
+# Examples:
+#   "timestamp service"  — 2021-05-13T03:16:51.001Z [app] line  (default)
+#   "service timestamp"  — [app] 2021-05-13T03:16:51.001Z line
+#   "timestamp"          — timestamp only, no service name
+#   "service"            — service name only, no timestamp
+#   "none"               — no prefix at all (raw output)
+# Omit or leave empty to use the default ("timestamp service").
+# Can be overridden per process.
+# prefix: "timestamp service"
+
+# Control socket for runtime service management.
+# Use `go-init stats` to view service and check statistics.
+control:
+  socket: /run/go-init.sock
+
+# --- Processes ---
+processes:
+  # Oneshot: runs once before dependents start.
+  - name: init-permissions
+    command: /bin/sh
+    args: ["-c", "chown app:app /data && chmod 750 /data"]
+    startup: oneshot
+    on-failure: ignore
+    working-dir: /
+    user: root
+    group: root
+
+  # Main application with all options.
+  - name: app
+    command: /usr/local/bin/myapp
+    args: ["--config", "/etc/app.conf", "--verbose"]
+    working-dir: /app
+    user: app
+    group: app
+    # user-id: 1000
+    # group-id: 1000
+    startup: enabled                     # enabled (default), disabled, or oneshot
+    stop-signal: SIGTERM                 # signal sent on shutdown (default: SIGTERM)
+    kill-delay: 10s                      # grace period before SIGKILL (default: 5s)
+    on-success: restart                  # restart|shutdown|success-shutdown|failure-shutdown|ignore
+    on-failure: restart
+    backoff-delay: 500ms                 # initial restart delay (default: 500ms)
+    backoff-factor: 2.0                  # delay multiplier per attempt (default: 2.0)
+    backoff-limit: 30s                   # max restart delay (default: 30s)
+    after: [init-permissions]            # start after these services
+    # before: [other]                    # start before these services
+    requires: [init-permissions]         # hard dependencies (failure cascades)
+    ready-check: app-http                # block dependents until this check passes
+    ready-timeout: 60s                   # max wait for ready check (default: 60s)
+    # prefix: "service"                  # per-process prefix override (see global prefix)
+    environment:
+      DB_HOST: localhost
+      DB_PORT: "5432"
+      LOG_LEVEL: info
+      LD_PRELOAD: /usr/local/lib/libwrapper.so
+    on-check-failure:
+      app-http: restart                  # action when named check breaches threshold
+      db-tcp: shutdown
+
+  # Sidecar: depends on app being ready.
+  - name: sidecar
+    command: /usr/local/bin/sidecar
+    after: [app]
+    on-success: ignore
+    on-failure: restart
+    backoff-delay: 1s
+    backoff-factor: 1.5
+    backoff-limit: 60s
+
+  # Disabled: defined but not auto-started (start via control socket).
+  - name: debug-tool
+    command: /usr/local/bin/debug
+    startup: disabled
+
+# --- Health checks ---
+checks:
+  # HTTP health check.
+  app-http:
+    http:
+      url: http://localhost:8080/healthz
+    period: 10s
+    timeout: 3s
+    threshold: 3
+    initial-delay: 15s                   # wait before first check (default: 1x period)
+    level: ready
+
+  # HTTP health check over Unix socket.
+  app-unix:
+    http:
+      url: http://localhost/health
+      socket: /var/run/app/health.sock
+    period: 5s
+    timeout: 2s
+    threshold: 3
+    initial-delay: 10s
+
+  # TCP health check.
+  db-tcp:
+    tcp:
+      host: localhost
+      port: 5432
+    period: 5s
+    timeout: 2s
+    threshold: 5
+
+  # Exec health check.
+  custom-script:
+    exec:
+      command: /usr/local/bin/healthcheck
+      args: ["--deep"]
+    period: 30s
+    timeout: 10s
+    threshold: 2
+
+# --- Log targets ---
+log-targets:
+  # Forward app logs to remote syslog.
+  remote-syslog:
+    type: syslog
+    location: udp://logs.example.com:514
+    services: [app, sidecar]             # only forward these (empty = all)
+    labels:
+      env: production
+      cluster: us-east-1
+
+  # Forward all logs to a second syslog.
+  all-logs:
+    type: syslog
+    location: tcp://audit.example.com:514
+    # services omitted = all services
+    labels:
+      purpose: audit

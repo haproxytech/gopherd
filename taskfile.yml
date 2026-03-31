@@ -1,0 +1,114 @@
+#https://taskfile.dev/
+version: "3"
+
+dotenv:
+  - .env
+
+includes:
+  vars:
+    taskfile: taskfile/.vars.yml
+    flatten: true
+  tools:
+    taskfile: taskfile/.tools.yml
+    flatten: true
+  git:
+    taskfile: taskfile/git.yml
+    flatten: true
+  go-tools:
+    taskfile: taskfile/go-tools.yml
+    flatten: true
+
+tasks:
+  ci:
+    desc: "run all checks"
+    cmds:
+      - task: check-commit
+      - task: tidy
+      - task: format
+      - task: lint
+      - task: test
+
+  build:
+    desc: "build go-init binary"
+    cmds:
+      - go build -o go-init .
+
+  test:
+    desc: "run Go tests"
+    deps:
+      - task: check-go-tool
+        vars:
+          TOOL: GOTESTSUM
+    vars:
+      PKG: '{{default "./..." .PKG}}'
+      FORMAT: '{{default "testdox" .FORMAT}}'
+    cmds:
+      - |
+        /{{.TMP}}/gotestsum/{{.GOTESTSUM_VERSION}}/gotestsum \
+          --format-icons=hivis \
+          --format={{.FORMAT}} \
+          --format-hide-empty-pkg \
+          -- -count=1 \
+            -v \
+            {{.PKG}}
+
+  tidy:
+    desc: "run Go mod tidy"
+    cmds:
+      - go mod tidy
+
+  lint:
+    desc: "run Go linters"
+    deps:
+      - task: check-go-tools
+        vars:
+          TOOLS: [BETTERALIGN, REVIVE, STATICCHECK]
+    cmds:
+      - /{{.TMP}}/revive/{{.REVIVE_VERSION}}/revive -formatter friendly -set_exit_status ./...
+      - /{{.TMP}}/staticcheck/{{.STATICCHECK_VERSION}}/staticcheck ./...
+      - /{{.TMP}}/betteralign/{{.BETTERALIGN_VERSION}}/betteralign ./...
+
+  format:
+    desc: "format the code"
+    deps:
+      - task: check-go-tools
+        vars:
+          TOOLS: [BETTERALIGN, GOFUMPT]
+    cmds:
+      - go fix ./...
+      - /{{.TMP}}/betteralign/{{.BETTERALIGN_VERSION}}/betteralign -apply ./... || true
+      - /{{.TMP}}/gofumpt/{{.GOFUMPT_VERSION}}/gofumpt -l -w .
+
+  check-commit:
+    deps:
+      - task: check-go-tool
+        vars:
+          TOOL: CHECK_COMMIT
+    cmds:
+      - /{{.TMP}}/check-commit/{{.CHECK_COMMIT_VERSION}}/check-commit
+
+  govulncheck:
+    deps:
+      - task: check-go-tool
+        vars:
+          TOOL: GOVULNCHECK
+    cmds:
+      - /{{.TMP}}/govulncheck/{{.GOVULNCHECK_VERSION}}/govulncheck -show verbose ./...
+
+  licenses:
+    desc: "check licenses"
+    deps:
+      - task: check-go-tool
+        vars:
+          TOOL: GO_LICENSES
+    cmds:
+      - |
+        PROJECT="$(go list -m)"
+        /{{.TMP}}/go-licenses/{{.GO_LICENSES_VERSION}}/go-licenses report --ignore "$PROJECT" .
+        /{{.TMP}}/go-licenses/{{.GO_LICENSES_VERSION}}/go-licenses check --ignore "$PROJECT" .
+
+  legal:
+    desc: "check legal"
+    cmds:
+      - task: govulncheck
+      - task: licenses

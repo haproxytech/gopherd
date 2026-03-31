@@ -1,0 +1,15 @@
+# Two services with dependency ordering and restart
+processes:
+  - name: haproxy
+    command: /usr/sbin/haproxy
+    args: ["-W", "-db", "-f", "/etc/haproxy/haproxy.cfg"]
+    stop-signal: SIGUSR1
+    kill-delay: 30s
+    on-success: restart
+    on-failure: restart
+
+  - name: controller
+    command: /usr/local/bin/controller
+    after: [haproxy]
+    on-success: shutdown
+    on-failure: restart

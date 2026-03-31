@@ -1,0 +1,41 @@
+# HAProxy Ingress Controller.
+# Mirrors the kubernetes-ingress and unified-k8s-gateway Docker entrypoint.
+
+processes:
+  # Init task: create aux config if missing, set permissions.
+  - name: init-config
+    command: /bin/sh
+    args: ["-c", "touch /etc/haproxy/haproxy-aux.cfg && chmod 640 /etc/haproxy/haproxy-aux.cfg"]
+    startup: oneshot
+
+  - name: haproxy
+    command: /usr/local/sbin/haproxy
+    args: ["-W", "-db", "-f", "/etc/haproxy/haproxy.cfg", "-f", "/etc/haproxy/haproxy-aux.cfg"]
+    after: [init-config]
+    stop-signal: SIGUSR1
+    kill-delay: 30s
+    on-success: restart
+    on-failure: restart
+    ready-check: haproxy-health
+    ready-timeout: 30s
+    on-check-failure:
+      haproxy-health: restart
+
+  - name: controller
+    command: /usr/local/bin/controller
+    after: [haproxy]
+    on-success: shutdown
+    on-failure: restart
+
+checks:
+  haproxy-health:
+    http:
+      url: http://localhost/healthz
+      socket: /var/run/haproxy/health.sock
+    period: 5s
+    timeout: 2s
+    threshold: 3
+    initial-delay: 10s
+
+control:
+  socket: /run/go-init.sock

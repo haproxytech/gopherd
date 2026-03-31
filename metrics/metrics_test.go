@@ -1,0 +1,73 @@
+package metrics
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestServiceStarted(t *testing.T) {
+	m := New()
+	m.ServiceStarted("app")
+	out := m.Format()
+	if !strings.Contains(out, "app") || !strings.Contains(out, "up") {
+		t.Errorf("expected app up, got:\n%s", out)
+	}
+}
+
+func TestServiceExited(t *testing.T) {
+	m := New()
+	m.ServiceStarted("app")
+	m.ServiceExited("app", 1)
+	out := m.Format()
+	if !strings.Contains(out, "stopped") {
+		t.Errorf("expected stopped, got:\n%s", out)
+	}
+	if !strings.Contains(out, "fail=1") {
+		t.Errorf("expected fail=1, got:\n%s", out)
+	}
+}
+
+func TestServiceExitedSuccess(t *testing.T) {
+	m := New()
+	m.ServiceExited("app", 0)
+	out := m.Format()
+	if !strings.Contains(out, "ok=1") {
+		t.Errorf("expected ok=1, got:\n%s", out)
+	}
+}
+
+func TestServiceRestarted(t *testing.T) {
+	m := New()
+	m.ServiceRestarted("app")
+	m.ServiceRestarted("app")
+	out := m.Format()
+	if !strings.Contains(out, "restarts=2") {
+		t.Errorf("expected restarts=2, got:\n%s", out)
+	}
+}
+
+func TestCheckResult(t *testing.T) {
+	m := New()
+	m.CheckResult("health", true)
+	out := m.Format()
+	if !strings.Contains(out, "healthy") {
+		t.Errorf("expected healthy, got:\n%s", out)
+	}
+
+	m.CheckResult("health", false)
+	out = m.Format()
+	if !strings.Contains(out, "unhealthy") {
+		t.Errorf("expected unhealthy, got:\n%s", out)
+	}
+	if !strings.Contains(out, "failures=1") {
+		t.Errorf("expected failures=1, got:\n%s", out)
+	}
+}
+
+func TestFormatEmpty(t *testing.T) {
+	m := New()
+	out := m.Format()
+	if out != "no stats" {
+		t.Errorf("expected 'no stats', got: %q", out)
+	}
+}
