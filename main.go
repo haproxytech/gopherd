@@ -647,7 +647,16 @@ func main() {
 
 			success := effectiveCode == 0
 			var action service.ExitAction
-			if success {
+
+			// Oneshot services triggered via control socket after startup
+			// should not take shutdown actions — just ignore the exit.
+			if svc.Oneshot {
+				if success {
+					action = service.ActionIgnore
+				} else {
+					action = service.ParseExitAction(svc.Proc.OnFailure, service.ActionIgnore)
+				}
+			} else if success {
 				action = svc.OnSuccess
 			} else {
 				action = svc.OnFailure
