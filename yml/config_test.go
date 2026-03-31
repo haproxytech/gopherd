@@ -264,6 +264,38 @@ processes:
 	}
 }
 
+func TestTemplateArgsAndDotenv(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "tmpl.yml")
+	os.WriteFile(cfgPath, []byte(`
+processes:
+  - name: haproxy
+    command: /usr/local/sbin/haproxy
+    dotenv: /var/lib/go-init/haproxy.env
+    args: ["-W", "-db", "-m", "{{.MEMLIMIT}}", "-S", "/var/run/haproxy-master.sock,level,admin"]
+`), 0o644)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p := cfg.Processes[0]
+	if p.DotEnv != "/var/lib/go-init/haproxy.env" {
+		t.Errorf("dotenv = %q", p.DotEnv)
+	}
+	// The raw arg should contain the template literal, not be expanded yet.
+	found := false
+	for _, a := range p.Args {
+		t.Logf("arg: %q", a)
+		if a == "{{.MEMLIMIT}}" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected {{.MEMLIMIT}} in args, got %v", p.Args)
+	}
+}
+
 func TestLoadFileNotFound(t *testing.T) {
 	_, err := Load("/nonexistent/path.yml")
 	if err == nil {
