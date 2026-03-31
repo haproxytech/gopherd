@@ -336,6 +336,15 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
+	// Check if another daemon is already running by probing the control socket.
+	socketPath := cfg.Control.SocketPath
+	if socketPath == "" {
+		socketPath = control.DefaultSocketPath
+	}
+	if control.IsAlive(socketPath) {
+		log.Fatalf("another go-init instance is already running (socket %s is active)", socketPath)
+	}
+
 	// Validate extra-args: at most one service may use "entrypoint".
 	var entrypointCount int
 	for _, p := range cfg.Processes {

@@ -44,6 +44,16 @@ func ClientCommandList() []string {
 	return out
 }
 
+// IsAlive checks whether a go-init daemon is reachable on the given socket path.
+func IsAlive(socketPath string) bool {
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
 // RunClient connects to the go-init control socket and sends a command.
 func RunClient(args []string) {
 	socketPath := DefaultSocketPath
