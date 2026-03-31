@@ -23,7 +23,7 @@ import (
 	"github.com/haproxytech/go-init/yml"
 )
 
-const defaultConfigPath = "/etc/go-init.yml"
+const defaultConfigPath = "/usr/lib/go-init/go-init.yml"
 
 // daemon holds all mutable daemon state so reload can update it.
 type daemon struct {
@@ -269,20 +269,33 @@ func main() {
 	_ = version.Set()
 
 	// Split os.Args on "--": everything after is entrypoint extra args.
+	// Also, if the first arg starts with "-", it's neither a client command
+	// nor a passthrough binary — treat all args as entrypoint args.
 	var entrypointArgs []string
 	programArgs := os.Args[1:]
-	for i, arg := range programArgs {
-		if arg == "--" {
-			entrypointArgs = programArgs[i+1:]
-			programArgs = programArgs[:i]
-			break
+	if len(programArgs) > 0 && strings.HasPrefix(programArgs[0], "-") {
+		// All flag-style args belong to the entrypoint target service.
+		// Strip a leading "--" separator if present.
+		if programArgs[0] == "--" {
+			entrypointArgs = programArgs[1:]
+		} else {
+			entrypointArgs = programArgs
+		}
+		programArgs = nil
+	} else {
+		for i, arg := range programArgs {
+			if arg == "--" {
+				entrypointArgs = programArgs[i+1:]
+				programArgs = programArgs[:i]
+				break
+			}
 		}
 	}
 
 	// CLI client mode or passthrough exec.
 	if len(programArgs) > 0 {
 		first := programArgs[0]
-		if control.ClientCommands[first] {
+		if control.IsClientCommand(programArgs) {
 			control.RunClient(programArgs)
 			return
 		}

@@ -14,6 +14,27 @@ var ClientCommands = map[string]bool{
 	"status": true, "signal": true, "logs": true, "reload": true,
 }
 
+// serviceActions are commands that can appear as the second arg in "<service> <action>" form.
+var serviceActions = map[string]bool{
+	"start": true, "stop": true, "restart": true, "status": true,
+}
+
+// IsClientCommand returns true if args look like a client-mode invocation.
+// Handles both "go-init restart haproxy" and "go-init haproxy restart" forms.
+func IsClientCommand(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if ClientCommands[args[0]] {
+		return true
+	}
+	// "<service> <action>" form: second arg is the action keyword.
+	if len(args) >= 2 && serviceActions[args[1]] {
+		return true
+	}
+	return false
+}
+
 // ClientCommandList returns the list of client commands.
 func ClientCommandList() []string {
 	out := make([]string, 0, len(ClientCommands))

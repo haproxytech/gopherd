@@ -28,6 +28,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Log streaming** — `go-init logs <service> -f` for live log tailing via control socket
 - **Hot reload** — `go-init reload` or SIGHUP to re-read config and reconcile services without restart
 - **Exit code propagation** — go-init exits with the actual exit code of the service that triggered shutdown
+- **Entrypoint extra args** — pass Docker/Kubernetes entrypoint arguments to a designated service via `extra-args: entrypoint`
 - **Entrypoint passthrough** — `docker run <image> /bin/sh` execs the command directly, bypassing the init system
 - **No root required** — works in rootless containers
 
@@ -49,7 +50,7 @@ task format                   # go fix + betteralign + gofumpt
 GO_INIT_CONFIG=/path/to/config.yml ./go-init
 ```
 
-Default config path: `/etc/go-init.yml` (override via `GO_INIT_CONFIG` env var).
+Default config path: `/usr/lib/go-init/go-init.yml` (override via `GO_INIT_CONFIG` env var).
 
 #### Runtime control (client mode)
 
@@ -81,12 +82,42 @@ docker run myimage ls -la /etc       # runs ls, exits
 
 Known client commands (`list`, `stats`, `start`, `stop`, `restart`, `status`, `signal`, `logs`, `reload`) still go to client mode.
 
+#### Entrypoint extra args
+
+Pass Docker `CMD` or Kubernetes `args` through to a specific service. This lets you configure a service at runtime without wrapper scripts.
+
+Mark one service with `extra-args: entrypoint` in the config:
+
+```yaml
+processes:
+  - name: controller
+    command: /usr/local/sbin/myapp
+    args: ["--base-flag"]
+    extra-args: entrypoint           # appends entrypoint args to this service
+```
+
+Then pass extra arguments:
+
+```bash
+# Docker — args after "--" or flag-style args are forwarded
+docker run myimage -- --log-level=debug --feature-x
+docker run myimage --log-level=debug --feature-x
+
+# Kubernetes — pod args are forwarded (ENTRYPOINT = go-init in Dockerfile)
+containers:
+  - name: app
+    image: myimage
+    args: ["--log-level=debug", "--feature-x"]
+```
+
+The service receives `["--base-flag", "--log-level=debug", "--feature-x"]`. Only one service may use `extra-args: entrypoint`.
+
 #### Docker
 
 ```dockerfile
 FROM your-base-image
 COPY go-init /sbin/go-init
-COPY go-init.yml /etc/go-init.yml
+COPY go-init.yml /usr/lib/go-init/go-init.yml
 ENTRYPOINT ["/sbin/go-init"]
 # Normal: runs as PID 1 init system
 # Debug:  docker run <image> /bin/sh  → passthrough to shell
@@ -141,6 +172,7 @@ processes:
 
   - name: sidecar
     command: /usr/local/bin/sidecar
+    extra-args: entrypoint           # append Docker CMD / K8s args to this service
     after: [app]                     # app must be ready (check passed) before sidecar starts
     on-success: shutdown
     on-failure: shutdown
@@ -217,6 +249,7 @@ log-targets:
 | `before` | string[] | `[]` | Start before these services |
 | `requires` | string[] | `[]` | Hard dependencies |
 | `on-check-failure` | map | `{}` | Check name -> action mapping |
+| `extra-args` | string | | `"entrypoint"`: append Docker/K8s entrypoint args to this service |
 | `ready-check` | string | | Health check name that gates dependents |
 | `ready-timeout` | duration | `"60s"` | Max wait for ready check to pass |
 | `no-time` | bool | `false` | Disable timestamp in log prefix |
