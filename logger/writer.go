@@ -11,17 +11,17 @@ import (
 
 const defaultRingSize = 200
 
-// Default prefix format: timestamp followed by service name.
-const DefaultPrefix = "timestamp service"
+// Default prefix format: service name followed by timestamp.
+const DefaultPrefix = "service timestamp"
 
 // PrefixWriter is a line-buffered io.Writer that prefixes each line with
 // configurable components (timestamp and/or service name):
 //
-//	2021-05-13T03:16:51.001Z [service-name] output line here
+//	[service-name] 2021-05-13T03:16:51.001Z output line here
 //
 // The prefix format is controlled by a space-separated token string:
-//   - "timestamp service" (default): timestamp then [name]
-//   - "service timestamp": [name] then timestamp
+//   - "service timestamp" (default): [name] then timestamp
+//   - "timestamp service": timestamp then [name]
 //   - "timestamp": timestamp only
 //   - "service": [name] only
 //   - "none" or "": no prefix

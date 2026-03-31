@@ -21,7 +21,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Oneshot tasks** — run-once init tasks (e.g. config generation, permission setup) that complete before dependents start
 - **Health checks** — HTTP (including over Unix socket), TCP, and exec-based checks with configurable period, timeout, and threshold
 - **Readiness gates** — block dependent services until a health check passes (not just until the process spawns)
-- **Log prefixing** — timestamps and service name on every output line
+- **Log prefixing** — service name and timestamp on every output line (configurable format)
 - **Log targets** — forward logs to syslog (UDP/TCP)
 - **Stats tracking** — service uptime, restarts, exits, and health check results via `go-init stats`
 - **Control socket** — start/stop/restart/status/signal/reload/stats/logs services at runtime via Unix socket
@@ -50,7 +50,7 @@ task format                   # go fix + betteralign + gofumpt
 GO_INIT_CONFIG=/path/to/config.yml ./go-init
 ```
 
-Default config path: `/usr/lib/go-init/go-init.yml` (override via `GO_INIT_CONFIG` env var).
+Default config path: `/var/lib/go-init/go-init.yml` (override via `GO_INIT_CONFIG` env var).
 
 #### Runtime control (client mode)
 
@@ -117,7 +117,7 @@ The service receives `["--base-flag", "--log-level=debug", "--feature-x"]`. Only
 ```dockerfile
 FROM your-base-image
 COPY go-init /sbin/go-init
-COPY go-init.yml /usr/lib/go-init/go-init.yml
+COPY go-init.yml /var/lib/go-init/go-init.yml
 ENTRYPOINT ["/sbin/go-init"]
 # Normal: runs as PID 1 init system
 # Debug:  docker run <image> /bin/sh  → passthrough to shell
@@ -130,8 +130,14 @@ Configuration is a single YAML file (no external YAML library — built-in parse
 Below is a full example showing all available options:
 
 ```yaml
-# Global options
-no-time: false                       # disable timestamps in log output
+# Global log prefix format (space-separated tokens, applied in order).
+# Tokens: "timestamp" (UTC timestamp), "service" ([name] tag).
+#   "service timestamp"  — [app] 2021-05-13T03:16:51.001Z line  (default)
+#   "timestamp service"  — 2021-05-13T03:16:51.001Z [app] line
+#   "timestamp"          — timestamp only, no service name
+#   "service"            — service name only, no timestamp
+#   "none"               — no prefix at all (raw output)
+# prefix: "service timestamp"
 
 # Control socket
 control:
@@ -163,7 +169,7 @@ processes:
     requires: [db]                   # hard dependencies (failure cascades)
     ready-check: health              # block dependents until this check passes
     ready-timeout: 30s               # max wait for ready check (default: 60s)
-    no-time: false                   # per-process timestamp override
+    # prefix: "none"                 # per-process prefix override (see global prefix)
     environment:
       DB_HOST: localhost
       LOG_LEVEL: info
@@ -252,7 +258,7 @@ log-targets:
 | `extra-args` | string | | `"entrypoint"`: append Docker/K8s entrypoint args to this service |
 | `ready-check` | string | | Health check name that gates dependents |
 | `ready-timeout` | duration | `"60s"` | Max wait for ready check to pass |
-| `no-time` | bool | `false` | Disable timestamp in log prefix |
+| `prefix` | string | `"service timestamp"` | Log prefix format: `"service timestamp"`, `"timestamp service"`, `"timestamp"`, `"service"`, `"none"` |
 
 #### Exit actions
 

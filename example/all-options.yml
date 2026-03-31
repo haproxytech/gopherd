@@ -3,14 +3,14 @@
 # Global log prefix format (space-separated tokens, applied in order).
 # Tokens: "timestamp" (UTC timestamp), "service" ([name] tag).
 # Examples:
-#   "timestamp service"  — 2021-05-13T03:16:51.001Z [app] line  (default)
-#   "service timestamp"  — [app] 2021-05-13T03:16:51.001Z line
+#   "service timestamp"  — [app] 2021-05-13T03:16:51.001Z line  (default)
+#   "timestamp service"  — 2021-05-13T03:16:51.001Z [app] line
 #   "timestamp"          — timestamp only, no service name
 #   "service"            — service name only, no timestamp
 #   "none"               — no prefix at all (raw output)
-# Omit or leave empty to use the default ("timestamp service").
+# Omit or leave empty to use the default ("service timestamp").
 # Can be overridden per process.
-# prefix: "timestamp service"
+# prefix: "service timestamp"
 
 # Control socket for runtime service management.
 # Use `go-init stats` to view service and check statistics.

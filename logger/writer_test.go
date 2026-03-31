@@ -227,15 +227,15 @@ func TestPrefixServiceTimestamp(t *testing.T) {
 	}
 }
 
-func TestPrefixDefaultIsTimestampService(t *testing.T) {
+func TestPrefixDefaultIsServiceTimestamp(t *testing.T) {
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", DefaultPrefix)
 	pw.Write([]byte("hello\n"))
 	got := buf.String()
 	svcIdx := strings.Index(got, "[svc]")
 	zIdx := strings.Index(got, "Z")
-	if svcIdx < 0 || zIdx < 0 || zIdx >= svcIdx {
-		t.Errorf("default should be timestamp service, got: %q", got)
+	if svcIdx < 0 || zIdx < 0 || svcIdx >= zIdx {
+		t.Errorf("default should be service timestamp, got: %q", got)
 	}
 }
 

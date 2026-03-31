@@ -23,7 +23,7 @@ import (
 	"github.com/haproxytech/go-init/yml"
 )
 
-const defaultConfigPath = "/usr/lib/go-init/go-init.yml"
+const defaultConfigPath = "/var/lib/go-init/go-init.yml"
 
 // daemon holds all mutable daemon state so reload can update it.
 type daemon struct {
