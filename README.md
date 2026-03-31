@@ -14,7 +14,8 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Process management** — start multiple processes with dependency ordering, signal forwarding, and zombie reaping
 - **Per-service stop signal & kill delay** — configurable shutdown signal and grace period before SIGKILL
 - **User/group switching** — run each process as a specific user/group (by name or numeric ID)
-- **Environment & working directory** — per-process environment variables and working directory
+- **Environment & working directory** — per-process environment variables, dotenv file loading, and working directory
+- **Template args** — Go template syntax in args (e.g. `{{.MEMLIMIT}}`) resolved from env vars and dotenv files
 - **Restart policies** — configurable `on-success` / `on-failure` actions: `restart`, `shutdown`, `ignore`
 - **Exponential backoff** — configurable delay, factor, and limit for restart attempts
 - **Service dependencies** — `after`, `before`, `requires` with topological sort
@@ -153,7 +154,8 @@ processes:
 
   - name: app
     command: /usr/local/bin/myapp
-    args: ["--config", "/etc/app.conf"]
+    args: ["--config", "/etc/app.conf", "-m", "{{.MEMLIMIT}}"]
+    dotenv: /etc/app.env             # load KEY=value env vars from file
     working-dir: /app
     user: appuser                    # run as user (name or user-id)
     group: appgroup                  # run as group (name or group-id)
@@ -236,7 +238,8 @@ log-targets:
 |:------|:-----|:--------|:------------|
 | `name` | string | command path | Service name for logging and control |
 | `command` | string | *required* | Executable path |
-| `args` | string[] | `[]` | Command arguments |
+| `args` | string[] | `[]` | Command arguments (supports Go templates, e.g. `{{.MEMLIMIT}}`) |
+| `dotenv` | string | | Path to env file (`KEY=value` per line), loaded into templates and child env |
 | `working-dir` | string | inherited | Working directory |
 | `user` | string | inherited | Run as user (name) |
 | `group` | string | inherited | Run as group (name) |

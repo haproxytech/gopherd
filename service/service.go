@@ -2,11 +2,15 @@
 package service
 
 import (
+	"bytes"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
+	"text/template"
 	"time"
 
 	"github.com/haproxytech/go-init/backoff"
@@ -62,6 +66,7 @@ type Process struct {
 	ReadyCheck     string
 	ReadyTimeout   string
 	ExtraArgs      string
+	DotEnv         string
 	Args           []string
 	After          []string         
 	Before         []string         
@@ -174,12 +179,89 @@ func New(p Process, globalPrefix string) *Service {
 	}
 }
 
+// parseDotEnv reads a dotenv file and returns key-value pairs.
+// Lines are in the format KEY=value. Empty lines and lines starting with # are skipped.
+func parseDotEnv(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("dotenv %s: %w", path, err)
+	}
+	env := make(map[string]string)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		env[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	return env, nil
+}
+
+// buildEnvMap builds a merged environment map from OS env, dotenv file, and per-process overrides.
+// Priority (highest last): OS env < dotenv < per-process environment.
+func buildEnvMap(dotenvPath string, procEnv map[string]string) (map[string]string, error) {
+	env := make(map[string]string)
+	for _, e := range os.Environ() {
+		if k, v, ok := strings.Cut(e, "="); ok {
+			env[k] = v
+		}
+	}
+	if dotenvPath != "" {
+		dotenv, err := parseDotEnv(dotenvPath)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range dotenv {
+			env[k] = v
+		}
+	}
+	for k, v := range procEnv {
+		env[k] = v
+	}
+	return env, nil
+}
+
+// expandEnvTemplates resolves Go template expressions (e.g. {{.MEMLIMIT}}) in
+// args using the merged environment. Args without templates are returned unchanged.
+func expandEnvTemplates(args []string, env map[string]string) ([]string, error) {
+	out := make([]string, len(args))
+	for i, arg := range args {
+		if !strings.Contains(arg, "{{") {
+			out[i] = arg
+			continue
+		}
+		t, err := template.New("").Option("missingkey=zero").Parse(arg)
+		if err != nil {
+			return nil, fmt.Errorf("bad template in arg %q: %w", arg, err)
+		}
+		var buf bytes.Buffer
+		if err := t.Execute(&buf, env); err != nil {
+			return nil, fmt.Errorf("expanding arg %q: %w", arg, err)
+		}
+		out[i] = buf.String()
+	}
+	return out, nil
+}
+
 // Start launches the process. Returns the PID on success.
 func (s *Service) Start() (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cmd := exec.Command(s.Proc.Command, s.Proc.Args...)
+	env, err := buildEnvMap(s.Proc.DotEnv, s.Proc.Environment)
+	if err != nil {
+		return 0, err
+	}
+
+	args, err := expandEnvTemplates(s.Proc.Args, env)
+	if err != nil {
+		return 0, err
+	}
+	cmd := exec.Command(s.Proc.Command, args...)
 	cmd.Stdout = s.Stdout
 	cmd.Stderr = s.Stderr
 	cmd.Stdin = os.Stdin
@@ -189,9 +271,10 @@ func (s *Service) Start() (int, error) {
 		cmd.Dir = s.Proc.WorkingDir
 	}
 
-	if len(s.Proc.Environment) > 0 {
-		cmd.Env = os.Environ()
-		for k, v := range s.Proc.Environment {
+	// Pass dotenv + per-process vars into the child's environment too.
+	if s.Proc.DotEnv != "" || len(s.Proc.Environment) > 0 {
+		cmd.Env = make([]string, 0, len(env))
+		for k, v := range env {
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
 	}

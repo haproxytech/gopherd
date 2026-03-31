@@ -240,3 +240,98 @@ func TestCustomKillDelay(t *testing.T) {
 		t.Errorf("killDelay = %v", svc.killDelay)
 	}
 }
+
+func TestExpandEnvTemplates(t *testing.T) {
+	t.Setenv("MEMLIMIT", "1024")
+	t.Setenv("HOST", "localhost")
+
+	tests := []struct {
+		name    string
+		args    []string
+		dotenv  string
+		procEnv map[string]string
+		want    []string
+	}{
+		{
+			name: "no templates",
+			args: []string{"-W", "-db"},
+			want: []string{"-W", "-db"},
+		},
+		{
+			name: "env expansion",
+			args: []string{"-m", "{{.MEMLIMIT}}", "--host={{.HOST}}"},
+			want: []string{"-m", "1024", "--host=localhost"},
+		},
+		{
+			name: "missing env returns empty",
+			args: []string{"--val={{.NONEXISTENT}}"},
+			want: []string{"--val="},
+		},
+		{
+			name:    "proc env overrides os env",
+			args:    []string{"-m", "{{.MEMLIMIT}}"},
+			procEnv: map[string]string{"MEMLIMIT": "2048"},
+			want:    []string{"-m", "2048"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env, err := buildEnvMap(tt.dotenv, tt.procEnv)
+			if err != nil {
+				t.Fatalf("buildEnvMap: %v", err)
+			}
+			got, err := expandEnvTemplates(tt.args, env)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("arg[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestDotEnv(t *testing.T) {
+	dir := t.TempDir()
+	envFile := dir + "/app.env"
+	os.WriteFile(envFile, []byte("MEMLIMIT=1024\nHOST=example.com\n# comment\n\nEMPTY=\n"), 0o644)
+
+	env, err := buildEnvMap(envFile, nil)
+	if err != nil {
+		t.Fatalf("buildEnvMap: %v", err)
+	}
+	if env["MEMLIMIT"] != "1024" {
+		t.Errorf("MEMLIMIT = %q", env["MEMLIMIT"])
+	}
+	if env["HOST"] != "example.com" {
+		t.Errorf("HOST = %q", env["HOST"])
+	}
+
+	// dotenv values available in templates
+	got, err := expandEnvTemplates([]string{"-m", "{{.MEMLIMIT}}"}, env)
+	if err != nil {
+		t.Fatalf("expand: %v", err)
+	}
+	if got[1] != "1024" {
+		t.Errorf("got %q, want 1024", got[1])
+	}
+}
+
+func TestDotEnvProcEnvOverrides(t *testing.T) {
+	dir := t.TempDir()
+	envFile := dir + "/app.env"
+	os.WriteFile(envFile, []byte("MEMLIMIT=1024\n"), 0o644)
+
+	env, err := buildEnvMap(envFile, map[string]string{"MEMLIMIT": "2048"})
+	if err != nil {
+		t.Fatalf("buildEnvMap: %v", err)
+	}
+	if env["MEMLIMIT"] != "2048" {
+		t.Errorf("proc env should override dotenv, got %q", env["MEMLIMIT"])
+	}
+}

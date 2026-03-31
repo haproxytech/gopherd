@@ -32,7 +32,8 @@ processes:
   # Main application with all options.
   - name: app
     command: /usr/local/bin/myapp
-    args: ["--config", "/etc/app.conf", "--verbose"]
+    args: ["--config", "/etc/app.conf", "--verbose", "-m", "{{.MEMLIMIT}}"]
+    dotenv: /etc/app.env                 # load KEY=value env vars from file
     working-dir: /app
     user: app
     group: app
