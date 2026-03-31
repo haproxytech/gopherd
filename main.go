@@ -347,7 +347,18 @@ func main() {
 		socketPath = control.DefaultSocketPath
 	}
 	if control.IsAlive(socketPath) {
-		log.Fatalf("another gopherd instance is already running (socket %s is active)", socketPath)
+		log.Printf("another gopherd instance is already running (socket %s is active)", socketPath)
+		fmt.Fprintf(os.Stderr, "\navailable client commands:\n")
+		fmt.Fprintf(os.Stderr, "  gopherd <service> <start|stop|restart|status>\n")
+		fmt.Fprintf(os.Stderr, "  gopherd signal <service> <signal-name>\n")
+		fmt.Fprintf(os.Stderr, "  gopherd logs <service> [-f]\n")
+		fmt.Fprintf(os.Stderr, "  gopherd reload\n")
+		fmt.Fprintf(os.Stderr, "  gopherd stats\n")
+		fmt.Fprintf(os.Stderr, "  gopherd list\n")
+		fmt.Fprintf(os.Stderr, "\ncurrent stats:\n")
+		os.Setenv("GOPHERD_SOCKET", socketPath)
+		control.RunClient([]string{"stats"})
+		os.Exit(1)
 	}
 
 	// Validate extra-args: at most one service may use "entrypoint".
