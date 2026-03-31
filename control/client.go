@@ -20,7 +20,7 @@ var serviceActions = map[string]bool{
 }
 
 // IsClientCommand returns true if args look like a client-mode invocation.
-// Handles both "go-init restart haproxy" and "go-init haproxy restart" forms.
+// Handles both "gopherd restart haproxy" and "gopherd haproxy restart" forms.
 func IsClientCommand(args []string) bool {
 	if len(args) == 0 {
 		return false
@@ -44,7 +44,7 @@ func ClientCommandList() []string {
 	return out
 }
 
-// IsAlive checks whether a go-init daemon is reachable on the given socket path.
+// IsAlive checks whether a gopherd daemon is reachable on the given socket path.
 func IsAlive(socketPath string) bool {
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
@@ -54,10 +54,10 @@ func IsAlive(socketPath string) bool {
 	return true
 }
 
-// RunClient connects to the go-init control socket and sends a command.
+// RunClient connects to the gopherd control socket and sends a command.
 func RunClient(args []string) {
 	socketPath := DefaultSocketPath
-	if v := os.Getenv("GO_INIT_SOCKET"); v != "" {
+	if v := os.Getenv("GOPHERD_SOCKET"); v != "" {
 		socketPath = v
 	}
 
@@ -81,18 +81,18 @@ func RunClient(args []string) {
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintf(os.Stderr, "usage: go-init <service> <start|stop|restart|status>\n")
-		fmt.Fprintf(os.Stderr, "       go-init signal <service> <signal-name>\n")
-		fmt.Fprintf(os.Stderr, "       go-init logs <service> [-f]\n")
-		fmt.Fprintf(os.Stderr, "       go-init reload\n")
-		fmt.Fprintf(os.Stderr, "       go-init stats\n")
-		fmt.Fprintf(os.Stderr, "       go-init list\n")
+		fmt.Fprintf(os.Stderr, "usage: gopherd <service> <start|stop|restart|status>\n")
+		fmt.Fprintf(os.Stderr, "       gopherd signal <service> <signal-name>\n")
+		fmt.Fprintf(os.Stderr, "       gopherd logs <service> [-f]\n")
+		fmt.Fprintf(os.Stderr, "       gopherd reload\n")
+		fmt.Fprintf(os.Stderr, "       gopherd stats\n")
+		fmt.Fprintf(os.Stderr, "       gopherd list\n")
 		os.Exit(1)
 	}
 
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "cannot connect to go-init (is it running?): %v\n", err)
+		fmt.Fprintf(os.Stderr, "cannot connect to gopherd (is it running?): %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close()

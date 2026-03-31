@@ -13,8 +13,8 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/haproxytech/go-init/backoff"
-	"github.com/haproxytech/go-init/logger"
+	"github.com/haproxytech/gopherd/backoff"
+	"github.com/haproxytech/gopherd/logger"
 )
 
 // ExitAction defines what to do when a process exits.

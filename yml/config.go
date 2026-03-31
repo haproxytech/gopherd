@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/haproxytech/go-init/check"
-	"github.com/haproxytech/go-init/control"
-	"github.com/haproxytech/go-init/logger"
-	"github.com/haproxytech/go-init/service"
+	"github.com/haproxytech/gopherd/check"
+	"github.com/haproxytech/gopherd/control"
+	"github.com/haproxytech/gopherd/logger"
+	"github.com/haproxytech/gopherd/service"
 )
 
-// Config is the top-level go-init configuration.
+// Config is the top-level gopherd configuration.
 type Config struct {
 	Checks     map[string]check.Config
 	LogTargets map[string]logger.TargetConfig

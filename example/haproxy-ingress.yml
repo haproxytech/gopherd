@@ -38,4 +38,4 @@ checks:
     initial-delay: 10s
 
 control:
-  socket: /run/go-init.sock
+  socket: /run/gopherd.sock

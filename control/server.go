@@ -11,7 +11,7 @@ import (
 )
 
 // DefaultSocketPath is the default Unix socket path.
-const DefaultSocketPath = "/run/go-init.sock"
+const DefaultSocketPath = "/run/gopherd.sock"
 
 // Server listens on a Unix socket and handles service control commands.
 type Server struct {

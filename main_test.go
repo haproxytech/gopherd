@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/haproxytech/go-init/yml"
+	"github.com/haproxytech/gopherd/yml"
 )
 
 func TestLoadConfigValid(t *testing.T) {

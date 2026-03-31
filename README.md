@@ -1,9 +1,9 @@
 # ![HAProxy](https://github.com/haproxytech/kubernetes-ingress/raw/master/assets/images/haproxy-weblogo-210x49.png "HAProxy")
 
-## go-init
+## gopherd
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Go Report Card](https://goreportcard.com/badge/github.com/haproxytech/go-init)](https://goreportcard.com/report/github.com/haproxytech/go-init)
+[![Go Report Card](https://goreportcard.com/badge/github.com/haproxytech/gopherd)](https://goreportcard.com/report/github.com/haproxytech/gopherd)
 
 ### Description
 
@@ -24,11 +24,11 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Readiness gates** — block dependent services until a health check passes (not just until the process spawns)
 - **Log prefixing** — service name and timestamp on every output line (configurable format)
 - **Log targets** — forward logs to syslog (UDP/TCP)
-- **Stats tracking** — service uptime, restarts, exits, and health check results via `go-init stats`
+- **Stats tracking** — service uptime, restarts, exits, and health check results via `gopherd stats`
 - **Control socket** — start/stop/restart/status/signal/reload/stats/logs services at runtime via Unix socket
-- **Log streaming** — `go-init logs <service> -f` for live log tailing via control socket
-- **Hot reload** — `go-init reload` or SIGHUP to re-read config and reconcile services without restart
-- **Exit code propagation** — go-init exits with the actual exit code of the service that triggered shutdown
+- **Log streaming** — `gopherd logs <service> -f` for live log tailing via control socket
+- **Hot reload** — `gopherd reload` or SIGHUP to re-read config and reconcile services without restart
+- **Exit code propagation** — gopherd exits with the actual exit code of the service that triggered shutdown
 - **Entrypoint extra args** — pass Docker/Kubernetes entrypoint arguments to a designated service via `extra-args: entrypoint`
 - **Entrypoint passthrough** — `docker run <image> /bin/sh` execs the command directly, bypassing the init system
 - **No root required** — works in rootless containers
@@ -38,7 +38,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 #### Build
 
 ```bash
-go build -o go-init .         # or: task build
+go build -o gopherd .         # or: task build
 task ci                       # full CI: check-commit, tidy, format, lint, test
 task test                     # run tests with gotestsum
 task lint                     # revive + staticcheck + betteralign
@@ -48,33 +48,33 @@ task format                   # go fix + betteralign + gofumpt
 #### Run as init (daemon mode)
 
 ```bash
-GO_INIT_CONFIG=/path/to/config.yml ./go-init
+GOPHERD_CONFIG=/path/to/config.yml ./gopherd
 ```
 
-Default config path: `/var/lib/go-init/go-init.yml` (override via `GO_INIT_CONFIG` env var).
+Default config path: `/var/lib/gopherd/gopherd.yml` (override via `GOPHERD_CONFIG` env var).
 
 #### Runtime control (client mode)
 
-When invoked with a known command, `go-init` connects to the running daemon via Unix socket:
+When invoked with a known command, `gopherd` connects to the running daemon via Unix socket:
 
 ```bash
-./go-init list                       # list all services and their status
-./go-init app start                  # start a stopped service
-./go-init app stop                   # stop a running service
-./go-init app restart                # restart a service
-./go-init app status                 # show service status
-./go-init signal haproxy SIGUSR2     # send a signal to a running service (e.g. reload)
-./go-init logs app                   # show recent logs for a service
-./go-init logs app -f                # stream logs (follow mode, like tail -f)
-./go-init stats                      # show service and check statistics
-./go-init reload                     # hot-reload config (add/remove/update services)
+./gopherd list                       # list all services and their status
+./gopherd app start                  # start a stopped service
+./gopherd app stop                   # stop a running service
+./gopherd app restart                # restart a service
+./gopherd app status                 # show service status
+./gopherd signal haproxy SIGUSR2     # send a signal to a running service (e.g. reload)
+./gopherd logs app                   # show recent logs for a service
+./gopherd logs app -f                # stream logs (follow mode, like tail -f)
+./gopherd stats                      # show service and check statistics
+./gopherd reload                     # hot-reload config (add/remove/update services)
 ```
 
-Override socket path with `GO_INIT_SOCKET` env var (default: `/run/go-init.sock`).
+Override socket path with `GOPHERD_SOCKET` env var (default: `/run/gopherd.sock`).
 
 #### Entrypoint passthrough
 
-When invoked with arguments that aren't known client commands, `go-init` execs the command directly (replacing the process). This is useful for debugging containers:
+When invoked with arguments that aren't known client commands, `gopherd` execs the command directly (replacing the process). This is useful for debugging containers:
 
 ```bash
 docker run myimage /bin/sh           # drops into a shell, bypasses init
@@ -104,7 +104,7 @@ Then pass extra arguments:
 docker run myimage -- --log-level=debug --feature-x
 docker run myimage --log-level=debug --feature-x
 
-# Kubernetes — pod args are forwarded (ENTRYPOINT = go-init in Dockerfile)
+# Kubernetes — pod args are forwarded (ENTRYPOINT = gopherd in Dockerfile)
 containers:
   - name: app
     image: myimage
@@ -117,9 +117,9 @@ The service receives `["--base-flag", "--log-level=debug", "--feature-x"]`. Only
 
 ```dockerfile
 FROM your-base-image
-COPY go-init /sbin/go-init
-COPY go-init.yml /var/lib/go-init/go-init.yml
-ENTRYPOINT ["/sbin/go-init"]
+COPY gopherd /sbin/gopherd
+COPY gopherd.yml /var/lib/gopherd/gopherd.yml
+ENTRYPOINT ["/sbin/gopherd"]
 # Normal: runs as PID 1 init system
 # Debug:  docker run <image> /bin/sh  → passthrough to shell
 ```
@@ -142,7 +142,7 @@ Below is a full example showing all available options:
 
 # Control socket
 control:
-  socket: /run/go-init.sock          # Unix socket path for runtime control
+  socket: /run/gopherd.sock          # Unix socket path for runtime control
 
 # Processes
 processes:
@@ -268,9 +268,9 @@ log-targets:
 | Action | Description |
 |:-------|:------------|
 | `restart` | Restart the process with exponential backoff |
-| `shutdown` | Exit go-init with the service's actual exit code |
-| `success-shutdown` | Exit go-init with code 0 |
-| `failure-shutdown` | Exit go-init with the service's actual exit code |
+| `shutdown` | Exit gopherd with the service's actual exit code |
+| `success-shutdown` | Exit gopherd with code 0 |
+| `failure-shutdown` | Exit gopherd with the service's actual exit code |
 | `ignore` | Leave process stopped, don't trigger shutdown |
 
 #### Health check types
@@ -307,7 +307,7 @@ Core design:
 - Restart requests are handled asynchronously via a channel with backoff delays
 - Control socket uses one-command-per-connection protocol over Unix domain socket (streaming for `logs -f`)
 - SIGHUP triggers config hot-reload instead of being forwarded to children
-- Exit codes from services are propagated as go-init's own exit code
+- Exit codes from services are propagated as gopherd's own exit code
 
 ### Contributing
 

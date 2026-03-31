@@ -83,7 +83,7 @@ func openSyslog(location string) (io.WriteCloser, error) {
 		return nil, fmt.Errorf("syslog location must be like udp://host:port or tcp://host:port, got %q", location)
 	}
 
-	w, err := syslog.Dial(network, addr, syslog.LOG_INFO|syslog.LOG_DAEMON, "go-init")
+	w, err := syslog.Dial(network, addr, syslog.LOG_INFO|syslog.LOG_DAEMON, "gopherd")
 	if err != nil {
 		return nil, fmt.Errorf("dial syslog %s://%s: %w", network, addr, err)
 	}

@@ -13,9 +13,9 @@
 # prefix: "service timestamp"
 
 # Control socket for runtime service management.
-# Use `go-init stats` to view service and check statistics.
+# Use `gopherd stats` to view service and check statistics.
 control:
-  socket: /run/go-init.sock
+  socket: /run/gopherd.sock
 
 # --- Processes ---
 processes:

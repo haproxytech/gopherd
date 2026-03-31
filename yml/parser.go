@@ -1,5 +1,5 @@
-// Package yml provides a minimal YAML parser for go-init configuration.
-// It supports the subset of YAML used by go-init: scalars, maps, lists of maps,
+// Package yml provides a minimal YAML parser for gopherd configuration.
+// It supports the subset of YAML used by gopherd: scalars, maps, lists of maps,
 // inline lists, and nested indentation. No external dependencies.
 package yml
 

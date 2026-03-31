@@ -17,8 +17,8 @@ before:
 builds:
   - env:
       - CGO_ENABLED=0
-    binary: go-init
-    id: go-init
+    binary: gopherd
+    id: gopherd
     main: .
     goos:
       - linux
@@ -60,7 +60,7 @@ release:
   draft: false
   header: |
     ## Release Notes
-    go-init {{.Tag}} {{.ShortCommit}}
+    gopherd {{.Tag}} {{.ShortCommit}}
 
     Build date: {{.Date}}
-  name_template: "go-init v{{.Version}}"
+  name_template: "gopherd v{{.Version}}"

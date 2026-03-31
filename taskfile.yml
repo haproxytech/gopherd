@@ -29,9 +29,9 @@ tasks:
       - task: test
 
   build:
-    desc: "build go-init binary"
+    desc: "build gopherd binary"
     cmds:
-      - go build -o go-init .
+      - go build -o gopherd .
 
   test:
     desc: "run Go tests"

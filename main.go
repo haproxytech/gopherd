@@ -1,4 +1,4 @@
-// Package main implements go-init, a minimal PID 1 init process and service supervisor.
+// Package main implements gopherd, a minimal PID 1 init process and service supervisor.
 package main
 
 import (
@@ -13,17 +13,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/haproxytech/go-init/check"
-	"github.com/haproxytech/go-init/control"
-	"github.com/haproxytech/go-init/logger"
-	"github.com/haproxytech/go-init/metrics"
-	"github.com/haproxytech/go-init/order"
-	"github.com/haproxytech/go-init/service"
-	"github.com/haproxytech/go-init/version"
-	"github.com/haproxytech/go-init/yml"
+	"github.com/haproxytech/gopherd/check"
+	"github.com/haproxytech/gopherd/control"
+	"github.com/haproxytech/gopherd/logger"
+	"github.com/haproxytech/gopherd/metrics"
+	"github.com/haproxytech/gopherd/order"
+	"github.com/haproxytech/gopherd/service"
+	"github.com/haproxytech/gopherd/version"
+	"github.com/haproxytech/gopherd/yml"
 )
 
-const defaultConfigPath = "/var/lib/go-init/go-init.yml"
+const defaultConfigPath = "/var/lib/gopherd/gopherd.yml"
 
 // daemon holds all mutable daemon state so reload can update it.
 type daemon struct {
@@ -264,7 +264,7 @@ func (d *daemon) reload() (string, error) {
 
 func main() {
 	log.SetFlags(0)
-	log.SetPrefix("go-init: ")
+	log.SetPrefix("gopherd: ")
 
 	_ = version.Set()
 
@@ -300,7 +300,7 @@ func main() {
 			return
 		}
 		if first == "version" {
-			fmt.Println("go-init", version.Version)
+			fmt.Println("gopherd", version.Version)
 			fmt.Println("built from:", version.Repo)
 			fmt.Println("commit date:", version.CommitDate)
 			return
@@ -312,7 +312,7 @@ func main() {
 		// Passthrough: exec the command directly, replacing this process.
 		path, err := exec.LookPath(first)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "go-init: %q not found (not a client command and not on PATH)\n", first)
+			fmt.Fprintf(os.Stderr, "gopherd: %q not found (not a client command and not on PATH)\n", first)
 			fmt.Fprintf(os.Stderr, "Client commands: %s\n", strings.Join(control.ClientCommandList(), ", "))
 			os.Exit(1)
 		}
@@ -327,7 +327,7 @@ func main() {
 	}
 
 	configPath := defaultConfigPath
-	if v := os.Getenv("GO_INIT_CONFIG"); v != "" {
+	if v := os.Getenv("GOPHERD_CONFIG"); v != "" {
 		configPath = v
 	}
 
@@ -342,7 +342,7 @@ func main() {
 		socketPath = control.DefaultSocketPath
 	}
 	if control.IsAlive(socketPath) {
-		log.Fatalf("another go-init instance is already running (socket %s is active)", socketPath)
+		log.Fatalf("another gopherd instance is already running (socket %s is active)", socketPath)
 	}
 
 	// Validate extra-args: at most one service may use "entrypoint".

@@ -271,7 +271,7 @@ func TestTemplateArgsAndDotenv(t *testing.T) {
 processes:
   - name: haproxy
     command: /usr/local/sbin/haproxy
-    dotenv: /var/lib/go-init/haproxy.env
+    dotenv: /var/lib/gopherd/haproxy.env
     args: ["-W", "-db", "-m", "{{.MEMLIMIT}}", "-S", "/var/run/haproxy-master.sock,level,admin"]
 `), 0o644)
 
@@ -280,7 +280,7 @@ processes:
 		t.Fatalf("Load: %v", err)
 	}
 	p := cfg.Processes[0]
-	if p.DotEnv != "/var/lib/go-init/haproxy.env" {
+	if p.DotEnv != "/var/lib/gopherd/haproxy.env" {
 		t.Errorf("dotenv = %q", p.DotEnv)
 	}
 	// The raw arg should contain the template literal, not be expanded yet.
