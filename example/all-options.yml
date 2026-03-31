@@ -12,6 +12,9 @@
 # Can be overridden per process.
 # prefix: "service timestamp"
 
+# Suppress the ASCII logo on daemon startup (default: false).
+# no-logo: true
+
 # Control socket for runtime service management.
 # Use `gopherd stats` to view service and check statistics.
 control:

@@ -336,6 +336,11 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
+	if !cfg.NoLogo {
+		fmt.Print(version.Logo)
+	}
+	log.Printf("%s (built from %s)", version.Version, version.Repo)
+
 	// Check if another daemon is already running by probing the control socket.
 	socketPath := cfg.Control.SocketPath
 	if socketPath == "" {

@@ -17,6 +17,7 @@ type Config struct {
 	Control    control.Config
 	Processes  []service.Process
 	Prefix     string
+	NoLogo     bool
 }
 
 // Load reads and parses a YAML config file.
@@ -42,6 +43,9 @@ func Unmarshal(data []byte) (*Config, error) {
 
 	if n := root.Get("prefix"); n != nil {
 		cfg.Prefix = n.String()
+	}
+	if n := root.Get("no-logo"); n != nil {
+		cfg.NoLogo = n.Bool()
 	}
 
 	if n := root.Get("control"); n != nil {
