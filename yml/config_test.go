@@ -239,6 +239,31 @@ processes:
 	}
 }
 
+func TestExtraArgsEntrypoint(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "extra.yml")
+	os.WriteFile(cfgPath, []byte(`
+processes:
+  - name: app
+    command: /bin/app
+    args: ["--verbose"]
+    extra-args: entrypoint
+  - name: sidecar
+    command: /bin/sidecar
+`), 0o644)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Processes[0].ExtraArgs != "entrypoint" {
+		t.Errorf("expected extra-args=entrypoint, got %q", cfg.Processes[0].ExtraArgs)
+	}
+	if cfg.Processes[1].ExtraArgs != "" {
+		t.Errorf("sidecar should have empty extra-args, got %q", cfg.Processes[1].ExtraArgs)
+	}
+}
+
 func TestLoadFileNotFound(t *testing.T) {
 	_, err := Load("/nonexistent/path.yml")
 	if err == nil {

@@ -59,9 +59,10 @@ type Process struct {
 	OnFailure      string           
 	BackoffDelay   string           
 	BackoffLimit   string           
-	ReadyCheck     string           
-	ReadyTimeout   string           
-	Args           []string         
+	ReadyCheck     string
+	ReadyTimeout   string
+	ExtraArgs      string
+	Args           []string
 	After          []string         
 	Before         []string         
 	Requires       []string         

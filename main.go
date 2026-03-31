@@ -33,10 +33,11 @@ type daemon struct {
 	pidMap    map[int]*service.Service
 	restartCh chan restartReq
 
-	configPath string
-	checkers   []*check.Checker
-	logTargets []*logger.Target
-	exitCode   int
+	configPath     string
+	checkers       []*check.Checker
+	logTargets     []*logger.Target
+	entrypointArgs []string
+	exitCode       int
 
 	mu           sync.Mutex
 	shuttingDown bool
@@ -114,6 +115,10 @@ func (d *daemon) buildLogTargets() {
 func (d *daemon) buildServices() {
 	d.services = make(map[string]*service.Service)
 	for _, p := range d.cfg.Processes {
+		// Inject entrypoint args into the designated service.
+		if p.ExtraArgs == "entrypoint" && len(d.entrypointArgs) > 0 {
+			p.Args = append(p.Args, d.entrypointArgs...)
+		}
 		svc := service.New(p, d.cfg.Prefix)
 		d.services[svc.Name] = svc
 		for _, lt := range d.logTargets {
@@ -263,11 +268,22 @@ func main() {
 
 	_ = version.Set()
 
+	// Split os.Args on "--": everything after is entrypoint extra args.
+	var entrypointArgs []string
+	programArgs := os.Args[1:]
+	for i, arg := range programArgs {
+		if arg == "--" {
+			entrypointArgs = programArgs[i+1:]
+			programArgs = programArgs[:i]
+			break
+		}
+	}
+
 	// CLI client mode or passthrough exec.
-	if len(os.Args) > 1 {
-		first := os.Args[1]
+	if len(programArgs) > 0 {
+		first := programArgs[0]
 		if control.ClientCommands[first] {
-			control.RunClient(os.Args[1:])
+			control.RunClient(programArgs)
 			return
 		}
 		if first == "version" {
@@ -287,7 +303,12 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Client commands: %s\n", strings.Join(control.ClientCommandList(), ", "))
 			os.Exit(1)
 		}
-		if err := syscall.Exec(path, os.Args[1:], os.Environ()); err != nil {
+		// Re-append entrypoint args for passthrough.
+		execArgs := programArgs
+		if len(entrypointArgs) > 0 {
+			execArgs = append(execArgs, entrypointArgs...)
+		}
+		if err := syscall.Exec(path, execArgs, os.Environ()); err != nil {
 			log.Fatalf("exec %s: %v", path, err)
 		}
 	}
@@ -302,11 +323,25 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
+	// Validate extra-args: at most one service may use "entrypoint".
+	var entrypointCount int
+	for _, p := range cfg.Processes {
+		if p.ExtraArgs == "entrypoint" {
+			entrypointCount++
+		} else if p.ExtraArgs != "" {
+			log.Fatalf("process %s: unknown extra-args value %q (supported: \"entrypoint\")", p.Name, p.ExtraArgs)
+		}
+	}
+	if entrypointCount > 1 {
+		log.Fatalf("only one process may use extra-args: entrypoint")
+	}
+
 	d := &daemon{
-		configPath: configPath,
-		cfg:        cfg,
-		pidMap:     make(map[int]*service.Service),
-		restartCh:  make(chan restartReq, 64),
+		configPath:     configPath,
+		cfg:            cfg,
+		entrypointArgs: entrypointArgs,
+		pidMap:         make(map[int]*service.Service),
+		restartCh:      make(chan restartReq, 64),
 	}
 
 	// Initialize stats tracking.
