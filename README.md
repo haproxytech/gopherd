@@ -29,7 +29,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Log streaming** — `gopherd logs <service> -f` for live log tailing via control socket
 - **Hot reload** — `gopherd reload` or SIGHUP to re-read config and reconcile services without restart
 - **Exit code propagation** — gopherd exits with the actual exit code of the service that triggered shutdown
-- **Entrypoint extra args** — pass Docker/Kubernetes entrypoint arguments to a designated service via `extra-args: entrypoint`
+- **Entrypoint args** — pass Docker/Kubernetes entrypoint arguments to a designated service via `use-entrypoint-args: true`
 - **Entrypoint passthrough** — `docker run <image> /bin/sh` execs the command directly, bypassing the init system
 - **No root required** — works in rootless containers
 
@@ -87,14 +87,14 @@ Known client commands (`list`, `stats`, `start`, `stop`, `restart`, `status`, `s
 
 Pass Docker `CMD` or Kubernetes `args` through to a specific service. This lets you configure a service at runtime without wrapper scripts.
 
-Mark one service with `extra-args: entrypoint` in the config:
+Mark one service with `use-entrypoint-args: true` in the config:
 
 ```yaml
 processes:
   - name: controller
     command: /usr/local/sbin/myapp
     args: ["--base-flag"]
-    extra-args: entrypoint           # appends entrypoint args to this service
+    use-entrypoint-args: true           # appends entrypoint args to this service
 ```
 
 Then pass extra arguments:
@@ -111,7 +111,7 @@ containers:
     args: ["--log-level=debug", "--feature-x"]
 ```
 
-The service receives `["--base-flag", "--log-level=debug", "--feature-x"]`. Only one service may use `extra-args: entrypoint`.
+The service receives `["--base-flag", "--log-level=debug", "--feature-x"]`. Only one service may set `use-entrypoint-args: true`.
 
 #### Docker
 
@@ -180,7 +180,7 @@ processes:
 
   - name: sidecar
     command: /usr/local/bin/sidecar
-    extra-args: entrypoint           # append Docker CMD / K8s args to this service
+    use-entrypoint-args: true           # append Docker CMD / K8s args to this service
     after: [app]                     # app must be ready (check passed) before sidecar starts
     on-success: shutdown
     on-failure: shutdown
@@ -258,7 +258,7 @@ log-targets:
 | `before` | string[] | `[]` | Start before these services |
 | `requires` | string[] | `[]` | Hard dependencies |
 | `on-check-failure` | map | `{}` | Check name -> action mapping |
-| `extra-args` | string | | `"entrypoint"`: append Docker/K8s entrypoint args to this service |
+| `use-entrypoint-args` | bool | `false` | append Docker/K8s entrypoint args to this service |
 | `ready-check` | string | | Health check name that gates dependents |
 | `ready-timeout` | duration | `"60s"` | Max wait for ready check to pass |
 | `prefix` | string | `"service timestamp"` | Log prefix format: `"service timestamp"`, `"timestamp service"`, `"timestamp"`, `"service"`, `"none"` |

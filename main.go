@@ -116,7 +116,7 @@ func (d *daemon) buildServices() {
 	d.services = make(map[string]*service.Service)
 	for _, p := range d.cfg.Processes {
 		// Inject entrypoint args into the designated service.
-		if p.ExtraArgs == "entrypoint" && len(d.entrypointArgs) > 0 {
+		if p.UseEntrypointArgs && len(d.entrypointArgs) > 0 {
 			p.Args = append(p.Args, d.entrypointArgs...)
 		}
 		svc := service.New(p, d.cfg.Prefix)
@@ -361,17 +361,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Validate extra-args: at most one service may use "entrypoint".
+	// Validate use-entrypoint-args: at most one service may set it.
 	var entrypointCount int
 	for _, p := range cfg.Processes {
-		if p.ExtraArgs == "entrypoint" {
+		if p.UseEntrypointArgs {
 			entrypointCount++
-		} else if p.ExtraArgs != "" {
-			log.Fatalf("process %s: unknown extra-args value %q (supported: \"entrypoint\")", p.Name, p.ExtraArgs)
 		}
 	}
 	if entrypointCount > 1 {
-		log.Fatalf("only one process may use extra-args: entrypoint")
+		log.Fatalf("only one process may set use-entrypoint-args: true")
 	}
 
 	d := &daemon{

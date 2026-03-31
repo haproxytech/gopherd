@@ -239,15 +239,15 @@ processes:
 	}
 }
 
-func TestExtraArgsEntrypoint(t *testing.T) {
+func TestUseEntrypointArgs(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "extra.yml")
+	cfgPath := filepath.Join(dir, "entrypoint.yml")
 	os.WriteFile(cfgPath, []byte(`
 processes:
   - name: app
     command: /bin/app
     args: ["--verbose"]
-    extra-args: entrypoint
+    use-entrypoint-args: true
   - name: sidecar
     command: /bin/sidecar
 `), 0o644)
@@ -256,11 +256,11 @@ processes:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Processes[0].ExtraArgs != "entrypoint" {
-		t.Errorf("expected extra-args=entrypoint, got %q", cfg.Processes[0].ExtraArgs)
+	if !cfg.Processes[0].UseEntrypointArgs {
+		t.Errorf("expected use-entrypoint-args=true for app")
 	}
-	if cfg.Processes[1].ExtraArgs != "" {
-		t.Errorf("sidecar should have empty extra-args, got %q", cfg.Processes[1].ExtraArgs)
+	if cfg.Processes[1].UseEntrypointArgs {
+		t.Errorf("sidecar should have use-entrypoint-args=false")
 	}
 }
 
