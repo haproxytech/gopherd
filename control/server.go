@@ -18,10 +18,12 @@ package control
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -85,7 +87,11 @@ func (cs *Server) Start() error {
 		os.Remove(cs.SocketPath)
 	}
 
+	// Set a restrictive umask before Listen so the socket is never
+	// world-accessible between creation and Chmod.
+	oldMask := syscall.Umask(0o077)
 	ln, err := net.Listen("unix", cs.SocketPath)
+	syscall.Umask(oldMask)
 	if err != nil {
 		return fmt.Errorf("control socket: %w", err)
 	}
@@ -96,11 +102,19 @@ func (cs *Server) Start() error {
 	return nil
 }
 
-// maxConns is the maximum number of concurrent control socket connections.
-const maxConns = 64
+const (
+	// maxConns is the maximum number of concurrent control socket connections
+	// for one-shot commands (start, stop, status, etc.).
+	maxConns = 64
+	// maxStreaming is the maximum number of concurrent streaming connections
+	// (logs -f). These are tracked separately so streaming clients cannot
+	// starve one-shot command slots.
+	maxStreaming = 16
+)
 
 func (cs *Server) acceptLoop() {
 	sem := make(chan struct{}, maxConns)
+	streamSem := make(chan struct{}, maxStreaming)
 	for {
 		conn, err := cs.listener.Accept()
 		if err != nil {
@@ -115,8 +129,7 @@ func (cs *Server) acceptLoop() {
 		select {
 		case sem <- struct{}{}:
 			go func() {
-				defer func() { <-sem }()
-				cs.handleConn(conn)
+				cs.handleConn(conn, sem, streamSem)
 			}()
 		default:
 			// At capacity — reject the connection.
@@ -129,28 +142,64 @@ func (cs *Server) acceptLoop() {
 // Prevents slowloris-style attacks that hold connection slots indefinitely.
 const connReadTimeout = 5 * time.Second
 
-func (cs *Server) handleConn(conn net.Conn) {
+// peerUID returns the UID of the process on the other end of a Unix socket
+// connection using SO_PEERCRED. Returns -1 if credentials cannot be determined.
+func peerUID(conn net.Conn) int {
+	uc, ok := conn.(*net.UnixConn)
+	if !ok {
+		return -1
+	}
+	raw, err := uc.SyscallConn()
+	if err != nil {
+		return -1
+	}
+	var cred *syscall.Ucred
+	var credErr error
+	raw.Control(func(fd uintptr) {
+		cred, credErr = syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
+	})
+	if credErr != nil || cred == nil {
+		return -1
+	}
+	return int(cred.Uid)
+}
+
+func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 	defer conn.Close()
 	conn.SetReadDeadline(time.Now().Add(connReadTimeout))
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {
+		<-cmdSem
 		return
 	}
 	line := strings.TrimSpace(scanner.Text())
 	if line == "" {
+		<-cmdSem
 		return
 	}
+
+	uid := peerUID(conn)
+	log.Printf("control: uid=%d cmd=%q", uid, line)
 
 	// Clear deadline for command handling (logs -f may stream indefinitely).
 	conn.SetReadDeadline(time.Time{})
 
 	parts := strings.Fields(line)
-	// Handle streaming commands separately (they keep the conn open).
+	// Streaming commands release the command slot and acquire a streaming
+	// slot instead, so they cannot starve one-shot commands.
 	if parts[0] == "logs" {
-		cs.handleLogs(conn, parts)
+		<-cmdSem // release command slot
+		select {
+		case streamSem <- struct{}{}:
+			defer func() { <-streamSem }()
+			cs.handleLogs(conn, parts)
+		default:
+			fmt.Fprintf(conn, "error: too many streaming connections\n")
+		}
 		return
 	}
 
+	defer func() { <-cmdSem }()
 	resp := cs.handleCommand(line)
 	fmt.Fprintf(conn, "%s\n", resp)
 }

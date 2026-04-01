@@ -27,6 +27,8 @@ tasks:
       - task: format
       - task: lint
       - task: test
+        vars:
+          COUNT: 1
 
   build:
     desc: "build gopherd binary"
@@ -48,7 +50,7 @@ tasks:
           --format-icons=hivis \
           --format={{.FORMAT}} \
           --format-hide-empty-pkg \
-          -- -count=1 \
+          -- {{if .COUNT}}-count={{.COUNT}}{{end}} \
             -v \
             {{.PKG}}
 

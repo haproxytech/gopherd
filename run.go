@@ -38,6 +38,10 @@ func run(entrypointArgs []string) int {
 		configPath = v
 	}
 
+	if err := checkConfigPermissions(configPath); err != nil {
+		log.Fatalf("config: %v", err)
+	}
+
 	cfg, err := yml.Load(configPath)
 	if err != nil {
 		log.Fatalf("config: %v", err)

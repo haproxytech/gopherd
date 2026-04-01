@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // TargetConfig defines a log forwarding target.
@@ -136,8 +137,9 @@ func (sw *syslogWriter) Close() error {
 
 // openFile opens a log file for append-only writing, creating parent
 // directories and the file itself if they don't exist. The path must be
-// absolute to prevent relative path confusion. Symlinks in the path are
-// rejected to prevent TOCTOU attacks.
+// absolute to prevent relative path confusion. O_NOFOLLOW prevents the
+// kernel from following symlinks at the final path component, closing the
+// TOCTOU gap between Lstat and OpenFile.
 func openFile(location string) (io.WriteCloser, error) {
 	path := strings.TrimPrefix(location, "file://")
 	if path == "" {
@@ -147,26 +149,14 @@ func openFile(location string) (io.WriteCloser, error) {
 		return nil, fmt.Errorf("file log target path must be absolute: %s", path)
 	}
 
-	// Check parent directory for symlinks.
 	dir := filepath.Dir(path)
-	if info, err := os.Lstat(dir); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("log directory %s is a symlink; refusing", dir)
-		}
-	}
-
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create log directory: %w", err)
 	}
 
-	// Check the file itself for symlinks if it already exists.
-	if info, err := os.Lstat(path); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("log file %s is a symlink; refusing", path)
-		}
-	}
-
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+	// O_NOFOLLOW causes the open to fail if the final path component is a
+	// symlink, preventing TOCTOU attacks without a separate Lstat check.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW, 0o640)
 	if err != nil {
 		return nil, fmt.Errorf("open log file %s: %w", path, err)
 	}
