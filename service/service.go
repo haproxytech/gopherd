@@ -14,6 +14,7 @@ import (
 
 	"github.com/haproxytech/gopherd/backoff"
 	"github.com/haproxytech/gopherd/logger"
+	"github.com/haproxytech/gopherd/memory"
 )
 
 // ExitAction defines what to do when a process exits.
@@ -230,20 +231,39 @@ func buildEnvMap(dotenvPath string, procEnv map[string]string, cleanEnv bool) (m
 	return env, nil
 }
 
-// templateRe matches {{.VAR_NAME}} placeholders in args.
+// templateRe matches {{.VAR_NAME}} placeholders.
 var templateRe = regexp.MustCompile(`\{\{\s*\.(\w+)\s*\}\}`)
 
-// expandEnvTemplates resolves {{.VAR}} placeholders in args using the merged
-// environment. Missing keys expand to empty string. Args without placeholders
-// are returned unchanged.
-func expandEnvTemplates(args []string, env map[string]string) ([]string, error) {
-	out := make([]string, len(args))
-	for i, arg := range args {
-		if !strings.Contains(arg, "{{") {
-			out[i] = arg
+// memRe matches {{mem EXPR}} placeholders for memory expressions.
+var memRe = regexp.MustCompile(`\{\{\s*mem\s+(.+?)\s*\}\}`)
+
+// expandTemplates resolves {{.VAR}} and {{mem EXPR}} placeholders in a string
+// slice. Environment lookups use env; memory expressions use totalMiB.
+// Missing env keys expand to empty string.
+func expandTemplates(values []string, env map[string]string, totalMiB int64) ([]string, error) {
+	out := make([]string, len(values))
+	for i, s := range values {
+		if !strings.Contains(s, "{{") {
+			out[i] = s
 			continue
 		}
-		out[i] = templateRe.ReplaceAllStringFunc(arg, func(match string) string {
+		var memErr error
+		s = memRe.ReplaceAllStringFunc(s, func(match string) string {
+			sub := memRe.FindStringSubmatch(match)
+			if len(sub) < 2 {
+				return match
+			}
+			mib, err := memory.Eval(sub[1], totalMiB)
+			if err != nil {
+				memErr = err
+				return match
+			}
+			return fmt.Sprintf("%d", mib)
+		})
+		if memErr != nil {
+			return nil, memErr
+		}
+		out[i] = templateRe.ReplaceAllStringFunc(s, func(match string) string {
 			sub := templateRe.FindStringSubmatch(match)
 			if len(sub) < 2 {
 				return match
@@ -264,7 +284,9 @@ func (s *Service) Start() (int, error) {
 		return 0, err
 	}
 
-	args, err := expandEnvTemplates(s.Proc.Args, env)
+	totalMiB, _ := memory.Available()
+
+	args, err := expandTemplates(s.Proc.Args, env, totalMiB)
 	if err != nil {
 		return 0, err
 	}
@@ -281,9 +303,20 @@ func (s *Service) Start() (int, error) {
 	// Set the child's environment explicitly when dotenv, per-process vars,
 	// or clean-env is used. When cmd.Env is nil, Go inherits the parent env.
 	if s.Proc.CleanEnv || s.Proc.DotEnv != "" || len(s.Proc.Environment) > 0 {
-		cmd.Env = make([]string, 0, len(env))
+		// Expand {{mem}} and {{.VAR}} in environment values too.
+		envVals := make([]string, 0, len(env))
+		envKeys := make([]string, 0, len(env))
 		for k, v := range env {
-			cmd.Env = append(cmd.Env, k+"="+v)
+			envKeys = append(envKeys, k)
+			envVals = append(envVals, v)
+		}
+		envVals, err = expandTemplates(envVals, env, totalMiB)
+		if err != nil {
+			return 0, err
+		}
+		cmd.Env = make([]string, 0, len(env))
+		for i, k := range envKeys {
+			cmd.Env = append(cmd.Env, k+"="+envVals[i])
 		}
 	}
 

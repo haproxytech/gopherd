@@ -15,7 +15,8 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Per-service stop signal & kill delay** — configurable shutdown signal and grace period before SIGKILL
 - **User/group switching** — run each process as a specific user/group (by name or numeric ID)
 - **Environment & working directory** — per-process environment variables, dotenv file loading, and working directory
-- **Template args** — Go template syntax in args (e.g. `{{.MEMLIMIT}}`) resolved from env vars and dotenv files
+- **Template args** — `{{.VAR}}` placeholders in args and environment values, resolved from env vars and dotenv files
+- **Memory-aware templates** — `{{mem EXPR}}` expands to available memory in MiB (auto-detects system RAM and cgroup limits)
 - **Restart policies** — configurable `on-success` / `on-failure` actions: `restart`, `shutdown`, `ignore`
 - **Exponential backoff** — configurable delay, factor, and limit for restart attempts
 - **Service dependencies** — `after`, `before`, `requires` with topological sort
@@ -112,6 +113,36 @@ containers:
 ```
 
 The service receives `["--base-flag", "--log-level=debug", "--feature-x"]`. Only one service may set `use-entrypoint-args: true`.
+
+#### Memory-aware templates
+
+The `{{mem EXPR}}` syntax expands to an integer value in MiB based on available memory. Available memory is the minimum of system RAM (from `/proc/meminfo`) and any cgroup limit (v1 or v2).
+
+Supported expressions:
+
+| Expression | Description |
+|:-----------|:------------|
+| `{{mem 66%}}` | 66% of available memory |
+| `{{mem 100% - 200MB}}` | All memory minus 200 MB |
+| `{{mem 512MiB}}` | Absolute value (passthrough) |
+
+Units: `MB` (decimal, 1000^2), `MiB` (binary, 1024^2), `GB`, `GiB`. The result is always a whole number of MiB.
+
+Templates work in both `args` and `environment` values:
+
+```yaml
+processes:
+  - name: haproxy
+    command: /usr/local/sbin/haproxy
+    args: ["-m", "{{mem 66%}}"]       # HAProxy -m flag takes MiB
+
+  - name: app
+    command: /usr/local/bin/app
+    environment:
+      GOMEMLIMIT: "{{mem 33%}}MiB"    # Go runtime expects value + unit
+```
+
+On a container with a 3 GiB cgroup limit, this resolves to `-m 2048` and `GOMEMLIMIT=1024MiB`.
 
 #### Docker
 
@@ -238,7 +269,7 @@ log-targets:
 |:------|:-----|:--------|:------------|
 | `name` | string | command path | Service name for logging and control |
 | `command` | string | *required* | Executable path |
-| `args` | string[] | `[]` | Command arguments (supports Go templates, e.g. `{{.MEMLIMIT}}`) |
+| `args` | string[] | `[]` | Command arguments (supports `{{.VAR}}` and `{{mem EXPR}}` templates) |
 | `dotenv` | string | | Path to env file (`KEY=value` per line), loaded into templates and child env |
 | `working-dir` | string | inherited | Working directory |
 | `user` | string | inherited | Run as user (name) |

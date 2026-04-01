@@ -280,7 +280,7 @@ func TestExpandEnvTemplates(t *testing.T) {
 			if err != nil {
 				t.Fatalf("buildEnvMap: %v", err)
 			}
-			got, err := expandEnvTemplates(tt.args, env)
+			got, err := expandTemplates(tt.args, env, 4096)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -313,7 +313,7 @@ func TestDotEnv(t *testing.T) {
 	}
 
 	// dotenv values available in templates
-	got, err := expandEnvTemplates([]string{"-m", "{{.MEMLIMIT}}"}, env)
+	got, err := expandTemplates([]string{"-m", "{{.MEMLIMIT}}"}, env, 4096)
 	if err != nil {
 		t.Fatalf("expand: %v", err)
 	}
