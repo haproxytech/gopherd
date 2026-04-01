@@ -21,6 +21,7 @@ import (
 )
 
 func TestLoadFull(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "test.yml")
 	os.WriteFile(cfgPath, []byte(`
@@ -157,6 +158,7 @@ log-targets:
 }
 
 func TestLoadMinimal(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "min.yml")
 	os.WriteFile(cfgPath, []byte(`
@@ -178,6 +180,7 @@ processes:
 }
 
 func TestLoadNoProcesses(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "empty.yml")
 	os.WriteFile(cfgPath, []byte("# empty\n"), 0o644)
@@ -189,6 +192,7 @@ func TestLoadNoProcesses(t *testing.T) {
 }
 
 func TestLoadGlobalPrefix(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "prefix.yml")
 	os.WriteFile(cfgPath, []byte(`
@@ -219,6 +223,7 @@ processes:
 }
 
 func TestLoadPerProcessPrefix(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "perproc.yml")
 	os.WriteFile(cfgPath, []byte(`
@@ -254,6 +259,7 @@ processes:
 }
 
 func TestUseEntrypointArgs(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "entrypoint.yml")
 	os.WriteFile(cfgPath, []byte(`
@@ -279,6 +285,7 @@ processes:
 }
 
 func TestTemplateArgsAndDotenv(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "tmpl.yml")
 	os.WriteFile(cfgPath, []byte(`
@@ -311,6 +318,7 @@ processes:
 }
 
 func TestLoadFileNotFound(t *testing.T) {
+	t.Parallel()
 	_, err := Load("/nonexistent/path.yml")
 	if err == nil {
 		t.Error("expected error for missing file")

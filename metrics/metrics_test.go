@@ -20,6 +20,7 @@ import (
 )
 
 func TestServiceStarted(t *testing.T) {
+	t.Parallel()
 	m := New()
 	m.ServiceStarted("app")
 	out := m.Format()
@@ -29,6 +30,7 @@ func TestServiceStarted(t *testing.T) {
 }
 
 func TestServiceExited(t *testing.T) {
+	t.Parallel()
 	m := New()
 	m.ServiceStarted("app")
 	m.ServiceExited("app", 1)
@@ -42,6 +44,7 @@ func TestServiceExited(t *testing.T) {
 }
 
 func TestServiceExitedSuccess(t *testing.T) {
+	t.Parallel()
 	m := New()
 	m.ServiceExited("app", 0)
 	out := m.Format()
@@ -51,6 +54,7 @@ func TestServiceExitedSuccess(t *testing.T) {
 }
 
 func TestServiceRestarted(t *testing.T) {
+	t.Parallel()
 	m := New()
 	m.ServiceRestarted("app")
 	m.ServiceRestarted("app")
@@ -61,6 +65,7 @@ func TestServiceRestarted(t *testing.T) {
 }
 
 func TestCheckResult(t *testing.T) {
+	t.Parallel()
 	m := New()
 	m.CheckResult("health", true)
 	out := m.Format()
@@ -79,6 +84,7 @@ func TestCheckResult(t *testing.T) {
 }
 
 func TestFormatEmpty(t *testing.T) {
+	t.Parallel()
 	m := New()
 	out := m.Format()
 	if out != "no stats" {

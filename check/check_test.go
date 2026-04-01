@@ -27,6 +27,7 @@ import (
 )
 
 func TestNewValidation(t *testing.T) {
+	t.Parallel()
 	_, err := New("bad", Config{Period: "1s", Timeout: "1s"}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for no check type")
@@ -54,6 +55,7 @@ func TestNewValidation(t *testing.T) {
 }
 
 func TestDefaults(t *testing.T) {
+	t.Parallel()
 	c, err := New("defaults", Config{TCP: &TCP{Port: 80}}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -70,6 +72,7 @@ func TestDefaults(t *testing.T) {
 }
 
 func TestHTTPSuccess(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(200)
 	}))
@@ -82,6 +85,7 @@ func TestHTTPSuccess(t *testing.T) {
 }
 
 func TestHTTPFailure(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(500)
 	}))
@@ -94,6 +98,7 @@ func TestHTTPFailure(t *testing.T) {
 }
 
 func TestTCPSuccess(t *testing.T) {
+	t.Parallel()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -110,6 +115,7 @@ func TestTCPSuccess(t *testing.T) {
 }
 
 func TestTCPFailure(t *testing.T) {
+	t.Parallel()
 	c, _ := New("tcp-fail", Config{TCP: &TCP{Host: "127.0.0.1", Port: 1}, Period: "1s", Timeout: "1s"}, nil, nil)
 	if err := c.Execute(); err == nil {
 		t.Error("expected failure for closed port")
@@ -117,6 +123,7 @@ func TestTCPFailure(t *testing.T) {
 }
 
 func TestExecSuccess(t *testing.T) {
+	t.Parallel()
 	c, _ := New("exec-ok", Config{Exec: &Exec{Command: "true"}, Period: "1s", Timeout: "2s"}, nil, nil)
 	if err := c.Execute(); err != nil {
 		t.Errorf("expected success, got: %v", err)
@@ -124,6 +131,7 @@ func TestExecSuccess(t *testing.T) {
 }
 
 func TestExecFailure(t *testing.T) {
+	t.Parallel()
 	c, _ := New("exec-fail", Config{Exec: &Exec{Command: "false"}, Period: "1s", Timeout: "2s"}, nil, nil)
 	if err := c.Execute(); err == nil {
 		t.Error("expected failure for 'false' command")
@@ -131,6 +139,7 @@ func TestExecFailure(t *testing.T) {
 }
 
 func TestThresholdCallback(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(500)
 	}))
@@ -151,6 +160,7 @@ func TestThresholdCallback(t *testing.T) {
 }
 
 func TestHTTPUnixSocket(t *testing.T) {
+	t.Parallel()
 	sockPath := filepath.Join(t.TempDir(), "health.sock")
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
@@ -173,6 +183,7 @@ func TestHTTPUnixSocket(t *testing.T) {
 }
 
 func TestWaitReadySuccess(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(200)
 	}))
@@ -187,6 +198,7 @@ func TestWaitReadySuccess(t *testing.T) {
 }
 
 func TestWaitReadyTimeout(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(500)
 	}))
@@ -201,6 +213,7 @@ func TestWaitReadyTimeout(t *testing.T) {
 }
 
 func TestWaitReadyEventualSuccess(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if calls.Add(1) < 3 {
@@ -220,6 +233,7 @@ func TestWaitReadyEventualSuccess(t *testing.T) {
 }
 
 func TestInitialDelay(t *testing.T) {
+	t.Parallel()
 	// Server always returns 500 — check should not fire callback
 	// within the initial delay window.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -256,6 +270,7 @@ func TestInitialDelay(t *testing.T) {
 }
 
 func TestInitialDelayZero(t *testing.T) {
+	t.Parallel()
 	// initial-delay = 0 means check immediately.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(500)
@@ -281,6 +296,7 @@ func TestInitialDelayZero(t *testing.T) {
 }
 
 func TestInitialDelayDefault(t *testing.T) {
+	t.Parallel()
 	// Without initial-delay set, default should be 1x period.
 	c, err := New("default-delay", Config{
 		HTTP:   &HTTP{URL: "http://localhost"},
@@ -295,6 +311,7 @@ func TestInitialDelayDefault(t *testing.T) {
 }
 
 func TestInitialDelayInvalid(t *testing.T) {
+	t.Parallel()
 	_, err := New("bad-delay", Config{
 		HTTP:         &HTTP{URL: "http://localhost"},
 		Period:       "1s",

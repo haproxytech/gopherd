@@ -19,6 +19,7 @@ import (
 )
 
 func TestParseScalar(t *testing.T) {
+	t.Parallel()
 	n, err := Parse([]byte(`name: hello`))
 	if err != nil {
 		t.Fatal(err)
@@ -29,6 +30,7 @@ func TestParseScalar(t *testing.T) {
 }
 
 func TestParseQuotedScalar(t *testing.T) {
+	t.Parallel()
 	n, err := Parse([]byte(`name: "hello world"`))
 	if err != nil {
 		t.Fatal(err)
@@ -39,6 +41,7 @@ func TestParseQuotedScalar(t *testing.T) {
 }
 
 func TestParseBool(t *testing.T) {
+	t.Parallel()
 	n, err := Parse([]byte(`enabled: true`))
 	if err != nil {
 		t.Fatal(err)
@@ -49,6 +52,7 @@ func TestParseBool(t *testing.T) {
 }
 
 func TestParseInt(t *testing.T) {
+	t.Parallel()
 	n, err := Parse([]byte(`port: 8080`))
 	if err != nil {
 		t.Fatal(err)
@@ -60,6 +64,7 @@ func TestParseInt(t *testing.T) {
 }
 
 func TestParseFloat(t *testing.T) {
+	t.Parallel()
 	n, err := Parse([]byte(`factor: 2.5`))
 	if err != nil {
 		t.Fatal(err)
@@ -71,6 +76,7 @@ func TestParseFloat(t *testing.T) {
 }
 
 func TestParseInlineList(t *testing.T) {
+	t.Parallel()
 	n, err := Parse([]byte(`items: [a, b, c]`))
 	if err != nil {
 		t.Fatal(err)
@@ -82,6 +88,7 @@ func TestParseInlineList(t *testing.T) {
 }
 
 func TestParseInlineListQuoted(t *testing.T) {
+	t.Parallel()
 	n, err := Parse([]byte(`args: ["--config", "/etc/app.conf"]`))
 	if err != nil {
 		t.Fatal(err)
@@ -93,6 +100,7 @@ func TestParseInlineListQuoted(t *testing.T) {
 }
 
 func TestParseNestedMapping(t *testing.T) {
+	t.Parallel()
 	n, err := Parse([]byte("control:\n  socket: /run/test.sock\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -103,6 +111,7 @@ func TestParseNestedMapping(t *testing.T) {
 }
 
 func TestParseSequenceOfMappings(t *testing.T) {
+	t.Parallel()
 	yml := `
 processes:
   - name: app
@@ -127,6 +136,7 @@ processes:
 }
 
 func TestParseMapOfMappings(t *testing.T) {
+	t.Parallel()
 	yml := `
 checks:
   health:
@@ -156,6 +166,7 @@ checks:
 }
 
 func TestParseComments(t *testing.T) {
+	t.Parallel()
 	yml := `
 # top comment
 name: app  # inline comment
@@ -176,6 +187,7 @@ port: 8080
 }
 
 func TestParseURLWithColon(t *testing.T) {
+	t.Parallel()
 	yml := `url: http://localhost:8080/health`
 	n, err := Parse([]byte(yml))
 	if err != nil {
@@ -187,6 +199,7 @@ func TestParseURLWithColon(t *testing.T) {
 }
 
 func TestParseStringMap(t *testing.T) {
+	t.Parallel()
 	yml := `
 environment:
   FOO: bar
@@ -203,6 +216,7 @@ environment:
 }
 
 func TestParseNestedInSequence(t *testing.T) {
+	t.Parallel()
 	yml := `
 processes:
   - name: app
@@ -227,6 +241,7 @@ processes:
 }
 
 func TestParseEmpty(t *testing.T) {
+	t.Parallel()
 	_, err := Parse([]byte(""))
 	if err != nil {
 		t.Fatal(err)
@@ -234,6 +249,7 @@ func TestParseEmpty(t *testing.T) {
 }
 
 func TestParseNilNode(t *testing.T) {
+	t.Parallel()
 	var n *Node
 	if n.Get("x") != nil {
 		t.Error("expected nil")
@@ -262,6 +278,7 @@ func TestParseNilNode(t *testing.T) {
 }
 
 func TestParseIntPtr(t *testing.T) {
+	t.Parallel()
 	n, _ := Parse([]byte(`uid: 1000`))
 	p := n.Get("uid").IntPtr()
 	if p == nil || *p != 1000 {

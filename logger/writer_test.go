@@ -22,6 +22,7 @@ import (
 )
 
 func TestSingleLine(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", "service")
 	pw.Write([]byte("hello\n"))
@@ -31,6 +32,7 @@ func TestSingleLine(t *testing.T) {
 }
 
 func TestNoTime(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "test", "service")
 	pw.Write([]byte("line\n"))
@@ -40,6 +42,7 @@ func TestNoTime(t *testing.T) {
 }
 
 func TestMultipleLines(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", "service")
 	pw.Write([]byte("line1\nline2\n"))
@@ -49,6 +52,7 @@ func TestMultipleLines(t *testing.T) {
 }
 
 func TestPartialLines(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", "service")
 	pw.Write([]byte("par"))
@@ -62,6 +66,7 @@ func TestPartialLines(t *testing.T) {
 }
 
 func TestFlush(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", "service")
 	pw.Write([]byte("no newline"))
@@ -75,6 +80,7 @@ func TestFlush(t *testing.T) {
 }
 
 func TestExtraTarget(t *testing.T) {
+	t.Parallel()
 	var buf1, buf2 bytes.Buffer
 	pw := NewPrefixWriter(&buf1, "svc", "service")
 	pw.AddTarget(&buf2)
@@ -85,6 +91,7 @@ func TestExtraTarget(t *testing.T) {
 }
 
 func TestSubscribe(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", "service")
 
@@ -104,6 +111,7 @@ func TestSubscribe(t *testing.T) {
 }
 
 func TestSubscribeMultiple(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", "service")
 
@@ -127,6 +135,7 @@ func TestSubscribeMultiple(t *testing.T) {
 }
 
 func TestUnsubscribe(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", "service")
 
@@ -144,6 +153,7 @@ func TestUnsubscribe(t *testing.T) {
 }
 
 func TestRecent(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", "service")
 
@@ -159,6 +169,7 @@ func TestRecent(t *testing.T) {
 }
 
 func TestRecentRingOverflow(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", "service")
 
@@ -175,6 +186,7 @@ func TestRecentRingOverflow(t *testing.T) {
 }
 
 func TestPrefixNone(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", "none")
 	pw.Write([]byte("raw line\n"))
@@ -184,6 +196,7 @@ func TestPrefixNone(t *testing.T) {
 }
 
 func TestPrefixEmpty(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", "")
 	pw.Write([]byte("raw line\n"))
@@ -193,6 +206,7 @@ func TestPrefixEmpty(t *testing.T) {
 }
 
 func TestPrefixTimestampOnly(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", "timestamp")
 	pw.Write([]byte("hello\n"))
@@ -206,6 +220,7 @@ func TestPrefixTimestampOnly(t *testing.T) {
 }
 
 func TestPrefixServiceOnly(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", "service")
 	pw.Write([]byte("hello\n"))
@@ -216,6 +231,7 @@ func TestPrefixServiceOnly(t *testing.T) {
 }
 
 func TestPrefixTimestampService(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", "timestamp service")
 	pw.Write([]byte("hello\n"))
@@ -229,6 +245,7 @@ func TestPrefixTimestampService(t *testing.T) {
 }
 
 func TestPrefixServiceTimestamp(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", "service timestamp")
 	pw.Write([]byte("hello\n"))
@@ -242,6 +259,7 @@ func TestPrefixServiceTimestamp(t *testing.T) {
 }
 
 func TestPrefixDefaultIsServiceTimestamp(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", DefaultPrefix)
 	pw.Write([]byte("hello\n"))
@@ -254,6 +272,7 @@ func TestPrefixDefaultIsServiceTimestamp(t *testing.T) {
 }
 
 func TestPrefixMultipleLines(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", "none")
 	pw.Write([]byte("line1\nline2\n"))

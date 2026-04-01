@@ -22,6 +22,7 @@ import (
 )
 
 func TestNewDefaults(t *testing.T) {
+	t.Parallel()
 	svc := New(Process{Command: "/bin/true"}, "")
 	if svc.Name != "/bin/true" {
 		t.Errorf("name = %q", svc.Name)
@@ -41,6 +42,7 @@ func TestNewDefaults(t *testing.T) {
 }
 
 func TestNewCustomName(t *testing.T) {
+	t.Parallel()
 	svc := New(Process{Name: "myapp", Command: "/usr/bin/myapp"}, "")
 	if svc.Name != "myapp" {
 		t.Errorf("name = %q", svc.Name)
@@ -48,6 +50,7 @@ func TestNewCustomName(t *testing.T) {
 }
 
 func TestNewDisabled(t *testing.T) {
+	t.Parallel()
 	svc := New(Process{Command: "true", Startup: "disabled"}, "")
 	if svc.Enabled {
 		t.Error("expected disabled")
@@ -55,6 +58,7 @@ func TestNewDisabled(t *testing.T) {
 }
 
 func TestNewOneshot(t *testing.T) {
+	t.Parallel()
 	svc := New(Process{Command: "true", Startup: "oneshot"}, "")
 	if !svc.Oneshot {
 		t.Error("expected oneshot")
@@ -65,6 +69,7 @@ func TestNewOneshot(t *testing.T) {
 }
 
 func TestNewCustomStopSignal(t *testing.T) {
+	t.Parallel()
 	svc := New(Process{Command: "true", StopSignal: "SIGUSR1"}, "")
 	if svc.stopSignal != syscall.SIGUSR1 {
 		t.Errorf("stopSignal = %v", svc.stopSignal)
@@ -72,6 +77,7 @@ func TestNewCustomStopSignal(t *testing.T) {
 }
 
 func TestNewExitActions(t *testing.T) {
+	t.Parallel()
 	svc := New(Process{Command: "true", OnSuccess: "restart", OnFailure: "ignore"}, "")
 	if svc.OnSuccess != ActionRestart {
 		t.Errorf("onSuccess = %q", svc.OnSuccess)
@@ -82,6 +88,7 @@ func TestNewExitActions(t *testing.T) {
 }
 
 func TestNewRequires(t *testing.T) {
+	t.Parallel()
 	svc := New(Process{Command: "true", Requires: []string{"db", "cache"}}, "")
 	if !svc.Requires["db"] || !svc.Requires["cache"] {
 		t.Error("expected requires")
@@ -89,6 +96,7 @@ func TestNewRequires(t *testing.T) {
 }
 
 func TestNewOnCheckFailure(t *testing.T) {
+	t.Parallel()
 	svc := New(Process{
 		Command:        "true",
 		OnCheckFailure: map[string]string{"health": "restart", "ready": "shutdown"},
@@ -99,6 +107,7 @@ func TestNewOnCheckFailure(t *testing.T) {
 }
 
 func TestStartStop(t *testing.T) {
+	t.Parallel()
 	svc := New(Process{Command: "sleep", Args: []string{"10"}}, "")
 	pid, err := svc.Start()
 	if err != nil {
@@ -121,6 +130,7 @@ func TestStartStop(t *testing.T) {
 }
 
 func TestWasStoppedFlag(t *testing.T) {
+	t.Parallel()
 	svc := New(Process{Command: "sleep", Args: []string{"10"}}, "")
 
 	if svc.WasStopped() {
@@ -153,6 +163,7 @@ func TestWasStoppedFlag(t *testing.T) {
 }
 
 func TestWasStoppedResetsOnStart(t *testing.T) {
+	t.Parallel()
 	svc := New(Process{Command: "sleep", Args: []string{"10"}}, "")
 
 	pid, err := svc.Start()
@@ -183,6 +194,7 @@ func TestWasStoppedResetsOnStart(t *testing.T) {
 }
 
 func TestSignal(t *testing.T) {
+	t.Parallel()
 	svc := New(Process{Command: "sleep", Args: []string{"10"}}, "")
 	pid, err := svc.Start()
 	if err != nil {
@@ -198,13 +210,15 @@ func TestSignal(t *testing.T) {
 	svc.MarkExited()
 }
 
-func TestSignalNotRunning(_ *testing.T) {
+func TestSignalNotRunning(t *testing.T) {
+	t.Parallel()
 	svc := New(Process{Command: "true"}, "")
 	svc.Signal(syscall.SIGUSR1) // should not panic
 	svc.Stop()
 }
 
 func TestEnvironment(t *testing.T) {
+	t.Parallel()
 	svc := New(Process{Command: "env", Environment: map[string]string{"TEST_VAR": "hello"}}, "")
 	pid, err := svc.Start()
 	if err != nil {
@@ -216,6 +230,7 @@ func TestEnvironment(t *testing.T) {
 }
 
 func TestWorkingDir(t *testing.T) {
+	t.Parallel()
 	svc := New(Process{Command: "true", WorkingDir: os.TempDir()}, "")
 	pid, err := svc.Start()
 	if err != nil {
@@ -227,6 +242,7 @@ func TestWorkingDir(t *testing.T) {
 }
 
 func TestParseExitActionValues(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		def      ExitAction
@@ -249,6 +265,7 @@ func TestParseExitActionValues(t *testing.T) {
 }
 
 func TestCustomKillDelay(t *testing.T) {
+	t.Parallel()
 	svc := New(Process{Command: "true", KillDelay: "30s"}, "")
 	if svc.killDelay != 30*time.Second {
 		t.Errorf("killDelay = %v", svc.killDelay)
@@ -290,6 +307,7 @@ func TestExpandEnvTemplates(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			env, err := buildEnvMap(tt.dotenv, tt.procEnv, false)
 			if err != nil {
 				t.Fatalf("buildEnvMap: %v", err)
@@ -311,6 +329,7 @@ func TestExpandEnvTemplates(t *testing.T) {
 }
 
 func TestDotEnv(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	envFile := dir + "/app.env"
 	os.WriteFile(envFile, []byte("MEMLIMIT=1024\nHOST=example.com\n# comment\n\nEMPTY=\n"), 0o644)
@@ -337,6 +356,7 @@ func TestDotEnv(t *testing.T) {
 }
 
 func TestDotEnvProcEnvOverrides(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	envFile := dir + "/app.env"
 	os.WriteFile(envFile, []byte("MEMLIMIT=1024\n"), 0o644)

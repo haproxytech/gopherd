@@ -40,6 +40,7 @@ func newTestDaemon(procs []service.Process) *daemon {
 }
 
 func TestBuildServices(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon([]service.Process{
 		{Name: "web", Command: "/bin/web"},
 		{Name: "worker", Command: "/bin/worker"},
@@ -56,6 +57,7 @@ func TestBuildServices(t *testing.T) {
 }
 
 func TestBuildServicesNameFallback(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon([]service.Process{
 		{Command: "/bin/myapp"},
 	})
@@ -65,6 +67,7 @@ func TestBuildServicesNameFallback(t *testing.T) {
 }
 
 func TestBuildServicesEntrypointArgs(t *testing.T) {
+	t.Parallel()
 	d := &daemon{
 		cfg: &yml.Config{
 			Processes: []service.Process{
@@ -98,6 +101,7 @@ func TestBuildServicesEntrypointArgs(t *testing.T) {
 }
 
 func TestBuildServicesNoEntrypointArgsWhenEmpty(t *testing.T) {
+	t.Parallel()
 	d := &daemon{
 		cfg: &yml.Config{
 			Processes: []service.Process{
@@ -118,6 +122,7 @@ func TestBuildServicesNoEntrypointArgsWhenEmpty(t *testing.T) {
 }
 
 func TestStartOrder(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon([]service.Process{
 		{Name: "web", Command: "/bin/web", After: []string{"db"}},
 		{Name: "db", Command: "/bin/db"},
@@ -145,6 +150,7 @@ func TestStartOrder(t *testing.T) {
 }
 
 func TestStartOrderCycle(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon([]service.Process{
 		{Name: "a", Command: "/bin/a", After: []string{"b"}},
 		{Name: "b", Command: "/bin/b", After: []string{"a"}},
@@ -156,6 +162,7 @@ func TestStartOrderCycle(t *testing.T) {
 }
 
 func TestInitiateShutdown(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon([]service.Process{
 		{Name: "app", Command: "/bin/app"},
 	})
@@ -168,7 +175,8 @@ func TestInitiateShutdown(t *testing.T) {
 	}
 }
 
-func TestHandleCheckFailureRestart(_ *testing.T) {
+func TestHandleCheckFailureRestart(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon([]service.Process{
 		{Name: "app", Command: "/bin/app", OnCheckFailure: map[string]string{"health": "restart"}},
 	})
@@ -177,6 +185,7 @@ func TestHandleCheckFailureRestart(_ *testing.T) {
 }
 
 func TestHandleCheckFailureShutdown(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon([]service.Process{
 		{Name: "app", Command: "/bin/app", OnCheckFailure: map[string]string{"health": "shutdown"}},
 	})
@@ -187,6 +196,7 @@ func TestHandleCheckFailureShutdown(t *testing.T) {
 }
 
 func TestHandleCheckFailureIgnore(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon([]service.Process{
 		{Name: "app", Command: "/bin/app", OnCheckFailure: map[string]string{"health": "ignore"}},
 	})
@@ -197,6 +207,7 @@ func TestHandleCheckFailureIgnore(t *testing.T) {
 }
 
 func TestHandleCheckFailureUnknownCheck(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon([]service.Process{
 		{Name: "app", Command: "/bin/app"},
 	})
@@ -208,6 +219,7 @@ func TestHandleCheckFailureUnknownCheck(t *testing.T) {
 }
 
 func TestHandleCheckFailureSkipsDuringShutdown(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon([]service.Process{
 		{Name: "app", Command: "/bin/app", OnCheckFailure: map[string]string{"health": "shutdown"}},
 	})
@@ -221,6 +233,7 @@ func TestHandleCheckFailureSkipsDuringShutdown(t *testing.T) {
 }
 
 func TestSetupControl(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon([]service.Process{
 		{Name: "app", Command: "/bin/app"},
 	})
@@ -279,6 +292,7 @@ func TestSetupControl(t *testing.T) {
 }
 
 func TestSetupControlListEmpty(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(nil)
 	ctrl := d.setupControl()
 	list := ctrl.ListFn()
@@ -288,6 +302,7 @@ func TestSetupControlListEmpty(t *testing.T) {
 }
 
 func TestWaitStatusCodeExited(t *testing.T) {
+	t.Parallel()
 	// WaitStatus where process exited normally with code 0.
 	ws := syscall.WaitStatus(0) // exited, status 0
 	code := waitStatusCode(ws)
@@ -297,6 +312,7 @@ func TestWaitStatusCodeExited(t *testing.T) {
 }
 
 func TestWaitStatusCodeExitedNonZero(t *testing.T) {
+	t.Parallel()
 	// WaitStatus for exit code 42: code << 8.
 	ws := syscall.WaitStatus(42 << 8)
 	code := waitStatusCode(ws)
@@ -306,6 +322,7 @@ func TestWaitStatusCodeExitedNonZero(t *testing.T) {
 }
 
 func TestWaitStatusCodeSignaled(t *testing.T) {
+	t.Parallel()
 	// WaitStatus for killed by SIGKILL (9).
 	ws := syscall.WaitStatus(int(syscall.SIGKILL))
 	code := waitStatusCode(ws)
@@ -315,6 +332,7 @@ func TestWaitStatusCodeSignaled(t *testing.T) {
 }
 
 func TestBuildServicesWithPrefix(t *testing.T) {
+	t.Parallel()
 	cfg := &yml.Config{
 		Prefix:    "global",
 		Processes: []service.Process{{Name: "app", Command: "/bin/app"}},
@@ -331,7 +349,8 @@ func TestBuildServicesWithPrefix(t *testing.T) {
 	}
 }
 
-func TestStopAllNoRunning(_ *testing.T) {
+func TestStopAllNoRunning(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon([]service.Process{
 		{Name: "app", Command: "/bin/app"},
 	})
@@ -340,6 +359,7 @@ func TestStopAllNoRunning(_ *testing.T) {
 }
 
 func TestCloseLogTargetsNoTargets(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon([]service.Process{
 		{Name: "app", Command: "/bin/app"},
 	})
@@ -351,6 +371,7 @@ func TestCloseLogTargetsNoTargets(t *testing.T) {
 }
 
 func TestStopChecksEmpty(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(nil)
 	// Should not panic with no checkers.
 	d.stopChecks()

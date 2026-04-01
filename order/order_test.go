@@ -19,6 +19,7 @@ import (
 )
 
 func TestNoDeps(t *testing.T) {
+	t.Parallel()
 	order, err := TopoSort([]Service{
 		{Name: "a"}, {Name: "b"}, {Name: "c"},
 	})
@@ -31,6 +32,7 @@ func TestNoDeps(t *testing.T) {
 }
 
 func TestAfter(t *testing.T) {
+	t.Parallel()
 	order, err := TopoSort([]Service{
 		{Name: "b", After: []string{"a"}},
 		{Name: "a"},
@@ -44,6 +46,7 @@ func TestAfter(t *testing.T) {
 }
 
 func TestBefore(t *testing.T) {
+	t.Parallel()
 	order, err := TopoSort([]Service{
 		{Name: "a", Before: []string{"b"}},
 		{Name: "b"},
@@ -57,6 +60,7 @@ func TestBefore(t *testing.T) {
 }
 
 func TestRequires(t *testing.T) {
+	t.Parallel()
 	order, err := TopoSort([]Service{
 		{Name: "b", Requires: []string{"a"}},
 		{Name: "a"},
@@ -70,6 +74,7 @@ func TestRequires(t *testing.T) {
 }
 
 func TestCycleDetected(t *testing.T) {
+	t.Parallel()
 	_, err := TopoSort([]Service{
 		{Name: "a", After: []string{"b"}},
 		{Name: "b", After: []string{"a"}},
@@ -80,6 +85,7 @@ func TestCycleDetected(t *testing.T) {
 }
 
 func TestDuplicateName(t *testing.T) {
+	t.Parallel()
 	_, err := TopoSort([]Service{
 		{Name: "a"}, {Name: "a"},
 	})
@@ -89,6 +95,7 @@ func TestDuplicateName(t *testing.T) {
 }
 
 func TestUnknownDep(t *testing.T) {
+	t.Parallel()
 	_, err := TopoSort([]Service{
 		{Name: "a", After: []string{"x"}},
 	})
@@ -98,6 +105,7 @@ func TestUnknownDep(t *testing.T) {
 }
 
 func TestComplex(t *testing.T) {
+	t.Parallel()
 	order, err := TopoSort([]Service{
 		{Name: "d", After: []string{"b", "c"}},
 		{Name: "a"},

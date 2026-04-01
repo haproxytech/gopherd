@@ -17,6 +17,7 @@ package memory
 import "testing"
 
 func TestEval(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		expr     string
 		totalMiB int64
@@ -55,6 +56,7 @@ func TestEval(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.expr, func(t *testing.T) {
+			t.Parallel()
 			got, err := Eval(tt.expr, tt.totalMiB)
 			if tt.wantErr {
 				if err == nil {

@@ -19,6 +19,7 @@ import (
 )
 
 func TestResolveCredentialNil(t *testing.T) {
+	t.Parallel()
 	cred, err := ResolveCredential("", "", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -29,6 +30,7 @@ func TestResolveCredentialNil(t *testing.T) {
 }
 
 func TestResolveCredentialByID(t *testing.T) {
+	t.Parallel()
 	uid := 1000
 	gid := 1000
 	cred, err := ResolveCredential("", "", &uid, &gid)
@@ -44,6 +46,7 @@ func TestResolveCredentialByID(t *testing.T) {
 }
 
 func TestResolveCredentialGroupOnly(t *testing.T) {
+	t.Parallel()
 	gid := 1000
 	cred, err := ResolveCredential("", "", nil, &gid)
 	if err != nil {

@@ -23,6 +23,7 @@ import (
 )
 
 func TestLoadConfigValid(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "test.yml")
 	os.WriteFile(cfgPath, []byte(`
@@ -44,6 +45,7 @@ processes:
 }
 
 func TestLoadConfigNoProcesses(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "empty.yml")
 	os.WriteFile(cfgPath, []byte("# empty\n"), 0o644)
@@ -55,6 +57,7 @@ func TestLoadConfigNoProcesses(t *testing.T) {
 }
 
 func TestLoadConfigFileNotFound(t *testing.T) {
+	t.Parallel()
 	_, err := yml.Load("/nonexistent/path.yml")
 	if err == nil {
 		t.Error("expected error for missing file")
@@ -62,6 +65,7 @@ func TestLoadConfigFileNotFound(t *testing.T) {
 }
 
 func TestLoadConfigFull(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "full.yml")
 	os.WriteFile(cfgPath, []byte(`

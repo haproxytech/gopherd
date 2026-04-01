@@ -107,6 +107,7 @@ func sendCommand(t *testing.T, socketPath, cmd string) string {
 }
 
 func TestList(t *testing.T) {
+	t.Parallel()
 	cs := newTestServer(t)
 	resp := sendCommand(t, cs.SocketPath, "list")
 	if !strings.Contains(resp, "svc1") || !strings.Contains(resp, "svc2") {
@@ -115,6 +116,7 @@ func TestList(t *testing.T) {
 }
 
 func TestStatus(t *testing.T) {
+	t.Parallel()
 	cs := newTestServer(t)
 	resp := sendCommand(t, cs.SocketPath, "status svc1")
 	if !strings.Contains(resp, "running") {
@@ -123,6 +125,7 @@ func TestStatus(t *testing.T) {
 }
 
 func TestStatusUnknown(t *testing.T) {
+	t.Parallel()
 	cs := newTestServer(t)
 	resp := sendCommand(t, cs.SocketPath, "status bogus")
 	if !strings.Contains(resp, "error:") {
@@ -131,6 +134,7 @@ func TestStatusUnknown(t *testing.T) {
 }
 
 func TestStartCmd(t *testing.T) {
+	t.Parallel()
 	cs := newTestServer(t)
 	resp := sendCommand(t, cs.SocketPath, "start svc1")
 	if !strings.Contains(resp, "started") {
@@ -139,6 +143,7 @@ func TestStartCmd(t *testing.T) {
 }
 
 func TestStopCmd(t *testing.T) {
+	t.Parallel()
 	cs := newTestServer(t)
 	resp := sendCommand(t, cs.SocketPath, "stop svc1")
 	if !strings.Contains(resp, "stop signal sent") {
@@ -147,6 +152,7 @@ func TestStopCmd(t *testing.T) {
 }
 
 func TestRestart(t *testing.T) {
+	t.Parallel()
 	cs := newTestServer(t)
 	resp := sendCommand(t, cs.SocketPath, "restart svc1")
 	if !strings.Contains(resp, "restart scheduled") {
@@ -155,6 +161,7 @@ func TestRestart(t *testing.T) {
 }
 
 func TestSignalCmd(t *testing.T) {
+	t.Parallel()
 	cs := newTestServer(t)
 	resp := sendCommand(t, cs.SocketPath, "signal svc1 SIGUSR2")
 	if !strings.Contains(resp, "sent SIGUSR2") {
@@ -163,6 +170,7 @@ func TestSignalCmd(t *testing.T) {
 }
 
 func TestSignalUnknownService(t *testing.T) {
+	t.Parallel()
 	cs := newTestServer(t)
 	resp := sendCommand(t, cs.SocketPath, "signal bogus SIGUSR2")
 	if !strings.Contains(resp, "error:") {
@@ -171,6 +179,7 @@ func TestSignalUnknownService(t *testing.T) {
 }
 
 func TestSignalMissingArgs(t *testing.T) {
+	t.Parallel()
 	cs := newTestServer(t)
 	resp := sendCommand(t, cs.SocketPath, "signal svc1")
 	if !strings.Contains(resp, "error:") {
@@ -179,6 +188,7 @@ func TestSignalMissingArgs(t *testing.T) {
 }
 
 func TestUnknownCommand(t *testing.T) {
+	t.Parallel()
 	cs := newTestServer(t)
 	resp := sendCommand(t, cs.SocketPath, "foobar")
 	if !strings.Contains(resp, "error:") {
@@ -187,6 +197,7 @@ func TestUnknownCommand(t *testing.T) {
 }
 
 func TestMissingServiceName(t *testing.T) {
+	t.Parallel()
 	cs := newTestServer(t)
 	resp := sendCommand(t, cs.SocketPath, "start")
 	if !strings.Contains(resp, "error:") {
@@ -195,6 +206,7 @@ func TestMissingServiceName(t *testing.T) {
 }
 
 func TestSocketCleanup(t *testing.T) {
+	t.Parallel()
 	path := testSocket(t)
 	cs := NewServer(Config{SocketPath: path})
 	cs.ListFn = func() string { return "" }
@@ -217,6 +229,7 @@ func TestSocketCleanup(t *testing.T) {
 }
 
 func TestStatsCmd(t *testing.T) {
+	t.Parallel()
 	cs := newTestServer(t)
 	resp := sendCommand(t, cs.SocketPath, "stats")
 	if !strings.Contains(resp, "svc1") {
@@ -225,6 +238,7 @@ func TestStatsCmd(t *testing.T) {
 }
 
 func TestReloadCmd(t *testing.T) {
+	t.Parallel()
 	cs := newTestServer(t)
 	resp := sendCommand(t, cs.SocketPath, "reload")
 	if !strings.Contains(resp, "reload: ok") {
@@ -233,6 +247,7 @@ func TestReloadCmd(t *testing.T) {
 }
 
 func TestLogsRecent(t *testing.T) {
+	t.Parallel()
 	cs := newTestServer(t)
 	resp := sendCommand(t, cs.SocketPath, "logs svc1")
 	if !strings.Contains(resp, "line1") || !strings.Contains(resp, "line2") {
@@ -241,6 +256,7 @@ func TestLogsRecent(t *testing.T) {
 }
 
 func TestLogsFollow(t *testing.T) {
+	t.Parallel()
 	cs := newTestServer(t)
 	resp := sendCommand(t, cs.SocketPath, "logs svc1 -f")
 	// Should contain both recent and live lines.
@@ -253,6 +269,7 @@ func TestLogsFollow(t *testing.T) {
 }
 
 func TestLogsUnknownService(t *testing.T) {
+	t.Parallel()
 	cs := newTestServer(t)
 	resp := sendCommand(t, cs.SocketPath, "logs bogus")
 	if !strings.Contains(resp, "error:") {
@@ -261,6 +278,7 @@ func TestLogsUnknownService(t *testing.T) {
 }
 
 func TestLogsMissingName(t *testing.T) {
+	t.Parallel()
 	cs := newTestServer(t)
 	resp := sendCommand(t, cs.SocketPath, "logs")
 	if !strings.Contains(resp, "error:") {
@@ -269,6 +287,7 @@ func TestLogsMissingName(t *testing.T) {
 }
 
 func TestClientCommands(t *testing.T) {
+	t.Parallel()
 	for _, cmd := range []string{"list", "stats", "start", "stop", "restart", "status", "signal", "logs", "reload"} {
 		if !ClientCommands[cmd] {
 			t.Errorf("expected %q to be a client command", cmd)
@@ -282,6 +301,7 @@ func TestClientCommands(t *testing.T) {
 }
 
 func TestClientCommandListFunc(t *testing.T) {
+	t.Parallel()
 	list := ClientCommandList()
 	if len(list) != len(ClientCommands) {
 		t.Errorf("got %d items, want %d", len(list), len(ClientCommands))
