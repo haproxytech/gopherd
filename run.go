@@ -112,7 +112,11 @@ func run(entrypointArgs []string) int {
 
 	// Start enabled services in dependency order.
 	for _, name := range startOrd {
-		svc := d.services[name]
+		svc, ok := d.services[name]
+		if !ok {
+			log.Printf("warning: service %s in start order but not found, skipping", name)
+			continue
+		}
 		if !svc.Enabled {
 			log.Printf("skipping disabled service %s", svc.Name)
 			continue
@@ -198,7 +202,11 @@ func run(entrypointArgs []string) int {
 	go func() {
 		for sig := range sigs {
 			d.mu.Lock()
-			sysSig := sig.(syscall.Signal)
+			sysSig, ok := sig.(syscall.Signal)
+			if !ok {
+				d.mu.Unlock()
+				continue
+			}
 			switch {
 			case sysSig == syscall.SIGTERM || sysSig == syscall.SIGINT:
 				if !d.shuttingDown {

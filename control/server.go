@@ -214,6 +214,9 @@ func (cs *Server) handleCommand(line string) string {
 
 	switch cmd {
 	case "list":
+		if cs.ListFn == nil {
+			return "error: list not supported"
+		}
 		return cs.ListFn()
 
 	case "stats":
@@ -238,6 +241,9 @@ func (cs *Server) handleCommand(line string) string {
 		case "status":
 			fn = cs.StatusFn
 		}
+		if fn == nil {
+			return fmt.Sprintf("error: %s not supported", cmd)
+		}
 		msg, err := fn(name)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err)
@@ -247,6 +253,9 @@ func (cs *Server) handleCommand(line string) string {
 	case "signal":
 		if len(parts) < 3 {
 			return "error: signal requires <service> <signal-name>"
+		}
+		if cs.SignalFn == nil {
+			return "error: signal not supported"
 		}
 		msg, err := cs.SignalFn(parts[1], parts[2])
 		if err != nil {

@@ -339,7 +339,10 @@ func (d *daemon) reload() (string, error) {
 	// Collect services that need starting.
 	var toStart []*service.Service
 	for _, name := range startOrd {
-		svc := d.services[name]
+		svc, ok := d.services[name]
+		if !ok {
+			continue
+		}
 		if !svc.Enabled || svc.Oneshot {
 			continue
 		}
@@ -454,8 +457,12 @@ func (d *daemon) setupControl() *control.Server {
 		if svc.IsRunning() {
 			svc.Stop()
 		}
-		d.restartCh <- restartReq{svc: svc, delay: 0}
-		return fmt.Sprintf("%s: restart scheduled", name), nil
+		select {
+		case d.restartCh <- restartReq{svc: svc, delay: 0}:
+			return fmt.Sprintf("%s: restart scheduled", name), nil
+		default:
+			return "", fmt.Errorf("restart queue full, try again later")
+		}
 	}
 	ctrlServer.ReloadFn = func() (string, error) {
 		return d.reload()
