@@ -177,9 +177,9 @@ func (d *daemon) reload() (string, error) {
 	}
 
 	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	if d.shuttingDown {
+		d.mu.Unlock()
 		return "", fmt.Errorf("shutting down, reload not possible")
 	}
 
@@ -228,12 +228,15 @@ func (d *daemon) reload() (string, error) {
 		}
 	}
 
-	// Start new or changed services.
+	// Compute start order while still holding the lock.
 	startOrd, err := d.startOrder()
 	if err != nil {
+		d.mu.Unlock()
 		return "", fmt.Errorf("reload dependencies: %w", err)
 	}
 
+	// Collect services that need starting.
+	var toStart []*service.Service
 	for _, name := range startOrd {
 		svc := d.services[name]
 		if !svc.Enabled || svc.Oneshot {
@@ -242,8 +245,16 @@ func (d *daemon) reload() (string, error) {
 		if svc.IsRunning() {
 			continue // already running (preserved from old config)
 		}
+		toStart = append(toStart, svc)
+	}
+
+	// Release the lock before starting services, since startService
+	// acquires d.mu internally to update pidMap.
+	d.mu.Unlock()
+
+	for _, svc := range toStart {
 		if err := d.startService(svc); err != nil {
-			log.Printf("reload: start %s failed: %v", name, err)
+			log.Printf("reload: start %s failed: %v", svc.Name, err)
 		}
 	}
 
