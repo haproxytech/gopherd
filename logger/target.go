@@ -26,8 +26,8 @@ import (
 
 // TargetConfig defines a log forwarding target.
 type TargetConfig struct {
-	Labels   map[string]string   // custom metadata
-	Type     string                // "syslog"
+	Labels   map[string]string // custom metadata
+	Type     string            // "syslog"
 	Location string            // e.g. "udp://logs.example.com:514"
 	Services []string          // filter: only these service names
 }

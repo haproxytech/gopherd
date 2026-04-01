@@ -370,8 +370,8 @@ func run(entrypointArgs []string) int {
 // race conditions with the main reap loop or PID reuse.
 func waitOneshot(pid int, timeoutStr string) (int, error) {
 	type waitResult struct {
-		code int
 		err  error
+		code int
 	}
 	ch := make(chan waitResult, 1)
 	go func() {

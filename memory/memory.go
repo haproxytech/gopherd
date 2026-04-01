@@ -169,11 +169,11 @@ func selfCgroupPath(prefix string) string {
 	if err != nil {
 		return ""
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		if prefix == "0::" {
 			// Cgroup v2: line starts with "0::".
-			if strings.HasPrefix(line, "0::") {
-				return strings.TrimPrefix(line, "0::")
+			if path, ok := strings.CutPrefix(line, "0::"); ok {
+				return path
 			}
 			continue
 		}
@@ -182,7 +182,7 @@ func selfCgroupPath(prefix string) string {
 		if len(parts) != 3 {
 			continue
 		}
-		for _, ctrl := range strings.Split(parts[1], ",") {
+		for ctrl := range strings.SplitSeq(parts[1], ",") {
 			if ctrl == prefix {
 				return parts[2]
 			}

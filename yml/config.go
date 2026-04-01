@@ -29,9 +29,9 @@ import (
 type Config struct {
 	Checks     map[string]check.Config
 	LogTargets map[string]logger.TargetConfig
+	Prefix     string
 	Control    control.Config
 	Processes  []service.Process
-	Prefix     string
 	NoLogo     bool
 }
 
@@ -95,32 +95,32 @@ func Unmarshal(data []byte) (*Config, error) {
 
 func parseProcess(n *Node) service.Process {
 	p := service.Process{
-		Name:           n.Get("name").String(),
-		Command:        n.Get("command").String(),
-		Args:           n.Get("args").Strings(),
-		WorkingDir:     n.Get("working-dir").String(),
-		User:           n.Get("user").String(),
-		Group:          n.Get("group").String(),
-		Startup:        n.Get("startup").String(),
-		StopSignal:     n.Get("stop-signal").String(),
-		KillDelay:      n.Get("kill-delay").String(),
-		OnSuccess:      n.Get("on-success").String(),
-		OnFailure:      n.Get("on-failure").String(),
-		BackoffDelay:   n.Get("backoff-delay").String(),
-		BackoffLimit:   n.Get("backoff-limit").String(),
-		ReadyCheck:       n.Get("ready-check").String(),
-		ReadyTimeout:     n.Get("ready-timeout").String(),
-		StartupTimeout:   n.Get("startup-timeout").String(),
+		Name:              n.Get("name").String(),
+		Command:           n.Get("command").String(),
+		Args:              n.Get("args").Strings(),
+		WorkingDir:        n.Get("working-dir").String(),
+		User:              n.Get("user").String(),
+		Group:             n.Get("group").String(),
+		Startup:           n.Get("startup").String(),
+		StopSignal:        n.Get("stop-signal").String(),
+		KillDelay:         n.Get("kill-delay").String(),
+		OnSuccess:         n.Get("on-success").String(),
+		OnFailure:         n.Get("on-failure").String(),
+		BackoffDelay:      n.Get("backoff-delay").String(),
+		BackoffLimit:      n.Get("backoff-limit").String(),
+		ReadyCheck:        n.Get("ready-check").String(),
+		ReadyTimeout:      n.Get("ready-timeout").String(),
+		StartupTimeout:    n.Get("startup-timeout").String(),
 		UseEntrypointArgs: n.Get("use-entrypoint-args").Bool(),
 		CleanEnv:          n.Get("clean-env").Bool(),
-		DotEnv:         n.Get("dotenv").String(),
-		After:          n.Get("after").Strings(),
-		Before:         n.Get("before").Strings(),
-		Requires:       n.Get("requires").Strings(),
-		Environment:    n.Get("environment").StringMap(),
-		OnCheckFailure: n.Get("on-check-failure").StringMap(),
-		UserID:         n.Get("user-id").IntPtr(),
-		GroupID:        n.Get("group-id").IntPtr(),
+		DotEnv:            n.Get("dotenv").String(),
+		After:             n.Get("after").Strings(),
+		Before:            n.Get("before").Strings(),
+		Requires:          n.Get("requires").Strings(),
+		Environment:       n.Get("environment").StringMap(),
+		OnCheckFailure:    n.Get("on-check-failure").StringMap(),
+		UserID:            n.Get("user-id").IntPtr(),
+		GroupID:           n.Get("group-id").IntPtr(),
 	}
 	if v, ok := n.Get("backoff-factor").Float(); ok {
 		p.BackoffFactor = v

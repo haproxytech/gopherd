@@ -168,7 +168,7 @@ func TestInitiateShutdown(t *testing.T) {
 	}
 }
 
-func TestHandleCheckFailureRestart(t *testing.T) {
+func TestHandleCheckFailureRestart(_ *testing.T) {
 	d := newTestDaemon([]service.Process{
 		{Name: "app", Command: "/bin/app", OnCheckFailure: map[string]string{"health": "restart"}},
 	})
@@ -331,7 +331,7 @@ func TestBuildServicesWithPrefix(t *testing.T) {
 	}
 }
 
-func TestStopAllNoRunning(t *testing.T) {
+func TestStopAllNoRunning(_ *testing.T) {
 	d := newTestDaemon([]service.Process{
 		{Name: "app", Command: "/bin/app"},
 	})

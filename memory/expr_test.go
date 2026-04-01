@@ -49,7 +49,7 @@ func TestEval(t *testing.T) {
 		// Errors.
 		{"", 3000, 0, true},
 		{"abc", 3000, 0, true},
-		{"0%", 3000, 0, true},           // zero result
+		{"0%", 3000, 0, true},             // zero result
 		{"100% - 4000MiB", 3000, 0, true}, // negative result
 	}
 

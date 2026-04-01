@@ -42,7 +42,7 @@ processes:
 	if code != 0 {
 		t.Fatalf("exit %d\noutput:\n%s", code, out)
 	}
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.Contains(line, "hello-prefix") {
 			if !strings.Contains(line, "[greeter]") {
 				t.Errorf("missing [greeter] tag in line: %s", line)
@@ -86,7 +86,7 @@ processes:
 		t.Fatalf("exit %d\noutput:\n%s", code, out)
 	}
 
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.Contains(line, "svc1-output") {
 			if !strings.Contains(line, "[svc1]") {
 				t.Errorf("missing [svc1] in: %s", line)
@@ -129,7 +129,7 @@ processes:
 	if code != 0 {
 		t.Fatalf("exit %d\noutput:\n%s", code, out)
 	}
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.Contains(line, "raw-output-line") {
 			if strings.Contains(line, "[raw]") {
 				t.Errorf("prefix=none should not include service tag: %s", line)
@@ -162,7 +162,7 @@ processes:
 	if code != 0 {
 		t.Fatalf("exit %d\noutput:\n%s", code, out)
 	}
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.Contains(line, "service-only-line") {
 			if !strings.Contains(line, "[svc]") {
 				t.Errorf("expected [svc] prefix, got: %s", line)
@@ -199,7 +199,7 @@ processes:
 	if code != 0 {
 		t.Fatalf("exit %d\noutput:\n%s", code, out)
 	}
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.Contains(line, "timestamp-only-line") {
 			if strings.Contains(line, "[svc]") {
 				t.Errorf("prefix=timestamp should not include service tag: %s", line)

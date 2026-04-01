@@ -29,7 +29,7 @@ const defaultRingSize = 200
 // Prevents unbounded memory growth from output without newlines.
 const maxBufSize = 1 << 20 // 1 MB
 
-// Default prefix format: service name followed by timestamp.
+// DefaultPrefix is the default log prefix format: service name followed by timestamp.
 const DefaultPrefix = "service timestamp"
 
 // PrefixWriter is a line-buffered io.Writer that prefixes each line with
@@ -47,14 +47,14 @@ const DefaultPrefix = "service timestamp"
 // Partial lines are buffered until a newline is received.
 // Supports subscribers for live log streaming and a ring buffer for recent history.
 type PrefixWriter struct {
-	dest   io.Writer
-	name   string
-	buf    []byte
-	extra  []io.Writer // additional writers (log targets)
-	ring   [][]byte    // ring buffer of recent prefixed lines
-	subs   []chan []byte
-	mu     sync.Mutex
-	parts  []string // parsed prefix components
+	dest  io.Writer
+	name  string
+	buf   []byte
+	extra []io.Writer // additional writers (log targets)
+	ring  [][]byte    // ring buffer of recent prefixed lines
+	subs  []chan []byte
+	parts []string // parsed prefix components
+	mu    sync.Mutex
 }
 
 // NewPrefixWriter creates a new PrefixWriter. The prefix string controls which
@@ -72,7 +72,7 @@ func parsePrefixParts(prefix string) []string {
 		return nil
 	}
 	var parts []string
-	for _, tok := range strings.Fields(prefix) {
+	for tok := range strings.FieldsSeq(prefix) {
 		switch tok {
 		case "timestamp", "service":
 			parts = append(parts, tok)

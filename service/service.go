@@ -18,6 +18,7 @@ package service
 import (
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"os/exec"
 	"regexp"
@@ -61,34 +62,34 @@ func ParseExitAction(s string, defaultAction ExitAction) ExitAction {
 
 // Process holds the configuration for a single process.
 type Process struct {
-	UserID         *int             
-	GroupID        *int             
-	Environment    map[string]string
-	OnCheckFailure map[string]string
-	Name           string           
-	Command        string           
-	WorkingDir     string           
-	User           string           
-	Group          string           
-	Startup        string           
-	StopSignal     string           
-	KillDelay      string           
-	OnSuccess      string           
-	OnFailure      string           
-	BackoffDelay   string           
-	BackoffLimit   string           
-	ReadyCheck       string
-	ReadyTimeout     string
-	StartupTimeout   string
+	UserID            *int
+	GroupID           *int
+	Environment       map[string]string
+	OnCheckFailure    map[string]string
+	Name              string
+	Command           string
+	WorkingDir        string
+	User              string
+	Group             string
+	Startup           string
+	StopSignal        string
+	KillDelay         string
+	OnSuccess         string
+	OnFailure         string
+	BackoffDelay      string
+	BackoffLimit      string
+	ReadyCheck        string
+	ReadyTimeout      string
+	StartupTimeout    string
+	DotEnv            string
+	Prefix            string
+	Args              []string
+	After             []string
+	Before            []string
+	Requires          []string
+	BackoffFactor     float64
 	UseEntrypointArgs bool
-	CleanEnv       bool
-	DotEnv         string
-	Args           []string
-	After          []string         
-	Before         []string         
-	Requires       []string         
-	BackoffFactor  float64
-	Prefix         string
+	CleanEnv          bool
 }
 
 // Service wraps a Process config with runtime state for lifecycle management.
@@ -102,6 +103,8 @@ type Service struct {
 	Stderr *logger.PrefixWriter
 
 	cmd       *exec.Cmd
+	killTimer *time.Timer // deferred SIGKILL; cancelled on exit to prevent PID reuse race
+
 	Name      string
 	OnSuccess ExitAction
 	OnFailure ExitAction
@@ -109,7 +112,6 @@ type Service struct {
 	Proc Process
 
 	stopSignal syscall.Signal
-	killTimer  *time.Timer // deferred SIGKILL; cancelled on exit to prevent PID reuse race
 	killDelay  time.Duration
 	Pid        int
 
@@ -204,7 +206,7 @@ func parseDotEnv(path string) (map[string]string, error) {
 		return nil, fmt.Errorf("dotenv %s: %w", path, err)
 	}
 	env := make(map[string]string)
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -236,13 +238,9 @@ func buildEnvMap(dotenvPath string, procEnv map[string]string, cleanEnv bool) (m
 		if err != nil {
 			return nil, err
 		}
-		for k, v := range dotenv {
-			env[k] = v
-		}
+		maps.Copy(env, dotenv)
 	}
-	for k, v := range procEnv {
-		env[k] = v
-	}
+	maps.Copy(env, procEnv)
 	return env, nil
 }
 

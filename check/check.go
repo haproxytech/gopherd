@@ -36,25 +36,25 @@ type HTTP struct {
 // TCP defines a TCP health check.
 type TCP struct {
 	Host string
-	Port int   
+	Port int
 }
 
 // Exec defines a command-based health check.
 type Exec struct {
-	Command string  
+	Command string
 	Args    []string
 }
 
 // Config defines a single health check from config.
 type Config struct {
-	HTTP         *HTTP 
-	TCP          *TCP  
-	Exec         *Exec 
+	HTTP         *HTTP
+	TCP          *TCP
+	Exec         *Exec
 	Period       string
 	Timeout      string
 	InitialDelay string // delay before first check (default: 1x period)
-	Level        string         // "alive" or "ready"
-	Threshold    int   
+	Level        string // "alive" or "ready"
+	Threshold    int
 }
 
 // Checker runs a single health check on a periodic loop.

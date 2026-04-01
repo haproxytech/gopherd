@@ -92,7 +92,7 @@ func writeFiles(t *testing.T, files map[string]string) string {
 }
 
 type containerOpts struct {
-	user    string // --user flag (e.g. "1234:1234" for non-root)
+	user      string // --user flag (e.g. "1234:1234" for non-root)
 	extraArgs []string
 }
 
@@ -105,7 +105,8 @@ func runContainer(t *testing.T, files map[string]string, timeout time.Duration, 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	args := []string{"run", "--rm",
+	args := []string{
+		"run", "--rm",
 		"-v", dir + ":/test",
 		"-e", "GOPHERD_CONFIG=/test/gopherd.yml",
 	}
@@ -163,7 +164,8 @@ func runDetached(t *testing.T, files map[string]string, opts ...containerOpts) *
 	dir := writeFiles(t, files)
 	name := fmt.Sprintf("gopherd-e2e-%s-%d", sanitize(t.Name()), time.Now().UnixNano()%100000)
 
-	args := []string{"run", "-d", "--name", name,
+	args := []string{
+		"run", "-d", "--name", name,
 		"-v", dir + ":/test",
 		"-e", "GOPHERD_CONFIG=/test/gopherd.yml",
 	}
