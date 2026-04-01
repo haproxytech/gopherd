@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -47,6 +48,7 @@ type Checker struct {
 	stopCh       chan struct{}
 	onFailureFn  func(checkName string)          // called when threshold breached
 	metricsFn    func(checkName string, ok bool) // called after every check
+	credential   *syscall.Credential             // optional: run exec checks as this user
 	name         string
 	cfg          Config
 	period       time.Duration
@@ -257,8 +259,20 @@ func (c *Checker) checkTCP(ctx context.Context) error {
 
 func (c *Checker) checkExec(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, c.cfg.Exec.Command, c.cfg.Exec.Args...)
+	if c.credential != nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Credential: c.credential,
+			Setpgid:    true,
+		}
+	}
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("exec check: %w", err)
 	}
 	return nil
+}
+
+// SetCredential sets the credential for exec health checks so they run
+// as the associated service's user instead of as root.
+func (c *Checker) SetCredential(cred *syscall.Credential) {
+	c.credential = cred
 }

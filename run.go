@@ -128,6 +128,14 @@ func run(entrypointArgs []string) int {
 			if err != nil {
 				log.Fatalf("%s: ready check: %v", svc.Name, err)
 			}
+			if checkCfg.Exec != nil {
+				cred, credErr := service.ResolveCredential(svc.Proc.User, svc.Proc.Group, svc.Proc.UserID, svc.Proc.GroupID)
+				if credErr != nil {
+					log.Printf("warning: %s: ready-check credential: %v", svc.Name, credErr)
+				} else if cred != nil {
+					c.SetCredential(cred)
+				}
+			}
 			readyTimeout := 60 * time.Second
 			if svc.Proc.ReadyTimeout != "" {
 				readyTimeout, err = time.ParseDuration(svc.Proc.ReadyTimeout)

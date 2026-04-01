@@ -164,11 +164,34 @@ func (d *daemon) startOrder() ([]string, error) {
 }
 
 func (d *daemon) startChecks() {
+	// Build a map from check name to the credential of the service that
+	// references it (via on-check-failure or ready-check). Exec checks
+	// then run as that service's user instead of as root.
+	checkOwner := make(map[string]*service.Service)
+	for _, svc := range d.services {
+		if svc.Proc.ReadyCheck != "" {
+			checkOwner[svc.Proc.ReadyCheck] = svc
+		}
+		for checkName := range svc.OnCheckFailure {
+			if _, exists := checkOwner[checkName]; !exists {
+				checkOwner[checkName] = svc
+			}
+		}
+	}
+
 	for name, checkCfg := range d.cfg.Checks {
 		c, err := check.New(name, checkCfg, d.handleCheckFailure, d.m.CheckResult)
 		if err != nil {
 			log.Printf("warning: check %s: %v", name, err)
 			continue
+		}
+		if svc, ok := checkOwner[name]; ok && checkCfg.Exec != nil {
+			cred, err := service.ResolveCredential(svc.Proc.User, svc.Proc.Group, svc.Proc.UserID, svc.Proc.GroupID)
+			if err != nil {
+				log.Printf("warning: check %s: resolve credential: %v", name, err)
+			} else if cred != nil {
+				c.SetCredential(cred)
+			}
 		}
 		d.checkers = append(d.checkers, c)
 		c.Run()
