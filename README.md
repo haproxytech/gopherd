@@ -363,6 +363,23 @@ Core design:
 - SIGHUP triggers config hot-reload instead of being forwarded to children
 - Exit codes from services are propagated as gopherd's own exit code
 
+### Platform Support
+
+gopherd is designed for Linux containers. It compiles and runs on macOS for development and testing, with the following limitations:
+
+| Feature | Linux | macOS |
+|:--------|:------|:------|
+| Process management, signals, zombie reaping | Full | Full |
+| User/group switching | Full | Full |
+| Control socket | Full | Full |
+| Health checks (HTTP, TCP, exec) | Full | Full |
+| `{{mem EXPR}}` — system RAM detection | Full | Full |
+| `{{mem EXPR}}` — cgroup limit detection | Full | Not available (no cgroups) |
+| Control socket audit logging (peer UID) | Full (`SO_PEERCRED`) | Not available (uid=-1) |
+| Config file permission/ownership checks | Full | Partial (no root ownership convention) |
+
+Windows is not supported.
+
 ### Contributing
 
 Thanks for your interest in the project and your willingness to contribute:

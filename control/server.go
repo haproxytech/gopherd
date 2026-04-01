@@ -142,28 +142,6 @@ func (cs *Server) acceptLoop() {
 // Prevents slowloris-style attacks that hold connection slots indefinitely.
 const connReadTimeout = 5 * time.Second
 
-// peerUID returns the UID of the process on the other end of a Unix socket
-// connection using SO_PEERCRED. Returns -1 if credentials cannot be determined.
-func peerUID(conn net.Conn) int {
-	uc, ok := conn.(*net.UnixConn)
-	if !ok {
-		return -1
-	}
-	raw, err := uc.SyscallConn()
-	if err != nil {
-		return -1
-	}
-	var cred *syscall.Ucred
-	var credErr error
-	raw.Control(func(fd uintptr) {
-		cred, credErr = syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
-	})
-	if credErr != nil || cred == nil {
-		return -1
-	}
-	return int(cred.Uid)
-}
-
 func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 	defer conn.Close()
 	conn.SetReadDeadline(time.Now().Add(connReadTimeout))
