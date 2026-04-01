@@ -299,7 +299,9 @@ func (s *Service) Start() (int, error) {
 	return s.Pid, nil
 }
 
-// Stop sends the configured stop signal and schedules SIGKILL after kill-delay.
+// Stop sends the configured stop signal to the process group and schedules
+// SIGKILL after kill-delay. Signaling the group (negative PID) ensures that
+// children forked by the service also receive the signal.
 // The stopped flag is set so the reap loop knows this was an intentional exit.
 func (s *Service) Stop() {
 	s.mu.Lock()
@@ -308,12 +310,12 @@ func (s *Service) Stop() {
 		return
 	}
 	s.stopped = true
-	_ = s.cmd.Process.Signal(s.stopSignal)
+	_ = syscall.Kill(-s.Pid, s.stopSignal)
 	pid := s.Pid
 	delay := s.killDelay
 	if delay > 0 {
 		time.AfterFunc(delay, func() {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
 		})
 	}
 }
