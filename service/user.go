@@ -12,9 +12,11 @@ import (
 // Returns nil if no user or group information is specified.
 // Numeric IDs take precedence over names. If a user is specified without a group,
 // the user's primary group is used. If only a group is specified, the current
-// process UID is preserved.
+// process UID is preserved. When resolving by username, supplementary groups
+// are populated automatically.
 func ResolveCredential(userName, groupName string, userID, groupID *int) (*syscall.Credential, error) {
 	var uid, gid uint32
+	var groups []uint32
 	var hasUser, hasGroup bool
 
 	if userID != nil {
@@ -39,6 +41,16 @@ func ResolveCredential(userName, groupName string, userID, groupID *int) (*sysca
 			}
 			gid = uint32(id)
 			hasGroup = true
+		}
+		// Resolve supplementary groups.
+		groupIDs, err := u.GroupIds()
+		if err == nil {
+			for _, gidStr := range groupIDs {
+				g, err := strconv.ParseUint(gidStr, 10, 32)
+				if err == nil {
+					groups = append(groups, uint32(g))
+				}
+			}
 		}
 	}
 
@@ -67,5 +79,5 @@ func ResolveCredential(userName, groupName string, userID, groupID *int) (*sysca
 		uid = uint32(os.Getuid())
 	}
 
-	return &syscall.Credential{Uid: uid, Gid: gid}, nil
+	return &syscall.Credential{Uid: uid, Gid: gid, Groups: groups}, nil
 }
