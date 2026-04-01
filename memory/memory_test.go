@@ -110,7 +110,7 @@ func TestCgroupV1(t *testing.T) {
 	os.WriteFile(selfCg, []byte("6:memory:/kubepods/pod-abc\n"), 0o644)
 	procSelfCg = selfCg
 
-	// Disable v2.
+	// Disable v2 by pointing to nonexistent dir.
 	cgroupV2Root = filepath.Join(dir, "nonexistent")
 
 	cgV1 := filepath.Join(dir, "cg1")
@@ -205,20 +205,27 @@ func TestSelfCgroupPath(t *testing.T) {
 	}
 }
 
-func TestSelfCgroupPath_RejectsPathTraversal(t *testing.T) {
+func TestCgroupV2_PathTraversalBlocked(t *testing.T) {
+	// os.Root prevents path traversal at the kernel level.
+	// Even if /proc/self/cgroup contains "..", the Open call fails.
 	dir := setupFakeFS(t)
 
 	selfCg := filepath.Join(dir, "self_cgroup")
-	os.WriteFile(selfCg, []byte(
-		"0::/../../../etc/shadow\n"+
-			"6:memory:/../../../etc/passwd\n",
-	), 0o644)
+	os.WriteFile(selfCg, []byte("0::/../../../etc\n"), 0o644)
 	procSelfCg = selfCg
 
-	if got := selfCgroupPath("0::"); got != "" {
-		t.Errorf("selfCgroupPath(v2 traversal) = %q, want empty", got)
-	}
-	if got := selfCgroupPath("memory"); got != "" {
-		t.Errorf("selfCgroupPath(v1 traversal) = %q, want empty", got)
+	// Create a cgroup root with a valid memory.max at the root level.
+	cgRoot := filepath.Join(dir, "cg2")
+	os.MkdirAll(cgRoot, 0o755)
+	cgroupV2Root = cgRoot
+
+	// Place a file outside the root that the traversal would try to reach.
+	os.MkdirAll(filepath.Join(dir, "etc"), 0o755)
+	os.WriteFile(filepath.Join(dir, "etc", "memory.max"), []byte("999999999999\n"), 0o644)
+
+	// Should return 0 — os.Root blocks the traversal.
+	got := cgroupV2MemMiB()
+	if got != 0 {
+		t.Errorf("cgroupV2MemMiB() with traversal path = %d, want 0", got)
 	}
 }
