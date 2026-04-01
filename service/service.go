@@ -65,6 +65,7 @@ type Process struct {
 	ReadyCheck     string
 	ReadyTimeout   string
 	UseEntrypointArgs bool
+	CleanEnv       bool
 	DotEnv         string
 	Args           []string
 	After          []string         
@@ -92,6 +93,7 @@ type Service struct {
 	Proc Process
 
 	stopSignal syscall.Signal
+	killTimer  *time.Timer // deferred SIGKILL; cancelled on exit to prevent PID reuse race
 	killDelay  time.Duration
 	Pid        int
 
@@ -202,11 +204,15 @@ func parseDotEnv(path string) (map[string]string, error) {
 
 // buildEnvMap builds a merged environment map from OS env, dotenv file, and per-process overrides.
 // Priority (highest last): OS env < dotenv < per-process environment.
-func buildEnvMap(dotenvPath string, procEnv map[string]string) (map[string]string, error) {
+// If cleanEnv is true, the parent's environment is not inherited — only dotenv
+// and per-process vars are used. This prevents secrets from leaking to children.
+func buildEnvMap(dotenvPath string, procEnv map[string]string, cleanEnv bool) (map[string]string, error) {
 	env := make(map[string]string)
-	for _, e := range os.Environ() {
-		if k, v, ok := strings.Cut(e, "="); ok {
-			env[k] = v
+	if !cleanEnv {
+		for _, e := range os.Environ() {
+			if k, v, ok := strings.Cut(e, "="); ok {
+				env[k] = v
+			}
 		}
 	}
 	if dotenvPath != "" {
@@ -253,7 +259,7 @@ func (s *Service) Start() (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	env, err := buildEnvMap(s.Proc.DotEnv, s.Proc.Environment)
+	env, err := buildEnvMap(s.Proc.DotEnv, s.Proc.Environment, s.Proc.CleanEnv)
 	if err != nil {
 		return 0, err
 	}
@@ -272,8 +278,9 @@ func (s *Service) Start() (int, error) {
 		cmd.Dir = s.Proc.WorkingDir
 	}
 
-	// Pass dotenv + per-process vars into the child's environment too.
-	if s.Proc.DotEnv != "" || len(s.Proc.Environment) > 0 {
+	// Set the child's environment explicitly when dotenv, per-process vars,
+	// or clean-env is used. When cmd.Env is nil, Go inherits the parent env.
+	if s.Proc.CleanEnv || s.Proc.DotEnv != "" || len(s.Proc.Environment) > 0 {
 		cmd.Env = make([]string, 0, len(env))
 		for k, v := range env {
 			cmd.Env = append(cmd.Env, k+"="+v)
@@ -304,6 +311,8 @@ func (s *Service) Start() (int, error) {
 // SIGKILL after kill-delay. Signaling the group (negative PID) ensures that
 // children forked by the service also receive the signal.
 // The stopped flag is set so the reap loop knows this was an intentional exit.
+// The deferred SIGKILL timer is cancelled by MarkExited to prevent sending
+// SIGKILL to a recycled PID.
 func (s *Service) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -312,10 +321,9 @@ func (s *Service) Stop() {
 	}
 	s.stopped = true
 	_ = syscall.Kill(-s.Pid, s.stopSignal)
-	pid := s.Pid
-	delay := s.killDelay
-	if delay > 0 {
-		time.AfterFunc(delay, func() {
+	if s.killDelay > 0 {
+		pid := s.Pid
+		s.killTimer = time.AfterFunc(s.killDelay, func() {
 			_ = syscall.Kill(-pid, syscall.SIGKILL)
 		})
 	}
@@ -332,10 +340,16 @@ func (s *Service) Signal(sig os.Signal) {
 }
 
 // MarkExited marks the service as no longer running and returns how long it ran.
+// It cancels any pending deferred SIGKILL to prevent sending signals to a
+// recycled PID.
 func (s *Service) MarkExited() time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.running = false
+	if s.killTimer != nil {
+		s.killTimer.Stop()
+		s.killTimer = nil
+	}
 	return time.Since(s.startedAt)
 }
 

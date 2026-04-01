@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -82,6 +83,9 @@ processes:
     on-failure: shutdown
 `
 	os.WriteFile(filepath.Join(dc.dir, "gopherd.yml"), []byte(newCfg), 0o644)
+
+	// Fix ownership: bind-mounted files have host UID; chown to root inside container.
+	exec.Command("docker", "exec", dc.id, "chown", "root:root", "/test/gopherd.yml").Run()
 
 	dc.signal("HUP")
 	time.Sleep(2 * time.Second)

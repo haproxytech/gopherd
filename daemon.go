@@ -22,7 +22,16 @@ import (
 // group or others. This prevents privilege escalation via reload when
 // the control socket is accessible to non-root users.
 func checkConfigPermissions(path string) error {
-	info, err := os.Stat(path)
+	// Use Lstat to detect symlinks — a symlink could point to a file
+	// with different ownership/permissions than the link itself.
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("config %s is a symlink; refusing reload", path)
+	}
+	info, err = os.Stat(path)
 	if err != nil {
 		return err
 	}
@@ -33,6 +42,11 @@ func checkConfigPermissions(path string) error {
 	mode := info.Mode()
 	if mode&0o002 != 0 {
 		return fmt.Errorf("config %s is world-writable (mode %04o, owner uid=%d); refusing reload", path, mode.Perm(), stat.Uid)
+	}
+	// Verify the config file is owned by root or by gopherd's own UID.
+	euid := uint32(os.Geteuid())
+	if stat.Uid != 0 && stat.Uid != euid {
+		return fmt.Errorf("config %s is owned by uid %d (expected root or uid %d); refusing reload", path, stat.Uid, euid)
 	}
 	// Warn (but allow) if group-writable.
 	if mode&0o020 != 0 {

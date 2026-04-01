@@ -223,7 +223,14 @@ func (c *Checker) checkHTTP(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("http check: %w", err)
 	}
-	client := &http.Client{Timeout: c.timeout}
+	client := &http.Client{
+		Timeout: c.timeout,
+		// Disable redirect following to prevent SSRF via redirect chains
+		// (e.g., redirecting to cloud metadata endpoints).
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	if c.cfg.HTTP.Socket != "" {
 		client.Transport = &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {

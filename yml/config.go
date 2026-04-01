@@ -97,6 +97,7 @@ func parseProcess(n *Node) service.Process {
 		ReadyCheck:     n.Get("ready-check").String(),
 		ReadyTimeout:   n.Get("ready-timeout").String(),
 		UseEntrypointArgs: n.Get("use-entrypoint-args").Bool(),
+		CleanEnv:          n.Get("clean-env").Bool(),
 		DotEnv:         n.Get("dotenv").String(),
 		After:          n.Get("after").Strings(),
 		Before:         n.Get("before").Strings(),

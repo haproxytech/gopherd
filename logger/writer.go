@@ -11,6 +11,10 @@ import (
 
 const defaultRingSize = 200
 
+// maxBufSize is the maximum line buffer size before a forced flush.
+// Prevents unbounded memory growth from output without newlines.
+const maxBufSize = 1 << 20 // 1 MB
+
 // Default prefix format: service name followed by timestamp.
 const DefaultPrefix = "service timestamp"
 
@@ -108,6 +112,12 @@ func (pw *PrefixWriter) Write(p []byte) (int, error) {
 
 	total := len(p)
 	pw.buf = append(pw.buf, p...)
+
+	// If buffer exceeds max size without a newline, force a flush to prevent
+	// unbounded memory growth from binary or malicious output.
+	if len(pw.buf) > maxBufSize && !bytes.Contains(pw.buf, []byte{'\n'}) {
+		pw.buf = append(pw.buf, '\n')
+	}
 
 	for {
 		idx := bytes.IndexByte(pw.buf, '\n')

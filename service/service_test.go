@@ -276,7 +276,7 @@ func TestExpandEnvTemplates(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			env, err := buildEnvMap(tt.dotenv, tt.procEnv)
+			env, err := buildEnvMap(tt.dotenv, tt.procEnv, false)
 			if err != nil {
 				t.Fatalf("buildEnvMap: %v", err)
 			}
@@ -301,7 +301,7 @@ func TestDotEnv(t *testing.T) {
 	envFile := dir + "/app.env"
 	os.WriteFile(envFile, []byte("MEMLIMIT=1024\nHOST=example.com\n# comment\n\nEMPTY=\n"), 0o644)
 
-	env, err := buildEnvMap(envFile, nil)
+	env, err := buildEnvMap(envFile, nil, false)
 	if err != nil {
 		t.Fatalf("buildEnvMap: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestDotEnvProcEnvOverrides(t *testing.T) {
 	envFile := dir + "/app.env"
 	os.WriteFile(envFile, []byte("MEMLIMIT=1024\n"), 0o644)
 
-	env, err := buildEnvMap(envFile, map[string]string{"MEMLIMIT": "2048"})
+	env, err := buildEnvMap(envFile, map[string]string{"MEMLIMIT": "2048"}, false)
 	if err != nil {
 		t.Fatalf("buildEnvMap: %v", err)
 	}

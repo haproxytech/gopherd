@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // DefaultSocketMode is the default Unix socket file permission.
@@ -110,8 +111,13 @@ func (cs *Server) acceptLoop() {
 	}
 }
 
+// connReadTimeout is the maximum time to wait for a client to send a command.
+// Prevents slowloris-style attacks that hold connection slots indefinitely.
+const connReadTimeout = 5 * time.Second
+
 func (cs *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(connReadTimeout))
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {
 		return
@@ -120,6 +126,9 @@ func (cs *Server) handleConn(conn net.Conn) {
 	if line == "" {
 		return
 	}
+
+	// Clear deadline for command handling (logs -f may stream indefinitely).
+	conn.SetReadDeadline(time.Time{})
 
 	parts := strings.Fields(line)
 	// Handle streaming commands separately (they keep the conn open).
