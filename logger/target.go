@@ -121,19 +121,38 @@ func (sw *syslogWriter) Close() error {
 }
 
 // openFile opens a log file for append-only writing, creating parent
-// directories and the file itself if they don't exist.
+// directories and the file itself if they don't exist. The path must be
+// absolute to prevent relative path confusion. Symlinks in the path are
+// rejected to prevent TOCTOU attacks.
 func openFile(location string) (io.WriteCloser, error) {
-	path := location
-	if strings.HasPrefix(path, "file://") {
-		path = strings.TrimPrefix(path, "file://")
-	}
+	path := strings.TrimPrefix(location, "file://")
 	if path == "" {
 		return nil, fmt.Errorf("file log target requires a path")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("file log target path must be absolute: %s", path)
+	}
+
+	// Check parent directory for symlinks.
+	dir := filepath.Dir(path)
+	if info, err := os.Lstat(dir); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("log directory %s is a symlink; refusing", dir)
+		}
+	}
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create log directory: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+
+	// Check the file itself for symlinks if it already exists.
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("log file %s is a symlink; refusing", path)
+		}
+	}
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
 		return nil, fmt.Errorf("open log file %s: %w", path, err)
 	}

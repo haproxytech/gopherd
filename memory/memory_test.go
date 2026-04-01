@@ -204,3 +204,21 @@ func TestSelfCgroupPath(t *testing.T) {
 		t.Errorf("selfCgroupPath(blkio) = %q, want empty", got)
 	}
 }
+
+func TestSelfCgroupPath_RejectsPathTraversal(t *testing.T) {
+	dir := setupFakeFS(t)
+
+	selfCg := filepath.Join(dir, "self_cgroup")
+	os.WriteFile(selfCg, []byte(
+		"0::/../../../etc/shadow\n"+
+			"6:memory:/../../../etc/passwd\n",
+	), 0o644)
+	procSelfCg = selfCg
+
+	if got := selfCgroupPath("0::"); got != "" {
+		t.Errorf("selfCgroupPath(v2 traversal) = %q, want empty", got)
+	}
+	if got := selfCgroupPath("memory"); got != "" {
+		t.Errorf("selfCgroupPath(v1 traversal) = %q, want empty", got)
+	}
+}

@@ -138,23 +138,37 @@ func selfCgroupPath(prefix string) string {
 		return ""
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var path string
 		if prefix == "0::" {
 			// Cgroup v2: line starts with "0::".
 			if strings.HasPrefix(line, "0::") {
-				return strings.TrimPrefix(line, "0::")
+				path = strings.TrimPrefix(line, "0::")
+			} else {
+				continue
 			}
-			continue
-		}
-		// Cgroup v1: format is "N:controller[,controller]:path".
-		parts := strings.SplitN(line, ":", 3)
-		if len(parts) != 3 {
-			continue
-		}
-		for _, ctrl := range strings.Split(parts[1], ",") {
-			if ctrl == prefix {
-				return parts[2]
+		} else {
+			// Cgroup v1: format is "N:controller[,controller]:path".
+			parts := strings.SplitN(line, ":", 3)
+			if len(parts) != 3 {
+				continue
 			}
+			found := false
+			for _, ctrl := range strings.Split(parts[1], ",") {
+				if ctrl == prefix {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+			path = parts[2]
 		}
+		// Reject paths containing ".." to prevent path traversal.
+		if strings.Contains(path, "..") {
+			return ""
+		}
+		return path
 	}
 	return ""
 }

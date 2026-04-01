@@ -351,12 +351,28 @@ func run(entrypointArgs []string) int {
 // waitOneshot waits for a oneshot process to exit, with an optional timeout.
 // If timeoutStr is empty, it waits indefinitely. Returns the exit code or an
 // error if the timeout is exceeded.
+//
+// Uses a blocking Wait4 in a goroutine rather than WNOHANG polling to avoid
+// race conditions with the main reap loop or PID reuse.
 func waitOneshot(pid int, timeoutStr string) (int, error) {
-	if timeoutStr == "" {
-		// No timeout — blocking wait.
+	type waitResult struct {
+		code int
+		err  error
+	}
+	ch := make(chan waitResult, 1)
+	go func() {
 		var ws syscall.WaitStatus
-		syscall.Wait4(pid, &ws, 0, nil)
-		return waitStatusCode(ws), nil
+		_, err := syscall.Wait4(pid, &ws, 0, nil)
+		if err != nil {
+			ch <- waitResult{err: fmt.Errorf("wait4: %w", err)}
+			return
+		}
+		ch <- waitResult{code: waitStatusCode(ws)}
+	}()
+
+	if timeoutStr == "" {
+		r := <-ch
+		return r.code, r.err
 	}
 
 	timeout, err := time.ParseDuration(timeoutStr)
@@ -364,24 +380,11 @@ func waitOneshot(pid int, timeoutStr string) (int, error) {
 		return 0, fmt.Errorf("invalid startup-timeout %q: %w", timeoutStr, err)
 	}
 
-	deadline := time.After(timeout)
-	tick := time.NewTicker(50 * time.Millisecond)
-	defer tick.Stop()
-
-	for {
-		var ws syscall.WaitStatus
-		wpid, err := syscall.Wait4(pid, &ws, syscall.WNOHANG, nil)
-		if err != nil {
-			return 0, fmt.Errorf("wait4: %w", err)
-		}
-		if wpid == pid {
-			return waitStatusCode(ws), nil
-		}
-		select {
-		case <-deadline:
-			return 0, fmt.Errorf("timed out after %s", timeout)
-		case <-tick.C:
-		}
+	select {
+	case r := <-ch:
+		return r.code, r.err
+	case <-time.After(timeout):
+		return 0, fmt.Errorf("timed out after %s", timeout)
 	}
 }
 
