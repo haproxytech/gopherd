@@ -63,8 +63,9 @@ type Process struct {
 	OnFailure      string           
 	BackoffDelay   string           
 	BackoffLimit   string           
-	ReadyCheck     string
-	ReadyTimeout   string
+	ReadyCheck       string
+	ReadyTimeout     string
+	StartupTimeout   string
 	UseEntrypointArgs bool
 	CleanEnv       bool
 	DotEnv         string

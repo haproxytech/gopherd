@@ -20,11 +20,11 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Restart policies** — configurable `on-success` / `on-failure` actions: `restart`, `shutdown`, `ignore`
 - **Exponential backoff** — configurable delay, factor, and limit for restart attempts
 - **Service dependencies** — `after`, `before`, `requires` with topological sort
-- **Oneshot tasks** — run-once init tasks (e.g. config generation, permission setup) that complete before dependents start
+- **Oneshot tasks** — run-once init tasks (e.g. config generation, permission setup) that complete before dependents start, with optional `startup-timeout`
 - **Health checks** — HTTP (including over Unix socket), TCP, and exec-based checks with configurable period, timeout, and threshold
 - **Readiness gates** — block dependent services until a health check passes (not just until the process spawns)
 - **Log prefixing** — service name and timestamp on every output line (configurable format)
-- **Log targets** — forward logs to syslog (UDP/TCP)
+- **Log targets** — forward logs to syslog (UDP/TCP) or files
 - **Stats tracking** — service uptime, restarts, exits, and health check results via `gopherd stats`
 - **Control socket** — start/stop/restart/status/signal/reload/stats/logs services at runtime via Unix socket
 - **Log streaming** — `gopherd logs <service> -f` for live log tailing via control socket
@@ -32,6 +32,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Exit code propagation** — gopherd exits with the actual exit code of the service that triggered shutdown
 - **Entrypoint args** — pass Docker/Kubernetes entrypoint arguments to a designated service via `use-entrypoint-args: true`
 - **Entrypoint passthrough** — `docker run <image> /bin/sh` execs the command directly, bypassing the init system
+- **Graceful shutdown** — services stop in reverse dependency order (dependents first, then their dependencies)
 - **No root required** — works in rootless containers
 
 ### Usage
@@ -181,6 +182,7 @@ processes:
   - name: init-config
     command: /usr/local/bin/setup-config
     startup: oneshot                 # run once, block until done
+    startup-timeout: 30s             # kill if not done in 30s (default: no limit)
     on-failure: ignore               # optional: continue even if it fails
 
   - name: app
@@ -259,6 +261,10 @@ log-targets:
     services: [app]                  # only forward these services (empty = all)
     labels:
       env: production
+  app-log:
+    type: file
+    location: /var/log/app.log
+    services: [app]
 ```
 
 ### Configuration Reference
@@ -278,6 +284,7 @@ log-targets:
 | `group-id` | int | inherited | Run as group (numeric, takes precedence) |
 | `environment` | map | inherited | Extra environment variables |
 | `startup` | string | `"enabled"` | `"enabled"`, `"disabled"`, or `"oneshot"` |
+| `startup-timeout` | duration | | Max time for oneshot to complete (kills and fails if exceeded) |
 | `stop-signal` | string | `"SIGTERM"` | Signal name (with or without SIG prefix) |
 | `kill-delay` | duration | `"5s"` | Grace period before SIGKILL |
 | `on-success` | string | `"shutdown"` | Action on exit 0 |
@@ -322,7 +329,8 @@ log-targets:
 | `backoff/` | Exponential backoff with jitter for restarts |
 | `check/` | Health checks (HTTP, TCP, exec), unix socket transport, readiness gates |
 | `control/` | Unix socket control server + CLI client |
-| `logger/` | Line-buffered prefix writer, syslog log target forwarding |
+| `logger/` | Line-buffered prefix writer, syslog and file log target forwarding |
+| `memory/` | System and cgroup memory detection, memory expression parser |
 | `metrics/` | In-memory service and check statistics |
 | `order/` | Topological sort for service dependencies |
 | `version/` | Build version from Go's embedded VCS metadata |
@@ -332,6 +340,7 @@ Core design:
 - YAML config defines processes, checks, log targets, and control socket
 - Zero external dependencies — built-in YAML parser, no protobuf/prometheus
 - Single `Wait4(-1)` reap loop handles both managed children and orphaned zombies (no separate reaper goroutine — avoids race with `cmd.Wait()`)
+- Graceful shutdown stops services in reverse dependency order (dependents first)
 - Forwards SIGTERM, SIGINT to all children using per-service stop signals; other signals forwarded as-is
 - Each child gets its own process group (`Setpgid`)
 - Services start in topological order based on dependency graph

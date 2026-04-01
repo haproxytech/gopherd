@@ -5,6 +5,8 @@ import (
 	"io"
 	"log/syslog"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -44,8 +46,14 @@ func NewTarget(name string, cfg TargetConfig) (*Target, error) {
 			return nil, fmt.Errorf("log-target %s: %w", name, err)
 		}
 		lt.Writer = w
+	case "file":
+		w, err := openFile(cfg.Location)
+		if err != nil {
+			return nil, fmt.Errorf("log-target %s: %w", name, err)
+		}
+		lt.Writer = w
 	default:
-		return nil, fmt.Errorf("log-target %s: unsupported type %q (supported: syslog)", name, cfg.Type)
+		return nil, fmt.Errorf("log-target %s: unsupported type %q (supported: syslog, file)", name, cfg.Type)
 	}
 
 	return lt, nil
@@ -110,4 +118,24 @@ func sanitize(s string) string {
 
 func (sw *syslogWriter) Close() error {
 	return sw.w.Close()
+}
+
+// openFile opens a log file for append-only writing, creating parent
+// directories and the file itself if they don't exist.
+func openFile(location string) (io.WriteCloser, error) {
+	path := location
+	if strings.HasPrefix(path, "file://") {
+		path = strings.TrimPrefix(path, "file://")
+	}
+	if path == "" {
+		return nil, fmt.Errorf("file log target requires a path")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("create log directory: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open log file %s: %w", path, err)
+	}
+	return f, nil
 }

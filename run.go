@@ -82,6 +82,12 @@ func run(entrypointArgs []string) int {
 		log.Fatalf("dependencies: %v", err)
 	}
 
+	// Store reverse order for graceful shutdown (dependents stop first).
+	d.shutdownOrder = make([]string, len(startOrd))
+	for i, name := range startOrd {
+		d.shutdownOrder[len(startOrd)-1-i] = name
+	}
+
 	// Build log targets and services.
 	d.buildLogTargets()
 	d.buildServices()
@@ -100,10 +106,14 @@ func run(entrypointArgs []string) int {
 				log.Fatalf("oneshot %s: %v", svc.Name, err)
 			}
 			log.Printf("started oneshot %s (pid %d)", svc.Name, pid)
-			var ws syscall.WaitStatus
-			syscall.Wait4(pid, &ws, 0, nil)
-			code := waitStatusCode(ws)
+
+			code, err := waitOneshot(pid, svc.Proc.StartupTimeout)
 			svc.MarkExited()
+			if err != nil {
+				// Timeout — kill the process and fail.
+				syscall.Kill(-pid, syscall.SIGKILL)
+				log.Fatalf("oneshot %s: %v", svc.Name, err)
+			}
 			if code != 0 {
 				if svc.OnFailure == service.ActionIgnore {
 					log.Printf("oneshot %s exited with status %d (ignored)", svc.Name, code)
@@ -336,6 +346,43 @@ func run(entrypointArgs []string) int {
 	d.closeLogTargets()
 
 	return d.exitCode
+}
+
+// waitOneshot waits for a oneshot process to exit, with an optional timeout.
+// If timeoutStr is empty, it waits indefinitely. Returns the exit code or an
+// error if the timeout is exceeded.
+func waitOneshot(pid int, timeoutStr string) (int, error) {
+	if timeoutStr == "" {
+		// No timeout — blocking wait.
+		var ws syscall.WaitStatus
+		syscall.Wait4(pid, &ws, 0, nil)
+		return waitStatusCode(ws), nil
+	}
+
+	timeout, err := time.ParseDuration(timeoutStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid startup-timeout %q: %w", timeoutStr, err)
+	}
+
+	deadline := time.After(timeout)
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+
+	for {
+		var ws syscall.WaitStatus
+		wpid, err := syscall.Wait4(pid, &ws, syscall.WNOHANG, nil)
+		if err != nil {
+			return 0, fmt.Errorf("wait4: %w", err)
+		}
+		if wpid == pid {
+			return waitStatusCode(ws), nil
+		}
+		select {
+		case <-deadline:
+			return 0, fmt.Errorf("timed out after %s", timeout)
+		case <-tick.C:
+		}
+	}
 }
 
 func waitStatusCode(ws syscall.WaitStatus) int {

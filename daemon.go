@@ -67,6 +67,7 @@ type daemon struct {
 	checkers       []*check.Checker
 	logTargets     []*logger.Target
 	entrypointArgs []string
+	shutdownOrder  []string // reverse of start order for graceful shutdown
 	exitCode       int
 
 	mu           sync.Mutex
@@ -91,9 +92,23 @@ func (d *daemon) startService(svc *service.Service) error {
 	return nil
 }
 
+// stopAll stops services in reverse dependency order (dependents first,
+// then their dependencies). This ensures a service is stopped before the
+// services it depends on. Services not in the shutdown order (e.g. added
+// after startup) are stopped last.
 func (d *daemon) stopAll() {
-	for _, svc := range d.services {
-		svc.Stop()
+	stopped := make(map[string]bool)
+	for _, name := range d.shutdownOrder {
+		if svc, ok := d.services[name]; ok {
+			svc.Stop()
+			stopped[name] = true
+		}
+	}
+	// Stop any remaining services not in the order.
+	for name, svc := range d.services {
+		if !stopped[name] {
+			svc.Stop()
+		}
 	}
 }
 
@@ -299,6 +314,12 @@ func (d *daemon) reload() (string, error) {
 	if err != nil {
 		d.mu.Unlock()
 		return "", fmt.Errorf("reload dependencies: %w", err)
+	}
+
+	// Update shutdown order (reverse of start order).
+	d.shutdownOrder = make([]string, len(startOrd))
+	for i, name := range startOrd {
+		d.shutdownOrder[len(startOrd)-1-i] = name
 	}
 
 	// Collect services that need starting.
