@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/syslog"
 	"net/url"
+	"strings"
 )
 
 // TargetConfig defines a log forwarding target.
@@ -92,7 +93,19 @@ func openSyslog(location string) (io.WriteCloser, error) {
 }
 
 func (sw *syslogWriter) Write(p []byte) (int, error) {
-	return len(p), sw.w.Info(string(p))
+	return len(p), sw.w.Info(sanitize(string(p)))
+}
+
+// sanitize strips control characters (except newline and tab) from log
+// output before forwarding to syslog. This prevents services from injecting
+// ANSI escape sequences or carriage returns into syslog entries.
+func sanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 && r != '\n' && r != '\t' {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 func (sw *syslogWriter) Close() error {

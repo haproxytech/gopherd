@@ -2,15 +2,14 @@
 package service
 
 import (
-	"bytes"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
-	"text/template"
 	"time"
 
 	"github.com/haproxytech/gopherd/backoff"
@@ -225,8 +224,12 @@ func buildEnvMap(dotenvPath string, procEnv map[string]string) (map[string]strin
 	return env, nil
 }
 
-// expandEnvTemplates resolves Go template expressions (e.g. {{.MEMLIMIT}}) in
-// args using the merged environment. Args without templates are returned unchanged.
+// templateRe matches {{.VAR_NAME}} placeholders in args.
+var templateRe = regexp.MustCompile(`\{\{\s*\.(\w+)\s*\}\}`)
+
+// expandEnvTemplates resolves {{.VAR}} placeholders in args using the merged
+// environment. Missing keys expand to empty string. Args without placeholders
+// are returned unchanged.
 func expandEnvTemplates(args []string, env map[string]string) ([]string, error) {
 	out := make([]string, len(args))
 	for i, arg := range args {
@@ -234,15 +237,13 @@ func expandEnvTemplates(args []string, env map[string]string) ([]string, error) 
 			out[i] = arg
 			continue
 		}
-		t, err := template.New("").Option("missingkey=zero").Parse(arg)
-		if err != nil {
-			return nil, fmt.Errorf("bad template in arg %q: %w", arg, err)
-		}
-		var buf bytes.Buffer
-		if err := t.Execute(&buf, env); err != nil {
-			return nil, fmt.Errorf("expanding arg %q: %w", arg, err)
-		}
-		out[i] = buf.String()
+		out[i] = templateRe.ReplaceAllStringFunc(arg, func(match string) string {
+			sub := templateRe.FindStringSubmatch(match)
+			if len(sub) < 2 {
+				return match
+			}
+			return env[sub[1]]
+		})
 	}
 	return out, nil
 }

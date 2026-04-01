@@ -61,7 +61,14 @@ func NewServer(cfg Config) *Server {
 
 // Start begins listening. Call in a goroutine or before the reap loop.
 func (cs *Server) Start() error {
-	os.Remove(cs.SocketPath)
+	// Verify the socket path is not a symlink before removing, to prevent
+	// a TOCTOU attack where a symlink is placed at the socket path.
+	if info, err := os.Lstat(cs.SocketPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("control socket: %s is a symlink, refusing to replace", cs.SocketPath)
+		}
+		os.Remove(cs.SocketPath)
+	}
 
 	ln, err := net.Listen("unix", cs.SocketPath)
 	if err != nil {
@@ -74,7 +81,11 @@ func (cs *Server) Start() error {
 	return nil
 }
 
+// maxConns is the maximum number of concurrent control socket connections.
+const maxConns = 64
+
 func (cs *Server) acceptLoop() {
+	sem := make(chan struct{}, maxConns)
 	for {
 		conn, err := cs.listener.Accept()
 		if err != nil {
@@ -86,7 +97,16 @@ func (cs *Server) acceptLoop() {
 			}
 			continue
 		}
-		go cs.handleConn(conn)
+		select {
+		case sem <- struct{}{}:
+			go func() {
+				defer func() { <-sem }()
+				cs.handleConn(conn)
+			}()
+		default:
+			// At capacity — reject the connection.
+			conn.Close()
+		}
 	}
 }
 
