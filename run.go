@@ -287,7 +287,7 @@ func run(entrypointArgs []string) int {
 				log.Printf("restarting %s in %s", svc.Name, delay)
 				d.m.ServiceRestarted(svc.Name)
 				d.mu.Unlock()
-				d.restartCh <- restartReq{svc: svc, delay: delay}
+				go func() { d.restartCh <- restartReq{svc: svc, delay: delay} }()
 				continue
 
 			case service.ActionShutdown:
