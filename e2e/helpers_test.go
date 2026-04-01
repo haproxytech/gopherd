@@ -1,0 +1,220 @@
+package e2e
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+var imageName string
+
+func TestMain(m *testing.M) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		fmt.Fprintln(os.Stderr, "e2e: docker not found, skipping tests")
+		os.Exit(0)
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "e2e: docker daemon not running, skipping tests")
+		os.Exit(0)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "gopherd-e2e-docker-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: mktemp: %v\n", err)
+		os.Exit(1)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Build static Linux binary.
+	binPath := filepath.Join(tmpDir, "gopherd")
+	build := exec.Command("go", "build", "-o", binPath, "..")
+	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux")
+	build.Stdout = os.Stdout
+	build.Stderr = os.Stderr
+	if err := build.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: go build failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Copy Dockerfile next to the binary.
+	dockerfileSrc, _ := os.ReadFile("Dockerfile")
+	os.WriteFile(filepath.Join(tmpDir, "Dockerfile"), dockerfileSrc, 0o644)
+
+	// Build Docker image.
+	imageName = fmt.Sprintf("gopherd-e2e-%d", os.Getpid())
+	imgBuild := exec.Command("docker", "build", "-t", imageName, tmpDir)
+	imgBuild.Stdout = os.Stdout
+	imgBuild.Stderr = os.Stderr
+	if err := imgBuild.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: docker build failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	code := m.Run()
+
+	exec.Command("docker", "rmi", "-f", imageName).Run()
+	os.Exit(code)
+}
+
+// --- helpers ---
+
+func writeFiles(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	os.Chmod(dir, 0o777)
+	for name, content := range files {
+		p := filepath.Join(dir, name)
+		os.MkdirAll(filepath.Dir(p), 0o777)
+		if err := os.WriteFile(p, []byte(content), 0o755); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	return dir
+}
+
+type containerOpts struct {
+	user    string // --user flag (e.g. "1234:1234" for non-root)
+	extraArgs []string
+}
+
+// runContainer runs gopherd as PID 1 in Docker. If files contains "run.sh",
+// that script is used as the entrypoint instead (it should exec gopherd).
+func runContainer(t *testing.T, files map[string]string, timeout time.Duration, opts ...containerOpts) (dir string, exitCode int, output string) {
+	t.Helper()
+	dir = writeFiles(t, files)
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	args := []string{"run", "--rm",
+		"-v", dir + ":/test",
+		"-e", "GOPHERD_CONFIG=/test/gopherd.yml",
+	}
+	if len(opts) > 0 && opts[0].user != "" {
+		args = append(args, "--user", opts[0].user)
+	}
+	if len(opts) > 0 {
+		args = append(args, opts[0].extraArgs...)
+	}
+	if _, ok := files["run.sh"]; ok {
+		args = append(args, "--entrypoint", "/test/run.sh")
+	}
+	args = append(args, imageName)
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("container timed out after %s\noutput:\n%s", timeout, out)
+	}
+	exitCode = 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			t.Fatalf("docker run: %v\noutput:\n%s", err, out)
+		}
+	}
+	return dir, exitCode, string(out)
+}
+
+// runGopherdCmd runs gopherd with the given CLI args (not as daemon).
+func runGopherdCmd(t *testing.T, args ...string) (int, string) {
+	t.Helper()
+	dockerArgs := append([]string{"run", "--rm", imageName}, args...)
+	cmd := exec.Command("docker", dockerArgs...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return exitErr.ExitCode(), string(out)
+		}
+		t.Fatalf("docker run: %v", err)
+	}
+	return 0, string(out)
+}
+
+// detachedContainer wraps a background Docker container for signal tests.
+type detachedContainer struct {
+	id  string
+	dir string
+	t   *testing.T
+}
+
+func runDetached(t *testing.T, files map[string]string, opts ...containerOpts) *detachedContainer {
+	t.Helper()
+	dir := writeFiles(t, files)
+	name := fmt.Sprintf("gopherd-e2e-%s-%d", sanitize(t.Name()), time.Now().UnixNano()%100000)
+
+	args := []string{"run", "-d", "--name", name,
+		"-v", dir + ":/test",
+		"-e", "GOPHERD_CONFIG=/test/gopherd.yml",
+	}
+	if len(opts) > 0 && opts[0].user != "" {
+		args = append(args, "--user", opts[0].user)
+	}
+	if len(opts) > 0 {
+		args = append(args, opts[0].extraArgs...)
+	}
+	if _, ok := files["run.sh"]; ok {
+		args = append(args, "--entrypoint", "/test/run.sh")
+	}
+	args = append(args, imageName)
+
+	cmd := exec.Command("docker", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker run -d: %v\n%s", err, out)
+	}
+	return &detachedContainer{
+		id:  strings.TrimSpace(string(out)),
+		dir: dir,
+		t:   t,
+	}
+}
+
+func (dc *detachedContainer) signal(sig string) {
+	dc.t.Helper()
+	if out, err := exec.Command("docker", "kill", "-s", sig, dc.id).CombinedOutput(); err != nil {
+		dc.t.Fatalf("docker kill -s %s: %v\n%s", sig, err, out)
+	}
+}
+
+func (dc *detachedContainer) wait(timeout time.Duration) int {
+	dc.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "wait", dc.id).Output()
+	if err != nil {
+		dc.t.Fatalf("docker wait: %v", err)
+	}
+	var code int
+	fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &code)
+	return code
+}
+
+func (dc *detachedContainer) logs() string {
+	out, _ := exec.Command("docker", "logs", dc.id).CombinedOutput()
+	return string(out)
+}
+
+func (dc *detachedContainer) remove() {
+	exec.Command("docker", "rm", "-f", dc.id).Run()
+}
+
+func sanitize(s string) string {
+	r := strings.NewReplacer("/", "-", " ", "-")
+	return strings.ToLower(r.Replace(s))
+}
+
+func readTestFile(t *testing.T, dir, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	return string(data)
+}
