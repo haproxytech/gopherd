@@ -378,7 +378,17 @@ gopherd is designed for Linux containers. It also compiles and runs on macOS and
 | Control socket audit logging (peer UID) | Full (`SO_PEERCRED`) | Not available (uid=-1) |
 | Config file permission/ownership checks | Full | Partial (no root ownership convention) |
 
-Release binaries are built for Linux, macOS, and FreeBSD (see `.goreleaser.yml`). Windows is not supported.
+#### Build targets
+
+Release binaries cover all architectures used by the official `haproxy` Docker Library image and all `haproxytech/*` Docker images:
+
+| OS | Architectures |
+|:---|:-------------|
+| Linux | amd64, arm64, arm/v5, arm/v6, arm/v7, 386, ppc64le, riscv64, s390x |
+| macOS | amd64, arm64, arm, 386, ppc64le, s390x |
+| FreeBSD | amd64, arm64, arm, 386, ppc64le, s390x |
+
+Windows is not supported. See `.goreleaser.yml` for the full build matrix.
 
 ### Contributing
 

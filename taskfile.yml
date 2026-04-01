@@ -31,9 +31,48 @@ tasks:
           COUNT: 1
 
   build:
-    desc: "build gopherd binary"
+    desc: "build gopherd binary for current platform"
     cmds:
       - go build -o gopherd .
+
+  build-all:
+    desc: "cross-compile gopherd for all release platforms"
+    vars:
+      OUT: '{{default "/tmp/gopherd-build" .OUT}}'
+    cmds:
+      - mkdir -p {{.OUT}}
+      - |
+        set -e
+        platforms=(
+          "linux/386"
+          "linux/amd64"
+          "linux/arm/5"
+          "linux/arm/6"
+          "linux/arm/7"
+          "linux/arm64"
+          "linux/ppc64le"
+          "linux/riscv64"
+          "linux/s390x"
+          "darwin/amd64"
+          "darwin/arm64"
+          "freebsd/amd64"
+          "freebsd/arm64"
+        )
+        for p in "${platforms[@]}"; do
+          IFS='/' read -r os arch goarm <<< "$p"
+          name="gopherd-${os}-${arch}"
+          if [ -n "$goarm" ]; then
+            name="${name}v${goarm}"
+            export GOARM="$goarm"
+            arch="arm"
+          else
+            unset GOARM
+          fi
+          echo "building ${name}..."
+          CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -o "{{.OUT}}/${name}" . || exit 1
+        done
+        echo "all builds OK ({{.OUT}}/)"
+      - rm -rf {{.OUT}}
 
   test:
     desc: "run Go tests"
