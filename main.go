@@ -13,7 +13,7 @@ import (
 	"github.com/haproxytech/gopherd/version"
 )
 
-const defaultConfigPath = "/var/lib/gopherd/gopherd.yml"
+const defaultConfigPath = "/etc/gopherd/gopherd.yml"
 
 func main() {
 	log.SetFlags(0)

@@ -51,7 +51,7 @@ task format                   # go fix + betteralign + gofumpt
 GOPHERD_CONFIG=/path/to/config.yml ./gopherd
 ```
 
-Default config path: `/var/lib/gopherd/gopherd.yml` (override via `GOPHERD_CONFIG` env var).
+Default config path: `/etc/gopherd/gopherd.yml` (override via `GOPHERD_CONFIG` env var).
 
 #### Runtime control (client mode)
 
@@ -118,7 +118,7 @@ The service receives `["--base-flag", "--log-level=debug", "--feature-x"]`. Only
 ```dockerfile
 FROM your-base-image
 COPY gopherd /sbin/gopherd
-COPY gopherd.yml /var/lib/gopherd/gopherd.yml
+COPY gopherd.yml /etc/gopherd/gopherd.yml
 ENTRYPOINT ["/sbin/gopherd"]
 # Normal: runs as PID 1 init system
 # Debug:  docker run <image> /bin/sh  → passthrough to shell
