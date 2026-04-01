@@ -10,6 +10,9 @@ import (
 	"sync"
 )
 
+// DefaultSocketMode is the default Unix socket file permission.
+const DefaultSocketMode = os.FileMode(0o660)
+
 // DefaultSocketPath is the default Unix socket path.
 const DefaultSocketPath = "/run/gopherd.sock"
 
@@ -31,6 +34,7 @@ type Server struct {
 	LogsFn func(name string, follow bool) (recent [][]byte, ch <-chan []byte, unsub func(), err error)
 
 	SocketPath string
+	socketMode os.FileMode
 
 	mu     sync.Mutex
 	closed bool
@@ -39,6 +43,7 @@ type Server struct {
 // Config defines control socket configuration.
 type Config struct {
 	SocketPath string
+	SocketMode os.FileMode
 }
 
 // NewServer creates a new control server.
@@ -47,7 +52,11 @@ func NewServer(cfg Config) *Server {
 	if path == "" {
 		path = DefaultSocketPath
 	}
-	return &Server{SocketPath: path}
+	mode := cfg.SocketMode
+	if mode == 0 {
+		mode = DefaultSocketMode
+	}
+	return &Server{SocketPath: path, socketMode: mode}
 }
 
 // Start begins listening. Call in a goroutine or before the reap loop.
@@ -58,7 +67,7 @@ func (cs *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("control socket: %w", err)
 	}
-	os.Chmod(cs.SocketPath, 0o666)
+	os.Chmod(cs.SocketPath, cs.socketMode)
 
 	cs.listener = ln
 	go cs.acceptLoop()

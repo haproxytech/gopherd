@@ -3,6 +3,7 @@ package yml
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/haproxytech/gopherd/check"
 	"github.com/haproxytech/gopherd/control"
@@ -50,6 +51,13 @@ func Unmarshal(data []byte) (*Config, error) {
 
 	if n := root.Get("control"); n != nil {
 		cfg.Control.SocketPath = n.Get("socket").String()
+		if modeStr := n.Get("socket-mode").String(); modeStr != "" {
+			parsed, err := strconv.ParseUint(modeStr, 8, 32)
+			if err != nil {
+				return nil, fmt.Errorf("invalid control.socket-mode %q: %w", modeStr, err)
+			}
+			cfg.Control.SocketMode = os.FileMode(parsed)
+		}
 	}
 
 	for _, item := range root.Get("processes").Items() {

@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/haproxytech/gopherd/check"
@@ -15,6 +17,29 @@ import (
 	"github.com/haproxytech/gopherd/service"
 	"github.com/haproxytech/gopherd/yml"
 )
+
+// checkConfigPermissions verifies the config file is not writable by
+// group or others. This prevents privilege escalation via reload when
+// the control socket is accessible to non-root users.
+func checkConfigPermissions(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil // non-Linux; skip check
+	}
+	mode := info.Mode()
+	if mode&0o002 != 0 {
+		return fmt.Errorf("config %s is world-writable (mode %04o, owner uid=%d); refusing reload", path, mode.Perm(), stat.Uid)
+	}
+	// Warn (but allow) if group-writable.
+	if mode&0o020 != 0 {
+		log.Printf("warning: config %s is group-writable (mode %04o, owner uid=%d)", path, mode.Perm(), stat.Uid)
+	}
+	return nil
+}
 
 // daemon holds all mutable daemon state so reload can update it.
 type daemon struct {
@@ -171,6 +196,10 @@ func (d *daemon) closeLogTargets() {
 
 // reload re-reads the config and reconciles services, checks, and log targets.
 func (d *daemon) reload() (string, error) {
+	if err := checkConfigPermissions(d.configPath); err != nil {
+		return "", fmt.Errorf("reload blocked: %w", err)
+	}
+
 	newCfg, err := yml.Load(d.configPath)
 	if err != nil {
 		return "", fmt.Errorf("reload config: %w", err)
