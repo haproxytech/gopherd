@@ -66,6 +66,7 @@ type Process struct {
 	GroupID           *int
 	Environment       map[string]string
 	OnCheckFailure    map[string]string
+	CleanEnv          *bool
 	Name              string
 	Command           string
 	WorkingDir        string
@@ -89,7 +90,6 @@ type Process struct {
 	Requires          []string
 	BackoffFactor     float64
 	UseEntrypointArgs bool
-	CleanEnv          bool
 }
 
 // Service wraps a Process config with runtime state for lifecycle management.
@@ -292,7 +292,8 @@ func (s *Service) Start() (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	env, err := buildEnvMap(s.Proc.DotEnv, s.Proc.Environment, s.Proc.CleanEnv)
+	cleanEnv := s.Proc.CleanEnv != nil && *s.Proc.CleanEnv
+	env, err := buildEnvMap(s.Proc.DotEnv, s.Proc.Environment, cleanEnv)
 	if err != nil {
 		return 0, err
 	}
@@ -315,7 +316,7 @@ func (s *Service) Start() (int, error) {
 
 	// Set the child's environment explicitly when dotenv, per-process vars,
 	// or clean-env is used. When cmd.Env is nil, Go inherits the parent env.
-	if s.Proc.CleanEnv || s.Proc.DotEnv != "" || len(s.Proc.Environment) > 0 {
+	if cleanEnv || s.Proc.DotEnv != "" || len(s.Proc.Environment) > 0 {
 		// Expand {{mem}} and {{.VAR}} in environment values too.
 		envVals := make([]string, 0, len(env))
 		envKeys := make([]string, 0, len(env))

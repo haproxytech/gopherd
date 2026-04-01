@@ -32,6 +32,7 @@ type Config struct {
 	Prefix     string
 	Control    control.Config
 	Processes  []service.Process
+	CleanEnv   bool
 	NoLogo     bool
 }
 
@@ -62,6 +63,9 @@ func Unmarshal(data []byte) (*Config, error) {
 	if n := root.Get("no-logo"); n != nil {
 		cfg.NoLogo = n.Bool()
 	}
+	if n := root.Get("clean-env"); n != nil {
+		cfg.CleanEnv = n.Bool()
+	}
 
 	if n := root.Get("control"); n != nil {
 		cfg.Control.SocketPath = n.Get("socket").String()
@@ -75,7 +79,13 @@ func Unmarshal(data []byte) (*Config, error) {
 	}
 
 	for _, item := range root.Get("processes").Items() {
-		cfg.Processes = append(cfg.Processes, parseProcess(item))
+		p := parseProcess(item)
+		// If per-service clean-env is not set, inherit the global default.
+		if p.CleanEnv == nil && cfg.CleanEnv {
+			v := true
+			p.CleanEnv = &v
+		}
+		cfg.Processes = append(cfg.Processes, p)
 	}
 
 	for _, e := range root.Get("checks").Entries() {
@@ -112,7 +122,7 @@ func parseProcess(n *Node) service.Process {
 		ReadyTimeout:      n.Get("ready-timeout").String(),
 		StartupTimeout:    n.Get("startup-timeout").String(),
 		UseEntrypointArgs: n.Get("use-entrypoint-args").Bool(),
-		CleanEnv:          n.Get("clean-env").Bool(),
+		CleanEnv:          n.Get("clean-env").BoolPtr(),
 		DotEnv:            n.Get("dotenv").String(),
 		After:             n.Get("after").Strings(),
 		Before:            n.Get("before").Strings(),

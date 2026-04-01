@@ -172,6 +172,11 @@ Below is a full example showing all available options:
 #   "none"               — no prefix at all (raw output)
 # prefix: "service timestamp"
 
+# Global clean-env default. When true, all services start with an empty
+# environment — only variables from dotenv and per-process environment are
+# passed. Individual services can override with clean-env: false.
+# clean-env: true
+
 # Control socket
 control:
   socket: /run/gopherd.sock          # Unix socket path for runtime control
@@ -269,6 +274,14 @@ log-targets:
 
 ### Configuration Reference
 
+#### Global fields
+
+| Field | Type | Default | Description |
+|:------|:-----|:--------|:------------|
+| `prefix` | string | `"service timestamp"` | Log prefix format for all services |
+| `clean-env` | bool | `false` | Global default: start services with empty environment |
+| `no-logo` | bool | `false` | Suppress ASCII art banner at startup |
+
 #### Process fields
 
 | Field | Type | Default | Description |
@@ -283,6 +296,7 @@ log-targets:
 | `user-id` | int | inherited | Run as user (numeric, takes precedence) |
 | `group-id` | int | inherited | Run as group (numeric, takes precedence) |
 | `environment` | map | inherited | Extra environment variables |
+| `clean-env` | bool | global default | Start with empty environment (only dotenv + environment vars) |
 | `startup` | string | `"enabled"` | `"enabled"`, `"disabled"`, or `"oneshot"` |
 | `startup-timeout` | duration | | Max time for oneshot to complete (kills and fails if exceeded) |
 | `stop-signal` | string | `"SIGTERM"` | Signal name (with or without SIG prefix) |

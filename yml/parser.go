@@ -306,6 +306,16 @@ func (n *Node) Bool() bool {
 	return s == "true" || s == "yes"
 }
 
+// BoolPtr returns a pointer to a bool if the node has a value, or nil if
+// the key is absent. This allows distinguishing "not set" from "set to false".
+func (n *Node) BoolPtr() *bool {
+	if n == nil || n.String() == "" {
+		return nil
+	}
+	v := n.Bool()
+	return &v
+}
+
 // Strings returns a string slice from a sequence node.
 func (n *Node) Strings() []string {
 	if n == nil || n.kind != kindSequence {
