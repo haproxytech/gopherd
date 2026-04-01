@@ -1,0 +1,17 @@
+build:
+  stage: build
+  needs: ["test"]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_PIPELINE_SOURCE == 'push'
+  image:
+    name: $HAPROXY_REGISTRY_GO/golang:$GO_VERSION
+    entrypoint: [""]
+  tags:
+    - go
+  script:
+    - go build -v -o gopherd .
+  artifacts:
+    paths:
+      - gopherd
+    expire_in: 1 day

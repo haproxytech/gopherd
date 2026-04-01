@@ -1,0 +1,106 @@
+tidy:
+  stage: lint
+  needs: []
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_PIPELINE_SOURCE == 'push'
+  image:
+    name: $HAPROXY_REGISTRY_GO/golang:$GO_VERSION
+    entrypoint: [""]
+  tags:
+    - go
+  script:
+    - go mod tidy
+    - test -z "$(git diff 2> /dev/null)" || exit 'Go modules not tidied, issue \`go mod tidy\` and commit the result'
+  after_script:
+    - |
+      if [ "$CI_JOB_STATUS" == "success" ]; then
+        junit-report add --status=ok --message="tidy check passed successfully"
+      else
+        junit-report add --status=failed --message="go mod tidy not executed" --description="$(git diff)"
+      fi
+  artifacts:
+    when: on_failure
+    paths:
+      - junit-report.xml
+    reports:
+      junit: junit-report.xml
+format:
+  stage: lint
+  needs: []
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_PIPELINE_SOURCE == 'push'
+  image:
+    name: $HAPROXY_REGISTRY_GO/golang:$GO_VERSION
+    entrypoint: [""]
+  tags:
+    - go
+  script:
+    - task format
+    - test -z "$(git diff 2> /dev/null)" || exit 'Go code not formatted, issue \`task format\` and commit the result'
+  after_script:
+    - |
+      if [ "$CI_JOB_STATUS" == "success" ]; then
+        junit-report add --status=ok --message="format check passed successfully"
+      else
+        junit-report add --status=failed --message="go code not formatted" --description="$(git diff)"
+        git diff
+      fi
+  artifacts:
+    when: on_failure
+    paths:
+      - junit-report.xml
+    reports:
+      junit: junit-report.xml
+lint:
+  stage: lint
+  needs: []
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_PIPELINE_SOURCE == 'push'
+  image:
+    name: $HAPROXY_REGISTRY_GO/golang:$GO_VERSION
+    entrypoint: [""]
+  tags:
+    - go
+  script:
+    - task lint
+  after_script:
+    - |
+      if [ "$CI_JOB_STATUS" == "success" ]; then
+        junit-report add --status=ok --message="linting passed successfully"
+      else
+        junit-report add --status=failed --message="linting failed" --description="$(task lint 2>&1)"
+      fi
+  artifacts:
+    when: on_failure
+    paths:
+      - junit-report.xml
+    reports:
+      junit: junit-report.xml
+commit-policy:
+  stage: lint
+  needs: []
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+  image:
+    name: $HAPROXY_REGISTRY_GO/golang:$GO_VERSION
+    entrypoint: [""]
+  tags:
+    - go
+  script:
+    - task check-commit
+  after_script:
+    - |
+      if [ "$CI_JOB_STATUS" == "success" ]; then
+        junit-report add --status=ok --message="commit policy check passed"
+      else
+        junit-report add --status=failed --message="commit policy check failed"
+      fi
+  artifacts:
+    when: on_failure
+    paths:
+      - junit-report.xml
+    reports:
+      junit: junit-report.xml

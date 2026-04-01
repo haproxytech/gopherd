@@ -365,10 +365,10 @@ Core design:
 
 ### Platform Support
 
-gopherd is designed for Linux containers. It compiles and runs on macOS for development and testing, with the following limitations:
+gopherd is designed for Linux containers. It also compiles and runs on macOS and FreeBSD for development and testing, with the following limitations:
 
-| Feature | Linux | macOS |
-|:--------|:------|:------|
+| Feature | Linux | macOS / FreeBSD |
+|:--------|:------|:----------------|
 | Process management, signals, zombie reaping | Full | Full |
 | User/group switching | Full | Full |
 | Control socket | Full | Full |
@@ -378,7 +378,7 @@ gopherd is designed for Linux containers. It compiles and runs on macOS for deve
 | Control socket audit logging (peer UID) | Full (`SO_PEERCRED`) | Not available (uid=-1) |
 | Config file permission/ownership checks | Full | Partial (no root ownership convention) |
 
-Windows is not supported.
+Release binaries are built for Linux, macOS, and FreeBSD (see `.goreleaser.yml`). Windows is not supported.
 
 ### Contributing
 

@@ -1,0 +1,26 @@
+test:
+  stage: test
+  needs: ["tidy", "format", "lint"]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_PIPELINE_SOURCE == 'push'
+  image:
+    name: $HAPROXY_REGISTRY_GO/golang:$GO_VERSION
+    entrypoint: [""]
+  tags:
+    - go
+  script:
+    - task test COUNT=1
+  after_script:
+    - |
+      if [ "$CI_JOB_STATUS" == "success" ]; then
+        junit-report add --status=ok --message="tests passed successfully"
+      else
+        junit-report add --status=failed --message="tests failed" --description="$(task test COUNT=1 2>&1)"
+      fi
+  artifacts:
+    when: always
+    paths:
+      - junit-report.xml
+    reports:
+      junit: junit-report.xml

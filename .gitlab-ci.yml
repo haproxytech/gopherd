@@ -1,0 +1,16 @@
+stages:
+  - lint
+  - security
+  - test
+  - build
+variables:
+  GO_VERSION: "1.26"
+  HAPROXY_REGISTRY_GO: "registry.haproxy.com/gophers"
+  JUNIT_FILE: "junit-report.xml"
+  GOTESTSUM_JUNITFILE: "junit-report.xml"
+
+include:
+  - local: .gitlab/lint.yml
+  - local: .gitlab/security.yml
+  - local: .gitlab/test.yml
+  - local: .gitlab/build.yml
