@@ -26,14 +26,23 @@ import (
 )
 
 // Config is the top-level gopherd configuration.
+// Shutdown order modes.
+const (
+	ShutdownReverseDep   = "reverse-dep"
+	ShutdownDep          = "dep"
+	ShutdownSimultaneous = "simultaneous"
+)
+
+// Config is the top-level gopherd configuration.
 type Config struct {
-	Checks     map[string]check.Config
-	LogTargets map[string]logger.TargetConfig
-	Prefix     string
-	Control    control.Config
-	Processes  []service.Process
-	CleanEnv   bool
-	NoLogo     bool
+	Checks        map[string]check.Config
+	LogTargets    map[string]logger.TargetConfig
+	Prefix        string
+	ShutdownOrder string
+	Control       control.Config
+	Processes     []service.Process
+	CleanEnv      bool
+	NoLogo        bool
 }
 
 // Load reads and parses a YAML config file.
@@ -65,6 +74,16 @@ func Unmarshal(data []byte) (*Config, error) {
 	}
 	if n := root.Get("clean-env"); n != nil {
 		cfg.CleanEnv = n.Bool()
+	}
+	if n := root.Get("shutdown-order"); n != nil {
+		cfg.ShutdownOrder = n.String()
+	}
+	switch cfg.ShutdownOrder {
+	case "", ShutdownReverseDep, ShutdownDep, ShutdownSimultaneous:
+		// valid
+	default:
+		return nil, fmt.Errorf("invalid shutdown-order %q: must be %q, %q, or %q",
+			cfg.ShutdownOrder, ShutdownReverseDep, ShutdownDep, ShutdownSimultaneous)
 	}
 
 	if n := root.Get("control"); n != nil {

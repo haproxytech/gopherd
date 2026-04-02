@@ -358,6 +358,55 @@ func TestStopAllNoRunning(t *testing.T) {
 	d.stopAll()
 }
 
+func TestReverseSeq(t *testing.T) {
+	t.Parallel()
+	d := &daemon{shutdownSeq: []string{"db", "app", "web"}}
+	rev := d.reverseSeq()
+	want := []string{"web", "app", "db"}
+	for i, name := range rev {
+		if name != want[i] {
+			t.Errorf("reverseSeq()[%d] = %q, want %q", i, name, want[i])
+		}
+	}
+}
+
+func TestStopAllReverseDep(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon([]service.Process{
+		{Name: "db", Command: "/bin/db"},
+		{Name: "app", Command: "/bin/app"},
+		{Name: "web", Command: "/bin/web"},
+	})
+	d.shutdownSeq = []string{"db", "app", "web"}
+	d.shutdownMode = "" // default = reverse-dep
+	// Should not panic on non-running services.
+	d.stopAll()
+}
+
+func TestStopAllDep(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon([]service.Process{
+		{Name: "db", Command: "/bin/db"},
+		{Name: "app", Command: "/bin/app"},
+		{Name: "web", Command: "/bin/web"},
+	})
+	d.shutdownSeq = []string{"db", "app", "web"}
+	d.shutdownMode = "dep"
+	d.stopAll()
+}
+
+func TestStopAllSimultaneous(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon([]service.Process{
+		{Name: "db", Command: "/bin/db"},
+		{Name: "app", Command: "/bin/app"},
+		{Name: "web", Command: "/bin/web"},
+	})
+	d.shutdownSeq = []string{"db", "app", "web"}
+	d.shutdownMode = "simultaneous"
+	d.stopAll()
+}
+
 func TestCloseLogTargetsNoTargets(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemon([]service.Process{

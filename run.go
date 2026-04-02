@@ -100,11 +100,9 @@ func run(entrypointArgs []string) int {
 		log.Fatalf("dependencies: %v", err)
 	}
 
-	// Store reverse order for graceful shutdown (dependents stop first).
-	d.shutdownOrder = make([]string, len(startOrd))
-	for i, name := range startOrd {
-		d.shutdownOrder[len(startOrd)-1-i] = name
-	}
+	// Store start order; stopAll() derives the actual sequence from shutdownMode.
+	d.shutdownSeq = startOrd
+	d.shutdownMode = cfg.ShutdownOrder
 
 	// Build log targets and services.
 	d.buildLogTargets()

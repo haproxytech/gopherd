@@ -32,7 +32,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Exit code propagation** — gopherd exits with the actual exit code of the service that triggered shutdown
 - **Entrypoint args** — pass Docker/Kubernetes entrypoint arguments to a designated service via `use-entrypoint-args: true`
 - **Entrypoint passthrough** — `docker run <image> /bin/sh` execs the command directly, bypassing the init system
-- **Graceful shutdown** — services stop in reverse dependency order (dependents first, then their dependencies)
+- **Graceful shutdown** — configurable shutdown ordering: `reverse-dep` (dependents first, default), `dep` (dependencies first), or `simultaneous` (all at once)
 - **No root required** — works in rootless containers
 
 ### Usage
@@ -281,6 +281,7 @@ log-targets:
 | `prefix` | string | `"service timestamp"` | Log prefix format for all services |
 | `clean-env` | bool | `false` | Global default: start services with empty environment |
 | `no-logo` | bool | `false` | Suppress ASCII art banner at startup |
+| `shutdown-order` | string | `"reverse-dep"` | Shutdown strategy: `reverse-dep`, `dep`, or `simultaneous` |
 
 #### Process fields
 
@@ -354,7 +355,7 @@ Core design:
 - YAML config defines processes, checks, log targets, and control socket
 - Zero external dependencies — built-in YAML parser, no protobuf/prometheus
 - Single `Wait4(-1)` reap loop handles both managed children and orphaned zombies (no separate reaper goroutine — avoids race with `cmd.Wait()`)
-- Graceful shutdown stops services in reverse dependency order (dependents first)
+- Graceful shutdown ordering is configurable: `reverse-dep` (dependents first, default), `dep` (dependencies first), or `simultaneous` (all at once)
 - Forwards SIGTERM, SIGINT to all children using per-service stop signals; other signals forwarded as-is
 - Each child gets its own process group (`Setpgid`)
 - Services start in topological order based on dependency graph

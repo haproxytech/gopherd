@@ -15,6 +15,12 @@
 # Suppress the ASCII logo on daemon startup (default: false).
 # no-logo: true
 
+# Shutdown ordering strategy (default: reverse-dep).
+#   reverse-dep:   dependents stop first, then dependencies (safest default)
+#   dep:           dependencies stop first, then dependents (drain through proxy)
+#   simultaneous:  all services stop concurrently (fastest)
+# shutdown-order: reverse-dep
+
 # Control socket for runtime service management.
 # Use `gopherd stats` to view service and check statistics.
 control:

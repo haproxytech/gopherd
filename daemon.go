@@ -78,10 +78,11 @@ type daemon struct {
 	restartCh chan restartReq
 
 	configPath     string
+	shutdownMode   string // "reverse-dep" (default), "dep", "simultaneous"
 	checkers       []*check.Checker
 	logTargets     []*logger.Target
 	entrypointArgs []string
-	shutdownOrder  []string // reverse of start order for graceful shutdown
+	shutdownSeq    []string // start order; used to derive shutdown sequence
 	exitCode       int
 
 	mu           sync.Mutex
@@ -106,24 +107,61 @@ func (d *daemon) startService(svc *service.Service) error {
 	return nil
 }
 
-// stopAll stops services in reverse dependency order (dependents first,
-// then their dependencies). This ensures a service is stopped before the
-// services it depends on. Services not in the shutdown order (e.g. added
-// after startup) are stopped last.
+// stopAll stops all services according to the configured shutdown mode.
+//
+// Modes:
+//   - "reverse-dep" (default): reverse dependency order (dependents first).
+//   - "dep": dependency order (dependencies first, then dependents).
+//   - "simultaneous": all services stopped concurrently.
+//
+// Services not in the shutdown sequence are stopped last (sequential modes)
+// or together with everyone (simultaneous).
 func (d *daemon) stopAll() {
+	mode := d.shutdownMode
+	if mode == "" || mode == yml.ShutdownReverseDep {
+		d.stopSequential(d.reverseSeq())
+		return
+	}
+	if mode == yml.ShutdownDep {
+		d.stopSequential(d.shutdownSeq)
+		return
+	}
+	// simultaneous
+	d.stopSimultaneous()
+}
+
+func (d *daemon) reverseSeq() []string {
+	n := len(d.shutdownSeq)
+	rev := make([]string, n)
+	for i, name := range d.shutdownSeq {
+		rev[n-1-i] = name
+	}
+	return rev
+}
+
+func (d *daemon) stopSequential(seq []string) {
 	stopped := make(map[string]bool)
-	for _, name := range d.shutdownOrder {
+	for _, name := range seq {
 		if svc, ok := d.services[name]; ok {
 			svc.Stop()
 			stopped[name] = true
 		}
 	}
-	// Stop any remaining services not in the order.
 	for name, svc := range d.services {
 		if !stopped[name] {
 			svc.Stop()
 		}
 	}
+}
+
+func (d *daemon) stopSimultaneous() {
+	var wg sync.WaitGroup
+	for _, svc := range d.services {
+		wg.Go(func() {
+			svc.Stop()
+		})
+	}
+	wg.Wait()
 }
 
 func (d *daemon) initiateShutdown(code int) {
@@ -330,11 +368,9 @@ func (d *daemon) reload() (string, error) {
 		return "", fmt.Errorf("reload dependencies: %w", err)
 	}
 
-	// Update shutdown order (reverse of start order).
-	d.shutdownOrder = make([]string, len(startOrd))
-	for i, name := range startOrd {
-		d.shutdownOrder[len(startOrd)-1-i] = name
-	}
+	// Update shutdown sequence and mode from new config.
+	d.shutdownSeq = startOrd
+	d.shutdownMode = newCfg.ShutdownOrder
 
 	// Collect services that need starting.
 	var toStart []*service.Service

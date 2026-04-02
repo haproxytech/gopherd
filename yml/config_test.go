@@ -15,6 +15,7 @@
 package yml
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -322,5 +323,62 @@ func TestLoadFileNotFound(t *testing.T) {
 	_, err := Load("/nonexistent/path.yml")
 	if err == nil {
 		t.Error("expected error for missing file")
+	}
+}
+
+func TestShutdownOrderValid(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		value string
+		want  string
+	}{
+		{"reverse-dep", ShutdownReverseDep},
+		{"dep", ShutdownDep},
+		{"simultaneous", ShutdownSimultaneous},
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			t.Parallel()
+			cfg, err := Unmarshal(fmt.Appendf(nil, `
+shutdown-order: %s
+processes:
+  - name: app
+    command: /bin/app
+`, tt.value))
+			if err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if cfg.ShutdownOrder != tt.want {
+				t.Errorf("ShutdownOrder = %q, want %q", cfg.ShutdownOrder, tt.want)
+			}
+		})
+	}
+}
+
+func TestShutdownOrderDefault(t *testing.T) {
+	t.Parallel()
+	cfg, err := Unmarshal([]byte(`
+processes:
+  - name: app
+    command: /bin/app
+`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if cfg.ShutdownOrder != "" {
+		t.Errorf("expected empty default, got %q", cfg.ShutdownOrder)
+	}
+}
+
+func TestShutdownOrderInvalid(t *testing.T) {
+	t.Parallel()
+	_, err := Unmarshal([]byte(`
+shutdown-order: bogus
+processes:
+  - name: app
+    command: /bin/app
+`))
+	if err == nil {
+		t.Error("expected error for invalid shutdown-order")
 	}
 }
