@@ -1,0 +1,31 @@
+HelpText: "Please refer to https://github.com/haproxy/haproxy/blob/master/CONTRIBUTING#L632"
+PatchScopes:
+  HAProxy Standard Scope:
+    - MINOR
+    - MEDIUM
+    - MAJOR
+    - CRITICAL
+PatchTypes:
+  HAProxy Standard Patch:
+    Values:
+      - BUG
+      - BUILD
+      - CLEANUP
+      - DOC
+      - LICENSE
+      - OPTIM
+      - RELEASE
+      - REORG
+      - TEST
+      - REVERT
+    Scope: HAProxy Standard Scope
+  HAProxy Standard Feature Commit:
+    Values:
+      - MINOR
+      - MEDIUM
+      - MAJOR
+      - CRITICAL
+TagOrder:
+  - PatchTypes:
+      - HAProxy Standard Patch
+      - HAProxy Standard Feature Commit
