@@ -65,6 +65,7 @@ type Checker struct {
 	credential   *syscall.Credential             // optional: run exec checks as this user
 	httpClient   *http.Client                    // cached HTTP client (created once)
 	name         string
+	tcpAddr      string // cached "host:port" for TCP checks
 	cfg          Config
 	period       time.Duration
 	timeout      time.Duration
@@ -138,6 +139,13 @@ func New(name string, cfg Config, onFailure func(string), metricsFn func(string,
 	}
 	if cfg.HTTP != nil {
 		c.httpClient = c.buildHTTPClient()
+	}
+	if cfg.TCP != nil {
+		host := cfg.TCP.Host
+		if host == "" {
+			host = "localhost"
+		}
+		c.tcpAddr = fmt.Sprintf("%s:%d", host, cfg.TCP.Port)
 	}
 	return c, nil
 }
@@ -273,15 +281,10 @@ func (c *Checker) checkHTTP(ctx context.Context) error {
 }
 
 func (c *Checker) checkTCP(ctx context.Context) error {
-	host := c.cfg.TCP.Host
-	if host == "" {
-		host = "localhost"
-	}
-	addr := fmt.Sprintf("%s:%d", host, c.cfg.TCP.Port)
 	var d net.Dialer
-	conn, err := d.DialContext(ctx, "tcp", addr)
+	conn, err := d.DialContext(ctx, "tcp", c.tcpAddr)
 	if err != nil {
-		return fmt.Errorf("tcp check %s: %w", addr, err)
+		return fmt.Errorf("tcp check %s: %w", c.tcpAddr, err)
 	}
 	conn.Close()
 	return nil

@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -271,7 +272,7 @@ func expandTemplates(values []string, env map[string]string, totalMiB int64) ([]
 				memErr = err
 				return match
 			}
-			return fmt.Sprintf("%d", mib)
+			return strconv.FormatInt(mib, 10)
 		})
 		if memErr != nil {
 			return nil, memErr
@@ -327,9 +328,15 @@ func (s *Service) Start() (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		cmd.Env = make([]string, 0, len(env))
+		// Build "key=value" strings with a single shared buffer to reduce
+		// per-entry allocations from string concatenation.
+		cmd.Env = make([]string, len(env))
+		var kvBuf []byte
 		for i, k := range envKeys {
-			cmd.Env = append(cmd.Env, k+"="+envVals[i])
+			kvBuf = append(kvBuf[:0], k...)
+			kvBuf = append(kvBuf, '=')
+			kvBuf = append(kvBuf, envVals[i]...)
+			cmd.Env[i] = string(kvBuf)
 		}
 	}
 

@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"unsafe"
 )
 
 // TargetConfig defines a log forwarding target.
@@ -116,7 +117,10 @@ func openSyslog(location string) (io.WriteCloser, error) {
 }
 
 func (sw *syslogWriter) Write(p []byte) (int, error) {
-	return len(p), sw.w.Info(sanitize(string(p)))
+	// Zero-copy []byte->string: safe because sanitize's fast path returns it
+	// immediately and syslog.Writer copies internally before Write returns.
+	s := unsafe.String(unsafe.SliceData(p), len(p))
+	return len(p), sw.w.Info(sanitize(s))
 }
 
 // sanitize strips control characters (except newline and tab) from log
@@ -125,23 +129,26 @@ func (sw *syslogWriter) Write(p []byte) (int, error) {
 // Fast path: if no control characters are present, returns the input
 // without allocation.
 func sanitize(s string) string {
-	// Quick scan: most log lines are clean.
-	needsSanitize := false
+	// Quick scan: most log lines are clean ASCII.
+	firstBad := -1
 	for i := range len(s) {
 		if s[i] < 0x20 && s[i] != '\n' && s[i] != '\t' {
-			needsSanitize = true
+			firstBad = i
 			break
 		}
 	}
-	if !needsSanitize {
+	if firstBad < 0 {
 		return s
 	}
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 && r != '\n' && r != '\t' {
-			return -1
+	// Slow path: build result only from the first bad byte onward.
+	buf := make([]byte, firstBad, len(s))
+	copy(buf, s[:firstBad])
+	for i := firstBad; i < len(s); i++ {
+		if s[i] >= 0x20 || s[i] == '\n' || s[i] == '\t' {
+			buf = append(buf, s[i])
 		}
-		return r
-	}, s)
+	}
+	return unsafe.String(unsafe.SliceData(buf), len(buf))
 }
 
 func (sw *syslogWriter) Close() error {

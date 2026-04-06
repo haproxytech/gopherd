@@ -285,6 +285,20 @@ func TestPrefixMultipleLines(t *testing.T) {
 func BenchmarkWriteServiceTimestamp(b *testing.B) {
 	pw := NewPrefixWriter(io.Discard, "my-service", "service timestamp")
 	line := []byte("2026-04-06 some log output from the application\n")
+	// Warm the ring buffer so slot reuse kicks in.
+	for range defaultRingSize {
+		pw.Write(line)
+	}
+	b.ResetTimer()
+	b.ReportAllocs()
+	for range b.N {
+		pw.Write(line)
+	}
+}
+
+func BenchmarkWriteServiceTimestampCold(b *testing.B) {
+	pw := NewPrefixWriter(io.Discard, "my-service", "service timestamp")
+	line := []byte("2026-04-06 some log output from the application\n")
 	b.ResetTimer()
 	b.ReportAllocs()
 	for range b.N {
@@ -295,6 +309,9 @@ func BenchmarkWriteServiceTimestamp(b *testing.B) {
 func BenchmarkWriteServiceOnly(b *testing.B) {
 	pw := NewPrefixWriter(io.Discard, "my-service", "service")
 	line := []byte("2026-04-06 some log output from the application\n")
+	for range defaultRingSize {
+		pw.Write(line)
+	}
 	b.ResetTimer()
 	b.ReportAllocs()
 	for range b.N {
@@ -305,6 +322,9 @@ func BenchmarkWriteServiceOnly(b *testing.B) {
 func BenchmarkWriteNone(b *testing.B) {
 	pw := NewPrefixWriter(io.Discard, "my-service", "none")
 	line := []byte("2026-04-06 some log output from the application\n")
+	for range defaultRingSize {
+		pw.Write(line)
+	}
 	b.ResetTimer()
 	b.ReportAllocs()
 	for range b.N {

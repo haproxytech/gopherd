@@ -158,7 +158,7 @@ func (pw *PrefixWriter) Write(p []byte) (int, error) {
 
 	// If buffer exceeds max size without a newline, force a flush to prevent
 	// unbounded memory growth from binary or malicious output.
-	if len(pw.buf) > maxBufSize && !bytes.Contains(pw.buf, []byte{'\n'}) {
+	if len(pw.buf) > maxBufSize && bytes.IndexByte(pw.buf, '\n') < 0 {
 		pw.buf = append(pw.buf, '\n')
 	}
 
@@ -168,7 +168,14 @@ func (pw *PrefixWriter) Write(p []byte) (int, error) {
 			break
 		}
 		line := pw.buf[:idx+1]
-		pw.buf = pw.buf[idx+1:]
+		rest := pw.buf[idx+1:]
+		// Reset buf to the start of the backing array when possible,
+		// so append can reuse capacity instead of allocating.
+		if len(rest) == 0 {
+			pw.buf = pw.buf[:0]
+		} else {
+			pw.buf = rest
+		}
 
 		prefixed := pw.prefix(line)
 		_, _ = pw.dest.Write(prefixed)
@@ -176,10 +183,16 @@ func (pw *PrefixWriter) Write(p []byte) (int, error) {
 			_, _ = w.Write(prefixed)
 		}
 
-		// Store in circular ring buffer (no slice shifting).
-		lineCopy := make([]byte, len(prefixed))
-		copy(lineCopy, prefixed)
-		pw.ring[pw.ringPos] = lineCopy
+		// Store in circular ring buffer. Reuse existing slot capacity
+		// when possible to avoid allocating a new []byte per line.
+		slot := pw.ring[pw.ringPos]
+		if cap(slot) >= len(prefixed) {
+			slot = slot[:len(prefixed)]
+		} else {
+			slot = make([]byte, len(prefixed))
+		}
+		copy(slot, prefixed)
+		pw.ring[pw.ringPos] = slot
 		pw.ringPos++
 		if pw.ringPos >= defaultRingSize {
 			pw.ringPos = 0
@@ -187,9 +200,11 @@ func (pw *PrefixWriter) Write(p []byte) (int, error) {
 		}
 
 		// Fan out to subscribers (non-blocking).
+		// Subscribers get a shared reference to the ring slot. This is safe
+		// because the slot won't be overwritten until the ring wraps (200 lines later).
 		for _, ch := range pw.subs {
 			select {
-			case ch <- lineCopy:
+			case ch <- slot:
 			default:
 				// subscriber too slow, drop line
 			}
