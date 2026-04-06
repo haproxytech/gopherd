@@ -63,6 +63,7 @@ type Checker struct {
 	onFailureFn  func(checkName string)          // called when threshold breached
 	metricsFn    func(checkName string, ok bool) // called after every check
 	credential   *syscall.Credential             // optional: run exec checks as this user
+	httpClient   *http.Client                    // cached HTTP client (created once)
 	name         string
 	cfg          Config
 	period       time.Duration
@@ -123,7 +124,7 @@ func New(name string, cfg Config, onFailure func(string), metricsFn func(string,
 		}
 	}
 
-	return &Checker{
+	c := &Checker{
 		name:         name,
 		cfg:          cfg,
 		period:       period,
@@ -134,7 +135,11 @@ func New(name string, cfg Config, onFailure func(string), metricsFn func(string,
 		stopCh:       make(chan struct{}),
 		onFailureFn:  onFailure,
 		metricsFn:    metricsFn,
-	}, nil
+	}
+	if cfg.HTTP != nil {
+		c.httpClient = c.buildHTTPClient()
+	}
+	return c, nil
 }
 
 // Run starts the periodic check loop in a goroutine.
@@ -232,11 +237,7 @@ func (c *Checker) Execute() error {
 	}
 }
 
-func (c *Checker) checkHTTP(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.cfg.HTTP.URL, nil)
-	if err != nil {
-		return fmt.Errorf("http check: %w", err)
-	}
+func (c *Checker) buildHTTPClient() *http.Client {
 	client := &http.Client{
 		Timeout: c.timeout,
 		// Disable redirect following to prevent SSRF via redirect chains
@@ -252,7 +253,15 @@ func (c *Checker) checkHTTP(ctx context.Context) error {
 			},
 		}
 	}
-	resp, err := client.Do(req)
+	return client
+}
+
+func (c *Checker) checkHTTP(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.cfg.HTTP.URL, nil)
+	if err != nil {
+		return fmt.Errorf("http check: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("http check: %w", err)
 	}

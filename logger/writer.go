@@ -47,24 +47,46 @@ const DefaultPrefix = "service timestamp"
 // Partial lines are buffered until a newline is received.
 // Supports subscribers for live log streaming and a ring buffer for recent history.
 type PrefixWriter struct {
-	dest  io.Writer
-	name  string
-	buf   []byte
-	extra []io.Writer // additional writers (log targets)
-	ring  [][]byte    // ring buffer of recent prefixed lines
-	subs  []chan []byte
-	parts []string // parsed prefix components
-	mu    sync.Mutex
+	dest         io.Writer
+	name         string
+	buf          []byte
+	extra        []io.Writer // additional writers (log targets)
+	ring         [][]byte    // circular ring buffer of recent prefixed lines
+	subs         []chan []byte
+	parts        []string // parsed prefix components
+	prefixBuf    []byte   // reusable buffer for building prefixed lines
+	ringPos      int      // next write position in ring buffer
+	prefixEstLen int      // estimated prefix length for capacity pre-allocation
+	mu           sync.Mutex
+	ringFull     bool // whether ring has wrapped around
 }
 
 // NewPrefixWriter creates a new PrefixWriter. The prefix string controls which
 // components appear and in what order. See DefaultPrefix for the default format.
 func NewPrefixWriter(dest io.Writer, name, prefix string) *PrefixWriter {
-	return &PrefixWriter{
+	parts := parsePrefixParts(prefix)
+	pw := &PrefixWriter{
 		dest:  dest,
 		name:  name,
-		parts: parsePrefixParts(prefix),
+		parts: parts,
+		ring:  make([][]byte, defaultRingSize),
 	}
+	// Estimate prefix length for buffer pre-allocation.
+	pw.prefixEstLen = estimatePrefixLen(parts, name)
+	return pw
+}
+
+func estimatePrefixLen(parts []string, name string) int {
+	n := 0
+	for _, p := range parts {
+		switch p {
+		case "timestamp":
+			n += timestampLen
+		case "service":
+			n += len(name) + 3 // "[" + name + "] "
+		}
+	}
+	return n
 }
 
 func parsePrefixParts(prefix string) []string {
@@ -114,8 +136,15 @@ func (pw *PrefixWriter) Subscribe() (<-chan []byte, func()) {
 func (pw *PrefixWriter) Recent() [][]byte {
 	pw.mu.Lock()
 	defer pw.mu.Unlock()
-	out := make([][]byte, len(pw.ring))
-	copy(out, pw.ring)
+	if !pw.ringFull {
+		out := make([][]byte, pw.ringPos)
+		copy(out, pw.ring[:pw.ringPos])
+		return out
+	}
+	// Ring has wrapped: return from ringPos..end, then 0..ringPos (oldest to newest).
+	out := make([][]byte, defaultRingSize)
+	n := copy(out, pw.ring[pw.ringPos:])
+	copy(out[n:], pw.ring[:pw.ringPos])
 	return out
 }
 
@@ -147,13 +176,15 @@ func (pw *PrefixWriter) Write(p []byte) (int, error) {
 			_, _ = w.Write(prefixed)
 		}
 
-		// Store in ring buffer.
+		// Store in circular ring buffer (no slice shifting).
 		lineCopy := make([]byte, len(prefixed))
 		copy(lineCopy, prefixed)
-		if len(pw.ring) >= defaultRingSize {
-			pw.ring = pw.ring[1:]
+		pw.ring[pw.ringPos] = lineCopy
+		pw.ringPos++
+		if pw.ringPos >= defaultRingSize {
+			pw.ringPos = 0
+			pw.ringFull = true
 		}
-		pw.ring = append(pw.ring, lineCopy)
 
 		// Fan out to subscribers (non-blocking).
 		for _, ch := range pw.subs {
@@ -182,22 +213,30 @@ func (pw *PrefixWriter) Flush() {
 	}
 }
 
+// timestampLen is the byte length of "2006-01-02T15:04:05.000Z ".
+const timestampLen = 25
+
 func (pw *PrefixWriter) prefix(line []byte) []byte {
 	if len(pw.parts) == 0 {
 		return line
 	}
-	var buf bytes.Buffer
+	// Reuse pw.prefixBuf to avoid allocating a new bytes.Buffer per line.
+	needed := pw.prefixEstLen + len(line)
+	pw.prefixBuf = pw.prefixBuf[:0]
+	if cap(pw.prefixBuf) < needed {
+		pw.prefixBuf = make([]byte, 0, needed)
+	}
 	for _, p := range pw.parts {
 		switch p {
 		case "timestamp":
-			buf.WriteString(time.Now().UTC().Format("2006-01-02T15:04:05.000Z"))
-			buf.WriteByte(' ')
+			pw.prefixBuf = time.Now().UTC().AppendFormat(pw.prefixBuf, "2006-01-02T15:04:05.000Z")
+			pw.prefixBuf = append(pw.prefixBuf, ' ')
 		case "service":
-			buf.WriteByte('[')
-			buf.WriteString(pw.name)
-			buf.WriteString("] ")
+			pw.prefixBuf = append(pw.prefixBuf, '[')
+			pw.prefixBuf = append(pw.prefixBuf, pw.name...)
+			pw.prefixBuf = append(pw.prefixBuf, ']', ' ')
 		}
 	}
-	buf.Write(line)
-	return buf.Bytes()
+	pw.prefixBuf = append(pw.prefixBuf, line...)
+	return pw.prefixBuf
 }

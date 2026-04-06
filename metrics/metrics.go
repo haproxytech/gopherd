@@ -26,7 +26,7 @@ import (
 type Metrics struct {
 	services map[string]*serviceStats
 	checks   map[string]*checkStats
-	mu       sync.Mutex
+	mu       sync.RWMutex
 }
 
 type serviceStats struct {
@@ -112,8 +112,8 @@ func (m *Metrics) CheckResult(name string, healthy bool) {
 
 // Format returns a human-readable stats summary.
 func (m *Metrics) Format() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	var b strings.Builder
 

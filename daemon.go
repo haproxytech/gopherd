@@ -85,7 +85,7 @@ type daemon struct {
 	shutdownSeq    []string // start order; used to derive shutdown sequence
 	exitCode       int
 
-	mu           sync.Mutex
+	mu           sync.RWMutex
 	shuttingDown bool
 }
 
@@ -411,8 +411,8 @@ func (d *daemon) setupControl() *control.Server {
 		return d.m.Format()
 	}
 	ctrlServer.ListFn = func() string {
-		d.mu.Lock()
-		defer d.mu.Unlock()
+		d.mu.RLock()
+		defer d.mu.RUnlock()
 		var lines []string
 		for _, svc := range d.services {
 			state := "stopped"
@@ -427,9 +427,9 @@ func (d *daemon) setupControl() *control.Server {
 		return strings.Join(lines, "\n")
 	}
 	ctrlServer.StatusFn = func(name string) (string, error) {
-		d.mu.Lock()
+		d.mu.RLock()
 		svc, ok := d.services[name]
-		d.mu.Unlock()
+		d.mu.RUnlock()
 		if !ok {
 			return "", fmt.Errorf("unknown service %q", name)
 		}
@@ -439,9 +439,9 @@ func (d *daemon) setupControl() *control.Server {
 		return fmt.Sprintf("%s: stopped", name), nil
 	}
 	ctrlServer.StartFn = func(name string) (string, error) {
-		d.mu.Lock()
+		d.mu.RLock()
 		svc, ok := d.services[name]
-		d.mu.Unlock()
+		d.mu.RUnlock()
 		if !ok {
 			return "", fmt.Errorf("unknown service %q", name)
 		}
@@ -454,9 +454,9 @@ func (d *daemon) setupControl() *control.Server {
 		return fmt.Sprintf("%s: started (pid %d)", name, svc.Pid), nil
 	}
 	ctrlServer.StopFn = func(name string) (string, error) {
-		d.mu.Lock()
+		d.mu.RLock()
 		svc, ok := d.services[name]
-		d.mu.Unlock()
+		d.mu.RUnlock()
 		if !ok {
 			return "", fmt.Errorf("unknown service %q", name)
 		}
@@ -467,9 +467,9 @@ func (d *daemon) setupControl() *control.Server {
 		return fmt.Sprintf("%s: stop signal sent", name), nil
 	}
 	ctrlServer.SignalFn = func(name, sigName string) (string, error) {
-		d.mu.Lock()
+		d.mu.RLock()
 		svc, ok := d.services[name]
-		d.mu.Unlock()
+		d.mu.RUnlock()
 		if !ok {
 			return "", fmt.Errorf("unknown service %q", name)
 		}
@@ -484,9 +484,9 @@ func (d *daemon) setupControl() *control.Server {
 		return fmt.Sprintf("%s: sent %s", name, sigName), nil
 	}
 	ctrlServer.RestartFn = func(name string) (string, error) {
-		d.mu.Lock()
+		d.mu.RLock()
 		svc, ok := d.services[name]
-		d.mu.Unlock()
+		d.mu.RUnlock()
 		if !ok {
 			return "", fmt.Errorf("unknown service %q", name)
 		}
@@ -504,9 +504,9 @@ func (d *daemon) setupControl() *control.Server {
 		return d.reload()
 	}
 	ctrlServer.LogsFn = func(name string, follow bool) ([][]byte, <-chan []byte, func(), error) {
-		d.mu.Lock()
+		d.mu.RLock()
 		svc, ok := d.services[name]
-		d.mu.Unlock()
+		d.mu.RUnlock()
 		if !ok {
 			return nil, nil, nil, fmt.Errorf("unknown service %q", name)
 		}

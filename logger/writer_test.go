@@ -16,6 +16,7 @@ package logger
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -278,5 +279,35 @@ func TestPrefixMultipleLines(t *testing.T) {
 	pw.Write([]byte("line1\nline2\n"))
 	if buf.String() != "line1\nline2\n" {
 		t.Errorf("expected raw output, got: %q", buf.String())
+	}
+}
+
+func BenchmarkWriteServiceTimestamp(b *testing.B) {
+	pw := NewPrefixWriter(io.Discard, "my-service", "service timestamp")
+	line := []byte("2026-04-06 some log output from the application\n")
+	b.ResetTimer()
+	b.ReportAllocs()
+	for range b.N {
+		pw.Write(line)
+	}
+}
+
+func BenchmarkWriteServiceOnly(b *testing.B) {
+	pw := NewPrefixWriter(io.Discard, "my-service", "service")
+	line := []byte("2026-04-06 some log output from the application\n")
+	b.ResetTimer()
+	b.ReportAllocs()
+	for range b.N {
+		pw.Write(line)
+	}
+}
+
+func BenchmarkWriteNone(b *testing.B) {
+	pw := NewPrefixWriter(io.Discard, "my-service", "none")
+	line := []byte("2026-04-06 some log output from the application\n")
+	b.ResetTimer()
+	b.ReportAllocs()
+	for range b.N {
+		pw.Write(line)
 	}
 }
