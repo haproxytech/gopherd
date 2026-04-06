@@ -93,6 +93,15 @@ tasks:
             -v \
             {{.PKG}}
 
+  bench:
+    desc: "run performance benchmarks (zero-alloc logger hot path)"
+    vars:
+      COUNT: '{{default "3" .COUNT}}'
+      TIME: '{{default "2s" .TIME}}'
+      PKG: '{{default "./logger/" .PKG}}'
+    cmds:
+      - go test -bench=. -benchmem -count={{.COUNT}} -benchtime={{.TIME}} {{.PKG}}
+
   tidy:
     desc: "run Go mod tidy"
     cmds:
