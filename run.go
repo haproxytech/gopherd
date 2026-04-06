@@ -231,10 +231,8 @@ func run(entrypointArgs []string) int {
 	// Handle restart requests from the reap loop.
 	go func() {
 		for req := range d.restartCh {
-			// Wait for the service to actually stop before restarting.
-			for req.svc.IsRunning() {
-				time.Sleep(50 * time.Millisecond)
-			}
+			// Wait for the service to actually exit before restarting.
+			<-req.svc.Done()
 			time.Sleep(req.delay)
 			d.mu.Lock()
 			if d.shuttingDown {

@@ -106,6 +106,7 @@ type Service struct {
 
 	cmd       *exec.Cmd
 	killTimer *time.Timer // deferred SIGKILL; cancelled on exit to prevent PID reuse race
+	done      chan struct{}
 
 	Name      string
 	OnSuccess ExitAction
@@ -358,6 +359,7 @@ func (s *Service) Start() (int, error) {
 
 	s.cmd = cmd
 	s.Pid = cmd.Process.Pid
+	s.done = make(chan struct{})
 	s.running.Store(true)
 	s.stopped.Store(false)
 	s.startedAt = time.Now()
@@ -403,6 +405,9 @@ func (s *Service) MarkExited() time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.running.Store(false)
+	if s.done != nil {
+		close(s.done)
+	}
 	if s.killTimer != nil {
 		s.killTimer.Stop()
 		s.killTimer = nil
@@ -420,4 +425,18 @@ func (s *Service) WasStopped() bool {
 // IsRunning returns whether the service is currently running.
 func (s *Service) IsRunning() bool {
 	return s.running.Load()
+}
+
+// Done returns a channel that is closed when the service exits.
+// Callers can select on this instead of polling IsRunning().
+func (s *Service) Done() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done == nil {
+		// Service was never started or already exited — return a closed channel.
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+	return s.done
 }

@@ -27,6 +27,9 @@ import (
 	"time"
 )
 
+// Pre-allocated error for the no-check-type case (should never happen in practice).
+var errNoCheckType = fmt.Errorf("no check type configured")
+
 // HTTP defines an HTTP health check.
 type HTTP struct {
 	URL    string
@@ -64,6 +67,7 @@ type Checker struct {
 	metricsFn    func(checkName string, ok bool) // called after every check
 	credential   *syscall.Credential             // optional: run exec checks as this user
 	httpClient   *http.Client                    // cached HTTP client (created once)
+	httpReq      *http.Request                   // cached base request (cloned per-check)
 	name         string
 	tcpAddr      string // cached "host:port" for TCP checks
 	cfg          Config
@@ -139,6 +143,12 @@ func New(name string, cfg Config, onFailure func(string), metricsFn func(string,
 	}
 	if cfg.HTTP != nil {
 		c.httpClient = c.buildHTTPClient()
+		// Pre-build the base request to avoid parsing the URL on every check.
+		req, err := http.NewRequest(http.MethodGet, cfg.HTTP.URL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("check %s: invalid http url %q: %v", name, cfg.HTTP.URL, err)
+		}
+		c.httpReq = req
 	}
 	if cfg.TCP != nil {
 		host := cfg.TCP.Host
@@ -241,7 +251,7 @@ func (c *Checker) Execute() error {
 	case c.cfg.Exec != nil:
 		return c.checkExec(ctx)
 	default:
-		return fmt.Errorf("no check type configured")
+		return errNoCheckType
 	}
 }
 
@@ -265,10 +275,9 @@ func (c *Checker) buildHTTPClient() *http.Client {
 }
 
 func (c *Checker) checkHTTP(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.cfg.HTTP.URL, nil)
-	if err != nil {
-		return fmt.Errorf("http check: %w", err)
-	}
+	// Reuse cached request with the check's context. WithContext does a
+	// shallow copy but avoids re-parsing the URL on every check.
+	req := c.httpReq.WithContext(ctx)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("http check: %w", err)

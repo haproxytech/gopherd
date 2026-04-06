@@ -364,6 +364,17 @@ Core design:
 - SIGHUP triggers config hot-reload instead of being forwarded to children
 - Exit codes from services are propagated as gopherd's own exit code
 
+### Performance Tuning
+
+gopherd's hot paths (log prefixing, health checks, control socket) are designed for zero allocations in steady state. For further GC pressure reduction, Go's built-in runtime environment variables can be used:
+
+| Variable | Default | Recommended | Description |
+|:---------|:--------|:------------|:------------|
+| `GOGC` | `100` | `200`–`400` | GC target percentage. A PID 1 has a small live heap (~1–5 MB) but steady allocation from child I/O. Higher values trade a few MB of RSS for significantly fewer GC pauses. |
+| `GOMEMLIMIT` | unlimited | container limit | Soft memory limit. When set, the runtime will try to keep total Go heap under this value, running GC more aggressively only when approaching it. Useful in memory-constrained containers. |
+
+See `PERFORMANCE.md` for the full hot-path analysis and optimization details.
+
 ### Platform Support
 
 gopherd is designed for Linux containers. It also compiles and runs on macOS and FreeBSD for development and testing, with the following limitations:
