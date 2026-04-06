@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // File paths are variables so tests can override them.
@@ -37,9 +38,31 @@ var (
 // It's the page-aligned value closest to int64 max on most kernels.
 const cgroupV1NoLimit = 9223372036854771712
 
+var (
+	cachedMiB  int64
+	cachedErr  error
+	cachedOnce sync.Once
+)
+
 // Available returns the available memory in MiB, defined as the minimum of
 // system physical memory and any active cgroup memory limit.
+// The result is cached after the first call since memory limits do not
+// change at runtime in typical container environments.
 func Available() (int64, error) {
+	cachedOnce.Do(func() {
+		cachedMiB, cachedErr = available()
+	})
+	return cachedMiB, cachedErr
+}
+
+// resetCache allows tests to clear the cached result.
+func resetCache() {
+	cachedOnce = sync.Once{}
+	cachedMiB = 0
+	cachedErr = nil
+}
+
+func available() (int64, error) {
 	sys, err := systemMemMiB()
 	if err != nil {
 		return 0, err

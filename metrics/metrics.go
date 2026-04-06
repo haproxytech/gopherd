@@ -125,8 +125,8 @@ func (m *Metrics) Format() string {
 				uptime := time.Since(s.StartedAt).Truncate(time.Second)
 				state = fmt.Sprintf("up %s", uptime)
 			}
-			b.WriteString(fmt.Sprintf("  %-20s %s  exits=%d restarts=%d ok=%d fail=%d\n",
-				name, state, s.Exits, s.Restarts, s.Successes, s.Failures))
+			fmt.Fprintf(&b, "  %-20s %s  exits=%d restarts=%d ok=%d fail=%d\n",
+				name, state, s.Exits, s.Restarts, s.Successes, s.Failures)
 		}
 	}
 
@@ -137,7 +137,7 @@ func (m *Metrics) Format() string {
 			if !c.Healthy {
 				state = "unhealthy"
 			}
-			b.WriteString(fmt.Sprintf("  %-20s %s  failures=%d\n", name, state, c.Failures))
+			fmt.Fprintf(&b, "  %-20s %s  failures=%d\n", name, state, c.Failures)
 		}
 	}
 

@@ -122,7 +122,20 @@ func (sw *syslogWriter) Write(p []byte) (int, error) {
 // sanitize strips control characters (except newline and tab) from log
 // output before forwarding to syslog. This prevents services from injecting
 // ANSI escape sequences or carriage returns into syslog entries.
+// Fast path: if no control characters are present, returns the input
+// without allocation.
 func sanitize(s string) string {
+	// Quick scan: most log lines are clean.
+	needsSanitize := false
+	for i := range len(s) {
+		if s[i] < 0x20 && s[i] != '\n' && s[i] != '\t' {
+			needsSanitize = true
+			break
+		}
+	}
+	if !needsSanitize {
+		return s
+	}
 	return strings.Map(func(r rune) rune {
 		if r < 0x20 && r != '\n' && r != '\t' {
 			return -1

@@ -178,12 +178,11 @@ func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 	}
 
 	defer func() { <-cmdSem }()
-	resp := cs.handleCommand(line)
+	resp := cs.handleCommand(parts)
 	fmt.Fprintf(conn, "%s\n", resp)
 }
 
-func (cs *Server) handleCommand(line string) string {
-	parts := strings.Fields(line)
+func (cs *Server) handleCommand(parts []string) string {
 	if len(parts) == 0 {
 		return "error: empty command"
 	}

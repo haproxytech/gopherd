@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -116,11 +117,10 @@ type Service struct {
 	Pid        int
 
 	mu      sync.Mutex
+	running atomic.Bool
+	stopped atomic.Bool // true if Stop() was called (we initiated the exit)
 	Enabled bool
 	Oneshot bool
-
-	running bool
-	stopped bool // true if Stop() was called (we initiated the exit)
 }
 
 // New creates a new Service from a Process config.
@@ -289,9 +289,8 @@ func expandTemplates(values []string, env map[string]string, totalMiB int64) ([]
 
 // Start launches the process. Returns the PID on success.
 func (s *Service) Start() (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	// Build environment, resolve credentials, and expand templates before
+	// acquiring the lock to minimize time spent in the critical section.
 	cleanEnv := s.Proc.CleanEnv != nil && *s.Proc.CleanEnv
 	env, err := buildEnvMap(s.Proc.DotEnv, s.Proc.Environment, cleanEnv)
 	if err != nil {
@@ -342,14 +341,18 @@ func (s *Service) Start() (int, error) {
 		cmd.SysProcAttr.Credential = cred
 	}
 
+	// Lock only for the fork/exec and state update.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
 
 	s.cmd = cmd
 	s.Pid = cmd.Process.Pid
-	s.running = true
-	s.stopped = false
+	s.running.Store(true)
+	s.stopped.Store(false)
 	s.startedAt = time.Now()
 	return s.Pid, nil
 }
@@ -363,10 +366,10 @@ func (s *Service) Start() (int, error) {
 func (s *Service) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.running || s.cmd == nil || s.cmd.Process == nil {
+	if !s.running.Load() || s.cmd == nil || s.cmd.Process == nil {
 		return
 	}
-	s.stopped = true
+	s.stopped.Store(true)
 	_ = syscall.Kill(-s.Pid, s.stopSignal)
 	if s.killDelay > 0 {
 		pid := s.Pid
@@ -380,7 +383,7 @@ func (s *Service) Stop() {
 func (s *Service) Signal(sig os.Signal) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.running || s.cmd == nil || s.cmd.Process == nil {
+	if !s.running.Load() || s.cmd == nil || s.cmd.Process == nil {
 		return
 	}
 	_ = s.cmd.Process.Signal(sig)
@@ -392,7 +395,7 @@ func (s *Service) Signal(sig os.Signal) {
 func (s *Service) MarkExited() time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.running = false
+	s.running.Store(false)
 	if s.killTimer != nil {
 		s.killTimer.Stop()
 		s.killTimer = nil
@@ -404,14 +407,10 @@ func (s *Service) MarkExited() time.Duration {
 // (as opposed to exiting on its own). This distinguishes intentional signal-death
 // from unexpected exits for the purpose of exit code propagation.
 func (s *Service) WasStopped() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.stopped
+	return s.stopped.Load()
 }
 
 // IsRunning returns whether the service is currently running.
 func (s *Service) IsRunning() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.running
+	return s.running.Load()
 }

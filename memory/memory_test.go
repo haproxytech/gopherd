@@ -23,11 +23,13 @@ import (
 func setupFakeFS(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	resetCache()
 	t.Cleanup(func() {
 		procMeminfo = "/proc/meminfo"
 		procSelfCg = "/proc/self/cgroup"
 		cgroupV2Root = "/sys/fs/cgroup"
 		cgroupV1Root = "/sys/fs/cgroup/memory"
+		resetCache()
 	})
 	return dir
 }
