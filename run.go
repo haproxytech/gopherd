@@ -194,9 +194,22 @@ func run(entrypointArgs []string) int {
 		log.Printf("control socket: %s", ctrlServer.SocketPath)
 	}
 
+	// Determine which signal triggers graceful shutdown.
+	// Default: SIGTERM. Override via config stop-signal or GOPHERD_STOP_SIGNAL env.
+	// This allows matching Docker's STOPSIGNAL directive so gopherd shuts down
+	// gracefully regardless of which signal the container runtime sends.
+	stopSignal := resolveStopSignal(cfg.StopSignal)
+	if stopSignal != syscall.SIGTERM {
+		log.Printf("stop-signal: %s", stopSignal)
+	}
+
 	// Forward signals to all children. SIGHUP triggers reload.
 	sigs := make(chan os.Signal, 16)
 	goSignal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGUSR1, syscall.SIGUSR2)
+	if stopSignal != syscall.SIGTERM && stopSignal != syscall.SIGINT &&
+		stopSignal != syscall.SIGHUP && stopSignal != syscall.SIGUSR1 && stopSignal != syscall.SIGUSR2 {
+		goSignal.Notify(sigs, stopSignal)
+	}
 	go func() {
 		for sig := range sigs {
 			d.mu.Lock()
@@ -206,7 +219,7 @@ func run(entrypointArgs []string) int {
 				continue
 			}
 			switch {
-			case sysSig == syscall.SIGTERM || sysSig == syscall.SIGINT:
+			case sysSig == stopSignal || sysSig == syscall.SIGTERM || sysSig == syscall.SIGINT:
 				if !d.shuttingDown {
 					d.initiateShutdown(0)
 				}

@@ -39,6 +39,7 @@ type Config struct {
 	LogTargets    map[string]logger.TargetConfig
 	Prefix        string
 	ShutdownOrder string
+	StopSignal    string // signal that triggers graceful shutdown (default: SIGTERM)
 	Control       control.Config
 	Processes     []service.Process
 	CleanEnv      bool
@@ -74,6 +75,9 @@ func Unmarshal(data []byte) (*Config, error) {
 	}
 	if n := root.Get("clean-env"); n != nil {
 		cfg.CleanEnv = n.Bool()
+	}
+	if n := root.Get("stop-signal"); n != nil {
+		cfg.StopSignal = n.String()
 	}
 	if n := root.Get("shutdown-order"); n != nil {
 		cfg.ShutdownOrder = n.String()

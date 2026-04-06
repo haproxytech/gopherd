@@ -69,6 +69,25 @@ func checkConfigPermissions(path string) error {
 	return nil
 }
 
+// resolveStopSignal determines the signal that triggers graceful shutdown.
+// Priority: GOPHERD_STOP_SIGNAL env > config stop-signal > SIGTERM default.
+// This allows matching Docker's STOPSIGNAL directive.
+func resolveStopSignal(cfgSignal string) syscall.Signal {
+	name := cfgSignal
+	if v := os.Getenv("GOPHERD_STOP_SIGNAL"); v != "" {
+		name = v
+	}
+	if name == "" {
+		return syscall.SIGTERM
+	}
+	sig, err := service.ParseSignal(name)
+	if err != nil {
+		log.Printf("warning: invalid stop-signal %q, using SIGTERM", name)
+		return syscall.SIGTERM
+	}
+	return sig
+}
+
 // daemon holds all mutable daemon state so reload can update it.
 type daemon struct {
 	cfg       *yml.Config

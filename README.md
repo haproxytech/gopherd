@@ -156,6 +156,23 @@ ENTRYPOINT ["/sbin/gopherd"]
 # Debug:  docker run <image> /bin/sh  → passthrough to shell
 ```
 
+If your Dockerfile uses a custom `STOPSIGNAL`, configure gopherd to match so it shuts down gracefully:
+
+```dockerfile
+STOPSIGNAL SIGQUIT
+```
+
+```yaml
+# gopherd.yml
+stop-signal: SIGQUIT
+```
+
+Or override at runtime via environment variable (no config change needed):
+
+```bash
+docker run -e GOPHERD_STOP_SIGNAL=SIGQUIT myimage
+```
+
 ### Configuration
 
 Configuration is a single YAML file (no external YAML library — built-in parser). See the [example/](example/) directory for ready-to-use configs including a minimal setup, HAProxy ingress pattern, and a comprehensive all-options reference.
@@ -282,6 +299,7 @@ log-targets:
 | `clean-env` | bool | `false` | Global default: start services with empty environment |
 | `no-logo` | bool | `false` | Suppress ASCII art banner at startup |
 | `shutdown-order` | string | `"reverse-dep"` | Shutdown strategy: `reverse-dep`, `dep`, or `simultaneous` |
+| `stop-signal` | string | `"SIGTERM"` | Signal that triggers graceful shutdown (override with `GOPHERD_STOP_SIGNAL` env). Set this to match Docker's `STOPSIGNAL` if it differs from SIGTERM. |
 
 #### Process fields
 
