@@ -22,6 +22,8 @@ import (
 )
 
 // Backoff calculates exponential backoff delays with jitter for service restarts.
+// Not thread-safe: Next() and Reset() must be called from a single goroutine or
+// under an external lock. In gopherd, both are called from the reap loop under d.mu.
 type Backoff struct {
 	delay  time.Duration // initial delay (default 500ms)
 	factor float64       // multiplier per attempt (default 2.0)

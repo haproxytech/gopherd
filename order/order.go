@@ -15,7 +15,11 @@
 // Package order provides topological sorting for service dependencies.
 package order
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+	"strings"
+)
 
 // Service represents the dependency information needed for topological sorting.
 type Service struct {
@@ -104,7 +108,15 @@ func TopoSort(services []Service) ([]string, error) {
 	}
 
 	if len(result) != len(names) {
-		return nil, fmt.Errorf("dependency cycle detected")
+		// Nodes with non-zero in-degree after Kahn's algorithm are part of the cycle.
+		var cycled []string
+		for name := range names {
+			if inDegree[name] > 0 {
+				cycled = append(cycled, name)
+			}
+		}
+		slices.Sort(cycled)
+		return nil, fmt.Errorf("dependency cycle detected among: %s", strings.Join(cycled, ", "))
 	}
 
 	return result, nil

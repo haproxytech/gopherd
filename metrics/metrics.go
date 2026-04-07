@@ -17,6 +17,7 @@ package metrics
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -119,7 +120,13 @@ func (m *Metrics) Format() string {
 
 	if len(m.services) > 0 {
 		b.WriteString("services:\n")
-		for name, s := range m.services {
+		svcNames := make([]string, 0, len(m.services))
+		for name := range m.services {
+			svcNames = append(svcNames, name)
+		}
+		slices.Sort(svcNames)
+		for _, name := range svcNames {
+			s := m.services[name]
 			state := "stopped"
 			if s.Up {
 				uptime := time.Since(s.StartedAt).Truncate(time.Second)
@@ -132,7 +139,13 @@ func (m *Metrics) Format() string {
 
 	if len(m.checks) > 0 {
 		b.WriteString("checks:\n")
-		for name, c := range m.checks {
+		chkNames := make([]string, 0, len(m.checks))
+		for name := range m.checks {
+			chkNames = append(chkNames, name)
+		}
+		slices.Sort(chkNames)
+		for _, name := range chkNames {
+			c := m.checks[name]
 			state := "healthy"
 			if !c.Healthy {
 				state = "unhealthy"

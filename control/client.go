@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -55,10 +56,14 @@ func ClientCommandList() []string {
 	for k := range ClientCommands {
 		out = append(out, k)
 	}
+	slices.Sort(out)
 	return out
 }
 
 // IsAlive checks whether a gopherd daemon is reachable on the given socket path.
+// It dials and immediately closes without sending a command. The server holds a
+// connection slot for up to connReadTimeout (5s) per call — acceptable for the
+// startup probe use case where IsAlive is called once during initialisation.
 func IsAlive(socketPath string) bool {
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {

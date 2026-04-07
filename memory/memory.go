@@ -43,6 +43,7 @@ var (
 	cachedMiB  int64
 	cachedErr  error
 	cachedOnce sync.Once
+	cacheMu    sync.Mutex // guards cachedOnce replacement in resetCache
 )
 
 // Available returns the available memory in MiB, defined as the minimum of
@@ -50,6 +51,8 @@ var (
 // The result is cached after the first call since memory limits do not
 // change at runtime in typical container environments.
 func Available() (int64, error) {
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
 	cachedOnce.Do(func() {
 		cachedMiB, cachedErr = available()
 	})
@@ -58,6 +61,8 @@ func Available() (int64, error) {
 
 // resetCache allows tests to clear the cached result.
 func resetCache() {
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
 	cachedOnce = sync.Once{}
 	cachedMiB = 0
 	cachedErr = nil
