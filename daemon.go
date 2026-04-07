@@ -695,6 +695,7 @@ func (d *daemon) setupControl() *control.Server {
 //   - on-success, on-failure: applied at next exit, no restart needed
 //   - backoff-*: applied at next restart, no restart needed
 //   - startup-timeout: only relevant during initial start sequencing
+//
 // ReadyCheck, ReadyTimeout, and KillDelay ARE included: they affect how the
 // process is started (readiness gating) and stopped (kill delay), so a config
 // change should cause the service to restart with the new values.
