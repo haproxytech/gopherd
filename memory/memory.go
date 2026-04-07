@@ -43,7 +43,14 @@ var (
 	cachedMiB  int64
 	cachedErr  error
 	cachedOnce sync.Once
-	cacheMu    sync.Mutex // guards cachedOnce replacement in resetCache
+	// cacheMu serialises two distinct operations:
+	// 1. resetCache (tests only) — replaces cachedOnce with a fresh sync.Once,
+	//    which would race with a concurrent Available() call.
+	// 2. Available() callers during first population — because cacheMu is held
+	//    for the duration of cachedOnce.Do, concurrent callers block here until
+	//    the first population (which reads /proc/meminfo and cgroup paths)
+	//    completes. This is intentional: the I/O runs only once.
+	cacheMu sync.Mutex
 )
 
 // Available returns the available memory in MiB, defined as the minimum of

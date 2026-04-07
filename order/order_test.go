@@ -15,6 +15,7 @@
 package order
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -81,6 +82,9 @@ func TestCycleDetected(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected cycle error")
+	}
+	if !strings.Contains(err.Error(), "a") || !strings.Contains(err.Error(), "b") {
+		t.Errorf("cycle error should name involved services, got: %v", err)
 	}
 }
 

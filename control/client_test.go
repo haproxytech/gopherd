@@ -14,7 +14,10 @@
 
 package control
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestIsClientCommand(t *testing.T) {
 	t.Parallel()
@@ -42,5 +45,16 @@ func TestIsClientCommand(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("IsClientCommand(%v) = %v, want %v", tt.args, got, tt.want)
 		}
+	}
+}
+
+func TestClientCommandListSorted(t *testing.T) {
+	t.Parallel()
+	list := ClientCommandList()
+	if len(list) == 0 {
+		t.Fatal("expected non-empty command list")
+	}
+	if !slices.IsSorted(list) {
+		t.Errorf("ClientCommandList() is not sorted: %v", list)
 	}
 }
