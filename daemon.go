@@ -283,9 +283,11 @@ func (d *daemon) handleCheckFailure(checkName string) {
 			// restart that may have already re-created svc.done.
 			done := svc.Done()
 			svc.Stop()
-			d.senderWg.Go(func() {
-				d.restartCh <- restartReq{svc: svc, done: done, delay: 0}
-			})
+			select {
+			case d.restartCh <- restartReq{svc: svc, done: done, delay: 0}:
+			default:
+				log.Printf("check %s: restart queue full, dropping restart for %s", checkName, svc.Name)
+			}
 			continue
 		case service.ActionShutdown:
 			d.mu.Unlock()
@@ -620,18 +622,20 @@ func (d *daemon) setupControl() *control.Server {
 		return fmt.Sprintf("%s: sent %s", name, sigName), nil
 	}
 	ctrlServer.RestartFn = func(name string) (string, error) {
-		d.mu.RLock()
+		d.mu.Lock()
 		svc, ok := d.services[name]
-		d.mu.RUnlock()
 		if !ok {
+			d.mu.Unlock()
 			return "", fmt.Errorf("unknown service %q", name)
 		}
-		// Capture done before Stop so the restart handler waits on this
-		// specific exit event.
+		// Capture done and call Stop under the same Lock to prevent a TOCTOU
+		// race where the service exits and restarts between Done() and IsRunning(),
+		// which would make done reference an already-closed channel.
 		done := svc.Done()
 		if svc.IsRunning() {
 			svc.Stop()
 		}
+		d.mu.Unlock()
 		select {
 		case d.restartCh <- restartReq{svc: svc, done: done, delay: 0}:
 			return fmt.Sprintf("%s: restart scheduled", name), nil
