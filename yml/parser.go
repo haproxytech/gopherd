@@ -228,9 +228,22 @@ func splitCSV(s string) []string {
 	var current strings.Builder
 	inQuote := false
 	quoteChar := byte(0)
+	escaped := false
 	for i := range len(s) {
 		c := s[i]
+		if escaped {
+			current.WriteByte(c)
+			escaped = false
+			continue
+		}
 		if inQuote {
+			if c == '\\' && quoteChar == '"' {
+				// Backslash only escapes inside double-quoted segments,
+				// matching YAML semantics (single-quoted treats \ as literal).
+				current.WriteByte(c)
+				escaped = true
+				continue
+			}
 			current.WriteByte(c)
 			if c == quoteChar {
 				inQuote = false
@@ -308,9 +321,11 @@ func unescapeDouble(s string) string {
 }
 
 // findColon returns the index of the first ':' that is followed by a space
-// or appears at end-of-string. It does not account for quoting, so keys that
-// look like URLs (e.g. "http://host:") would mis-split. All gopherd config
-// keys are simple identifiers, so this limitation is intentional.
+// or appears at end-of-string. It does not account for quoting. The only
+// risk is a key name that itself contains ": " (colon-space), which is not
+// a valid YAML identifier and not used in any gopherd config key.
+// URL-like values (e.g. "http://host:port") are safe because "://" does not
+// match the "colon followed by space" pattern.
 func findColon(s string) int {
 	for i := range len(s) {
 		if s[i] == ':' {
