@@ -119,7 +119,7 @@ type Service struct {
 	killDelay  time.Duration
 	// Pid is stored atomically so control-socket callbacks can read it
 	// without holding svc.mu, while Start() writes it under svc.mu.
-	Pid atomic.Int32
+	Pid atomic.Int64
 
 	mu      sync.Mutex
 	running atomic.Bool
@@ -252,6 +252,20 @@ func parseDotEnv(path string) (map[string]string, error) {
 	}
 	f := os.NewFile(uintptr(fd), path)
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("dotenv %s: stat: %w", path, err)
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		mode := info.Mode()
+		if mode&0o002 != 0 {
+			return nil, fmt.Errorf("dotenv %s is world-writable (mode %04o, owner uid=%d); refusing to open", path, mode.Perm(), stat.Uid)
+		}
+		euid := uint32(os.Geteuid())
+		if stat.Uid != 0 && stat.Uid != euid {
+			return nil, fmt.Errorf("dotenv %s is owned by uid %d (expected root or uid %d); refusing to open", path, stat.Uid, euid)
+		}
+	}
 	data, err := io.ReadAll(f)
 	if err != nil {
 		return nil, fmt.Errorf("dotenv %s: %w", path, err)
@@ -371,7 +385,7 @@ func (s *Service) Start() (int, error) {
 	cmd := exec.Command(s.Proc.Command, args...)
 	cmd.Stdout = s.Stdout
 	cmd.Stderr = s.Stderr
-	cmd.Stdin = os.Stdin
+	cmd.Stdin = nil // each child gets /dev/null as stdin (exec.Cmd default)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if s.Proc.WorkingDir != "" {
@@ -427,7 +441,7 @@ func (s *Service) Start() (int, error) {
 	}
 
 	s.cmd = cmd
-	s.Pid.Store(int32(cmd.Process.Pid))
+	s.Pid.Store(int64(cmd.Process.Pid))
 	s.done = make(chan struct{})
 	s.running.Store(true)
 	s.stopped.Store(false)
