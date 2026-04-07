@@ -145,10 +145,6 @@ func run(entrypointArgs []string) int {
 			continue
 		}
 
-		if err := d.startService(svc); err != nil {
-			log.Fatalf("start %s: %v", svc.Name, err)
-		}
-
 		if svc.Proc.ReadyCheck != "" {
 			checkCfg, ok := cfg.Checks[svc.Proc.ReadyCheck]
 			if !ok {
@@ -180,6 +176,10 @@ func run(entrypointArgs []string) int {
 				log.Fatalf("%s: ready-check %q did not pass within %s", svc.Name, svc.Proc.ReadyCheck, readyTimeout)
 			}
 			log.Printf("%s: ready (check %s passed)", svc.Name, svc.Proc.ReadyCheck)
+		}
+
+		if err := d.startService(svc); err != nil {
+			log.Fatalf("start %s: %v", svc.Name, err)
 		}
 	}
 
