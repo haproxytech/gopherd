@@ -457,9 +457,25 @@ func (d *daemon) reload() (string, error) {
 		}
 	}
 
-	// Stop old checks, rebuild from new config.
+	// Stop old checks.
 	d.stopChecks()
+
+	// Reconcile log targets: disconnect all current services from old target
+	// writers, close old targets, then rebuild from new config. New service
+	// wrappers created by buildServices() will be wired to the new targets
+	// automatically. Preserved services (kept running below) are re-wired
+	// explicitly after the reconcile loop.
+	for _, svc := range d.services {
+		svc.Stdout.ClearTargets()
+		svc.Stderr.ClearTargets()
+	}
+	for _, lt := range d.logTargets {
+		lt.Close()
+	}
+	d.logTargets = nil
+
 	d.cfg = newCfg
+	d.buildLogTargets()
 	d.buildServices()
 
 	// Preserve running state: if a service was running and its process config
@@ -474,6 +490,13 @@ func (d *daemon) reload() (string, error) {
 		}
 		if oldSvc.IsRunning() && !processConfigChanged(oldSvc.Proc, newSvc.Proc) {
 			// Config unchanged — keep the old running instance.
+			// Re-wire its PrefixWriters to the newly built log targets.
+			for _, lt := range d.logTargets {
+				if lt.AppliesTo(oldSvc.Name) {
+					oldSvc.Stdout.AddTarget(lt.Writer)
+					oldSvc.Stderr.AddTarget(lt.Writer)
+				}
+			}
 			d.services[name] = oldSvc
 		} else if oldSvc.IsRunning() {
 			// Config changed — stop old instance. Set exit actions to ignore
