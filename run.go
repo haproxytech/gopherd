@@ -268,6 +268,9 @@ func run(entrypointArgs []string) int {
 		var ws syscall.WaitStatus
 		pid, err := syscall.Wait4(-1, &ws, 0, nil)
 		if err != nil {
+			if err == syscall.EINTR {
+				continue
+			}
 			break
 		}
 		if pid <= 0 {
@@ -433,10 +436,12 @@ func waitOneshot(pid int, timeoutStr string) (int, error) {
 		return 0, fmt.Errorf("invalid startup-timeout %q: %w", timeoutStr, err)
 	}
 
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case r := <-ch:
 		return r.code, r.err
-	case <-time.After(timeout):
+	case <-timer.C:
 		// Drain the goroutine so it does not leak after the caller kills the process.
 		go func() { <-ch }()
 		return 0, fmt.Errorf("timed out after %s", timeout)
