@@ -151,6 +151,25 @@ func (sw *syslogWriter) Close() error {
 	return sw.w.Close()
 }
 
+// fileWriter wraps *os.File to apply the same control-character sanitisation
+// as syslogWriter. This prevents ANSI escape sequences and other control bytes
+// from services being written verbatim to log files.
+type fileWriter struct {
+	f *os.File
+}
+
+func (fw *fileWriter) Write(p []byte) (int, error) {
+	clean := sanitize(string(p))
+	if _, err := fw.f.Write([]byte(clean)); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (fw *fileWriter) Close() error {
+	return fw.f.Close()
+}
+
 // openFile opens a log file for append-only writing, creating parent
 // directories and the file itself if they don't exist. The path must be
 // absolute to prevent relative path confusion. O_NOFOLLOW prevents the
@@ -176,5 +195,5 @@ func openFile(location string) (io.WriteCloser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open log file %s: %w", path, err)
 	}
-	return f, nil
+	return &fileWriter{f: f}, nil
 }
