@@ -110,6 +110,14 @@ func (pw *PrefixWriter) AddTarget(w io.Writer) {
 	pw.extra = append(pw.extra, w)
 }
 
+// ClearTargets removes all additional writers registered via AddTarget.
+// Used during reload to disconnect old log-target writers before re-wiring new ones.
+func (pw *PrefixWriter) ClearTargets() {
+	pw.mu.Lock()
+	defer pw.mu.Unlock()
+	pw.extra = pw.extra[:0]
+}
+
 // Subscribe returns a channel that receives new prefixed log lines and an
 // unsubscribe function. The channel is buffered to avoid blocking writes.
 func (pw *PrefixWriter) Subscribe() (<-chan []byte, func()) {
