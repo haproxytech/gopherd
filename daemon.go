@@ -445,6 +445,9 @@ func (d *daemon) reload() (string, error) {
 	// Stop and remove services that are no longer in config.
 	// Set exit actions to ActionIgnore before removing so the reap loop
 	// treats the eventual exit as benign rather than triggering a shutdown.
+	// Invariant: OnSuccess and OnFailure are plain fields that must only be
+	// read or written while holding d.mu. The reap loop reads them under
+	// d.mu; both mutation sites here are inside d.mu.Lock().
 	for name, svc := range d.services {
 		if !newNames[name] {
 			log.Printf("reload: removing service %s", name)
@@ -688,8 +691,13 @@ func (d *daemon) setupControl() *control.Server {
 
 // processConfigChanged reports whether the fields of p that affect the running
 // process differ between old and new. Fields that only affect restart policy or
-// metadata (backoff, on-success, on-failure, etc.) are intentionally excluded
-// since they do not require a process restart.
+// metadata are intentionally excluded since they do not require a process restart:
+//   - on-success, on-failure: applied at next exit, no restart needed
+//   - backoff-*: applied at next restart, no restart needed
+//   - startup-timeout: only relevant during initial start sequencing
+// ReadyCheck, ReadyTimeout, and KillDelay ARE included: they affect how the
+// process is started (readiness gating) and stopped (kill delay), so a config
+// change should cause the service to restart with the new values.
 func processConfigChanged(oldp, newp service.Process) bool {
 	if oldp.Command != newp.Command {
 		return true
@@ -716,6 +724,15 @@ func processConfigChanged(oldp, newp service.Process) bool {
 		return true
 	}
 	if oldp.DotEnv != newp.DotEnv {
+		return true
+	}
+	if oldp.ReadyCheck != newp.ReadyCheck {
+		return true
+	}
+	if oldp.ReadyTimeout != newp.ReadyTimeout {
+		return true
+	}
+	if oldp.KillDelay != newp.KillDelay {
 		return true
 	}
 	return false
