@@ -144,6 +144,10 @@ func (cs *Server) acceptLoop() {
 // Prevents slowloris-style attacks that hold connection slots indefinitely.
 const connReadTimeout = 5 * time.Second
 
+// connWriteTimeout is the maximum time allowed to write a response to a client.
+// Prevents stalled readers from holding connection slots indefinitely.
+const connWriteTimeout = 10 * time.Second
+
 func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 	defer conn.Close()
 	conn.SetReadDeadline(time.Now().Add(connReadTimeout))
@@ -184,6 +188,7 @@ func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 			defer func() { <-streamSem }()
 			cs.handleLogs(conn, parts)
 		default:
+			conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 			fmt.Fprintf(conn, "error: too many streaming connections\n")
 		}
 		return
@@ -191,6 +196,7 @@ func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 
 	defer func() { <-cmdSem }()
 	resp := cs.handleCommand(parts)
+	conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 	fmt.Fprintf(conn, "%s\n", resp)
 }
 
