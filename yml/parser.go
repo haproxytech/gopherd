@@ -82,8 +82,20 @@ func splitLines(data []byte) []rawLine {
 func stripInlineComment(s string) string {
 	inSingle := false
 	inDouble := false
+	escaped := false
 	for i, c := range s {
+		if escaped {
+			escaped = false
+			continue
+		}
 		switch c {
+		case '\\':
+			// Inside double-quoted strings, a backslash escapes the next
+			// character (e.g. \" does not close the string).
+			// Single-quoted strings treat backslash as literal.
+			if inDouble {
+				escaped = true
+			}
 		case '\'':
 			if !inDouble {
 				inSingle = !inSingle
@@ -116,15 +128,20 @@ func parseBlock(lines []rawLine, pos, minIndent int) (*Node, int, error) {
 
 func parseMapping(lines []rawLine, pos, minIndent int) (*Node, int, error) {
 	m := &Node{kind: kindMapping}
+	baseIndent := -1 // indent of the first key; all siblings must match
 
 	for pos < len(lines) {
 		line := lines[pos]
 		if minIndent >= 0 && line.indent <= minIndent {
 			break
 		}
-		if len(m.mapping) == 0 {
+		if baseIndent < 0 {
+			// First key establishes the required indent for all siblings.
+			baseIndent = line.indent
 			minIndent = line.indent - 1
-		} else if line.indent < lines[pos-1].indent && line.indent <= minIndent {
+		} else if line.indent != baseIndent {
+			// A different indent means this line belongs to a parent or
+			// child block — stop consuming siblings here.
 			break
 		}
 
@@ -240,14 +257,60 @@ func splitCSV(s string) []string {
 }
 
 func unquote(s string) string {
-	if len(s) >= 2 {
-		if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
-			return s[1 : len(s)-1]
-		}
+	if len(s) < 2 {
+		return s
+	}
+	if s[0] == '\'' && s[len(s)-1] == '\'' {
+		return s[1 : len(s)-1]
+	}
+	if s[0] == '"' && s[len(s)-1] == '"' {
+		return unescapeDouble(s[1 : len(s)-1])
 	}
 	return s
 }
 
+// unescapeDouble processes YAML double-quoted string escape sequences.
+// Handles the most common sequences: \n, \t, \r, \\, \", \'.
+func unescapeDouble(s string) string {
+	if !strings.ContainsRune(s, '\\') {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		switch s[i+1] {
+		case 'n':
+			b.WriteByte('\n')
+		case 't':
+			b.WriteByte('\t')
+		case 'r':
+			b.WriteByte('\r')
+		case '\\':
+			b.WriteByte('\\')
+		case '"':
+			b.WriteByte('"')
+		case '\'':
+			b.WriteByte('\'')
+		default:
+			// Unknown escape: preserve both characters.
+			b.WriteByte('\\')
+			b.WriteByte(s[i+1])
+		}
+		i += 2
+	}
+	return b.String()
+}
+
+// findColon returns the index of the first ':' that is followed by a space
+// or appears at end-of-string. It does not account for quoting, so keys that
+// look like URLs (e.g. "http://host:") would mis-split. All gopherd config
+// keys are simple identifiers, so this limitation is intentional.
 func findColon(s string) int {
 	for i := range len(s) {
 		if s[i] == ':' {

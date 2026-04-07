@@ -37,8 +37,22 @@ func TopoSort(services []Service) ([]string, error) {
 	}
 
 	// Build adjacency list: edge from A -> B means A must start before B.
+	// seenEdge tracks inserted (from, to) pairs to deduplicate edges that
+	// appear in multiple constraint lists (e.g., both after and requires).
+	// Duplicate edges would double-count inDegree and cause false cycle reports.
 	edges := make(map[string][]string)
 	inDegree := make(map[string]int)
+	seenEdge := make(map[[2]string]bool)
+
+	addEdge := func(from, to string) {
+		key := [2]string{from, to}
+		if seenEdge[key] {
+			return
+		}
+		seenEdge[key] = true
+		edges[from] = append(edges[from], to)
+		inDegree[to]++
+	}
 
 	for _, s := range services {
 		if _, ok := inDegree[s.Name]; !ok {
@@ -49,24 +63,21 @@ func TopoSort(services []Service) ([]string, error) {
 			if !names[dep] {
 				return nil, fmt.Errorf("process %s: after references unknown process %q", s.Name, dep)
 			}
-			edges[dep] = append(edges[dep], s.Name)
-			inDegree[s.Name]++
+			addEdge(dep, s.Name)
 		}
 
 		for _, dep := range s.Before {
 			if !names[dep] {
 				return nil, fmt.Errorf("process %s: before references unknown process %q", s.Name, dep)
 			}
-			edges[s.Name] = append(edges[s.Name], dep)
-			inDegree[dep]++
+			addEdge(s.Name, dep)
 		}
 
 		for _, dep := range s.Requires {
 			if !names[dep] {
 				return nil, fmt.Errorf("process %s: requires references unknown process %q", s.Name, dep)
 			}
-			edges[dep] = append(edges[dep], s.Name)
-			inDegree[s.Name]++
+			addEdge(dep, s.Name)
 		}
 	}
 

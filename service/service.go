@@ -17,6 +17,7 @@ package service
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"maps"
 	"os"
@@ -116,7 +117,9 @@ type Service struct {
 
 	stopSignal syscall.Signal
 	killDelay  time.Duration
-	Pid        int
+	// Pid is stored atomically so control-socket callbacks can read it
+	// without holding svc.mu, while Start() writes it under svc.mu.
+	Pid atomic.Int32
 
 	mu      sync.Mutex
 	running atomic.Bool
@@ -200,10 +203,56 @@ func New(p Process, globalPrefix string) *Service {
 	}
 }
 
+// dotenvUnescapeDouble processes backslash escape sequences in a .env
+// double-quoted value. Handles the common sequences: \n, \t, \r, \\, \".
+func dotenvUnescapeDouble(s string) string {
+	if !strings.ContainsRune(s, '\\') {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		switch s[i+1] {
+		case 'n':
+			b.WriteByte('\n')
+		case 't':
+			b.WriteByte('\t')
+		case 'r':
+			b.WriteByte('\r')
+		case '\\':
+			b.WriteByte('\\')
+		case '"':
+			b.WriteByte('"')
+		default:
+			b.WriteByte('\\')
+			b.WriteByte(s[i+1])
+		}
+		i += 2
+	}
+	return b.String()
+}
+
 // parseDotEnv reads a dotenv file and returns key-value pairs.
 // Lines are in the format KEY=value. Empty lines and lines starting with # are skipped.
+// Uses O_NOFOLLOW to reject symlinks atomically, matching the protection applied to
+// the main config file.
 func parseDotEnv(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		if err == syscall.ELOOP {
+			return nil, fmt.Errorf("dotenv %s is a symlink; refusing to open", path)
+		}
+		return nil, fmt.Errorf("dotenv %s: %w", path, err)
+	}
+	f := os.NewFile(uintptr(fd), path)
+	defer f.Close()
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return nil, fmt.Errorf("dotenv %s: %w", path, err)
 	}
@@ -217,7 +266,17 @@ func parseDotEnv(path string) (map[string]string, error) {
 		if !ok {
 			continue
 		}
-		env[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		v = strings.TrimSpace(v)
+		// Strip matching outer quotes. Double-quoted values have their
+		// backslash escape sequences processed (e.g. \n, \t) consistent
+		// with how the YAML parser handles double-quoted strings.
+		// Single-quoted values are taken literally.
+		if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+			v = dotenvUnescapeDouble(v[1 : len(v)-1])
+		} else if len(v) >= 2 && v[0] == '\'' && v[len(v)-1] == '\'' {
+			v = v[1 : len(v)-1]
+		}
+		env[strings.TrimSpace(k)] = v
 	}
 	return env, nil
 }
@@ -255,6 +314,10 @@ var memRe = regexp.MustCompile(`\{\{\s*mem\s+(.+?)\s*\}\}`)
 // expandTemplates resolves {{.VAR}} and {{mem EXPR}} placeholders in a string
 // slice. Environment lookups use env; memory expressions use totalMiB.
 // Missing env keys expand to empty string.
+//
+// Expansion is single-pass: if a variable's value itself contains {{.VAR}} or
+// {{mem EXPR}} placeholders they are not re-expanded. Variables defined in the
+// environment: block therefore cannot reference each other.
 func expandTemplates(values []string, env map[string]string, totalMiB int64) ([]string, error) {
 	out := make([]string, len(values))
 	for i, s := range values {
@@ -329,11 +392,17 @@ func (s *Service) Start() (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		// Build "key=value" strings with a single shared buffer to reduce
-		// per-entry allocations from string concatenation.
+		// Build "key=value" strings reusing a scratch buffer to avoid one
+		// make-per-entry. kvBuf is reallocated only when the next entry does
+		// not fit in the existing capacity; otherwise the same backing array
+		// is reused and string(kvBuf) copies just the used portion.
 		cmd.Env = make([]string, len(env))
 		var kvBuf []byte
 		for i, k := range envKeys {
+			need := len(k) + 1 + len(envVals[i])
+			if cap(kvBuf) < need {
+				kvBuf = make([]byte, 0, need)
+			}
 			kvBuf = append(kvBuf[:0], k...)
 			kvBuf = append(kvBuf, '=')
 			kvBuf = append(kvBuf, envVals[i]...)
@@ -358,12 +427,12 @@ func (s *Service) Start() (int, error) {
 	}
 
 	s.cmd = cmd
-	s.Pid = cmd.Process.Pid
+	s.Pid.Store(int32(cmd.Process.Pid))
 	s.done = make(chan struct{})
 	s.running.Store(true)
 	s.stopped.Store(false)
 	s.startedAt = time.Now()
-	return s.Pid, nil
+	return int(s.Pid.Load()), nil
 }
 
 // Stop sends the configured stop signal to the process group and schedules
@@ -379,9 +448,9 @@ func (s *Service) Stop() {
 		return
 	}
 	s.stopped.Store(true)
-	_ = syscall.Kill(-s.Pid, s.stopSignal)
+	_ = syscall.Kill(-int(s.Pid.Load()), s.stopSignal)
 	if s.killDelay > 0 {
-		pid := s.Pid
+		pid := int(s.Pid.Load())
 		s.killTimer = time.AfterFunc(s.killDelay, func() {
 			_ = syscall.Kill(-pid, syscall.SIGKILL)
 		})

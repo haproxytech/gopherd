@@ -178,6 +178,10 @@ func (pw *PrefixWriter) Write(p []byte) (int, error) {
 		}
 
 		prefixed := pw.prefix(line)
+		// prefixed aliases pw.prefixBuf and is reused on the next iteration.
+		// All writers registered here (os.Stdout/Stderr, syslogWriter, *os.File)
+		// must consume the bytes synchronously before Write returns — they must
+		// not retain the slice after returning.
 		_, _ = pw.dest.Write(prefixed)
 		for _, w := range pw.extra {
 			_, _ = w.Write(prefixed)
@@ -200,11 +204,12 @@ func (pw *PrefixWriter) Write(p []byte) (int, error) {
 		}
 
 		// Fan out to subscribers (non-blocking).
-		// Subscribers get a shared reference to the ring slot. This is safe
-		// because the slot won't be overwritten until the ring wraps (200 lines later).
+		// Send a copy so subscribers cannot observe a future ring-slot overwrite.
 		for _, ch := range pw.subs {
+			msg := make([]byte, len(slot))
+			copy(msg, slot)
 			select {
-			case ch <- slot:
+			case ch <- msg:
 			default:
 				// subscriber too slow, drop line
 			}

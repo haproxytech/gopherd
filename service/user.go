@@ -88,9 +88,12 @@ func ResolveCredential(userName, groupName string, userID, groupID *int) (*sysca
 		return nil, nil
 	}
 
-	// If only group is specified, preserve current process UID
+	// If only group is specified, preserve current process UID.
+	// Explicitly set Groups to just the target GID so the child does not
+	// inherit the parent's supplementary groups (which may include root).
 	if !hasUser && hasGroup {
 		uid = uint32(os.Getuid())
+		groups = []uint32{gid}
 	}
 
 	return &syscall.Credential{Uid: uid, Gid: gid, Groups: groups}, nil

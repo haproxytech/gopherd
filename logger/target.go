@@ -23,7 +23,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"unsafe"
 )
 
 // TargetConfig defines a log forwarding target.
@@ -117,10 +116,7 @@ func openSyslog(location string) (io.WriteCloser, error) {
 }
 
 func (sw *syslogWriter) Write(p []byte) (int, error) {
-	// Zero-copy []byte->string: safe because sanitize's fast path returns it
-	// immediately and syslog.Writer copies internally before Write returns.
-	s := unsafe.String(unsafe.SliceData(p), len(p))
-	return len(p), sw.w.Info(sanitize(s))
+	return len(p), sw.w.Info(sanitize(string(p)))
 }
 
 // sanitize strips control characters (except newline and tab) from log
@@ -148,7 +144,7 @@ func sanitize(s string) string {
 			buf = append(buf, s[i])
 		}
 	}
-	return unsafe.String(unsafe.SliceData(buf), len(buf))
+	return string(buf)
 }
 
 func (sw *syslogWriter) Close() error {

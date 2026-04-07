@@ -38,11 +38,11 @@ func run(entrypointArgs []string) int {
 		configPath = v
 	}
 
-	if err := checkConfigPermissions(configPath); err != nil {
+	data, err := readConfigFile(configPath)
+	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-
-	cfg, err := yml.Load(configPath)
+	cfg, err := yml.Unmarshal(data)
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
@@ -173,12 +173,12 @@ func run(entrypointArgs []string) int {
 			err = c.WaitReady(ctx)
 			cancel()
 			if err != nil {
-				log.Fatalf("%s: ready-check %q did not pass within %s", svc.Name, svc.Proc.ReadyCheck, readyTimeout)
+				log.Fatalf("%s: ready-check %q did not pass within %s (ready-check runs before %s starts; it should poll a dependency already running, not the service itself)", svc.Name, svc.Proc.ReadyCheck, readyTimeout, svc.Name)
 			}
 			log.Printf("%s: ready (check %s passed)", svc.Name, svc.Proc.ReadyCheck)
 		}
 
-		if err := d.startService(svc); err != nil {
+		if _, err := d.startService(svc); err != nil {
 			log.Fatalf("start %s: %v", svc.Name, err)
 		}
 	}
@@ -212,54 +212,53 @@ func run(entrypointArgs []string) int {
 	}
 	go func() {
 		for sig := range sigs {
-			d.mu.Lock()
 			sysSig, ok := sig.(syscall.Signal)
 			if !ok {
-				d.mu.Unlock()
 				continue
 			}
 			switch {
 			case sysSig == stopSignal || sysSig == syscall.SIGTERM || sysSig == syscall.SIGINT:
-				if !d.shuttingDown {
-					d.initiateShutdown(0)
-				}
+				// initiateShutdown is idempotent (CAS) and acquires d.mu itself.
+				d.initiateShutdown(0)
 			case sysSig == syscall.SIGHUP:
-				d.mu.Unlock()
 				msg, err := d.reload()
 				if err != nil {
 					log.Printf("reload failed: %v", err)
 				} else {
 					log.Printf("%s", msg)
 				}
-				continue
 			default:
+				d.mu.Lock()
 				for _, svc := range d.services {
 					svc.Signal(sig)
 				}
+				d.mu.Unlock()
 			}
-			d.mu.Unlock()
 		}
 	}()
 
 	// Handle restart requests from the reap loop.
 	go func() {
 		for req := range d.restartCh {
-			// Wait for the service to actually exit before restarting.
-			<-req.svc.Done()
+			// Wait for the specific exit event that triggered this restart.
+			// Using req.done (captured at enqueue time) rather than calling
+			// req.svc.Done() here avoids blocking on a newer done channel if
+			// the service was already restarted by a concurrent path.
+			<-req.done
+			// Skip if a concurrent restart already brought the service back up.
+			if req.svc.IsRunning() {
+				continue
+			}
 			time.Sleep(req.delay)
 			d.mu.Lock()
-			if d.shuttingDown {
+			if d.shuttingDown.Load() {
 				d.mu.Unlock()
 				continue
 			}
 			d.mu.Unlock()
-			if err := d.startService(req.svc); err != nil {
+			if _, err := d.startService(req.svc); err != nil {
 				log.Printf("restart %s failed: %v", req.svc.Name, err)
-				d.mu.Lock()
-				if !d.shuttingDown {
-					d.initiateShutdown(1)
-				}
-				d.mu.Unlock()
+				d.initiateShutdown(1)
 			}
 		}
 	}()
@@ -285,7 +284,7 @@ func run(entrypointArgs []string) int {
 			log.Printf("%s exited (status %d)", svc.Name, code)
 			d.m.ServiceExited(svc.Name, code)
 
-			if d.shuttingDown {
+			if d.shuttingDown.Load() {
 				anyRunning := false
 				for _, s := range d.services {
 					if s.IsRunning() {
@@ -339,18 +338,30 @@ func run(entrypointArgs []string) int {
 				delay := svc.Backoff.Next()
 				log.Printf("restarting %s in %s", svc.Name, delay)
 				d.m.ServiceRestarted(svc.Name)
+				// Capture the done channel before unlocking; at this point
+				// MarkExited has already closed it, so svc.Done() returns
+				// the closed channel for this specific exit event.
+				exitDone := svc.Done()
 				d.mu.Unlock()
-				go func() { d.restartCh <- restartReq{svc: svc, delay: delay} }()
+				d.senderWg.Go(func() {
+					d.restartCh <- restartReq{svc: svc, done: exitDone, delay: delay}
+				})
 				continue
 
 			case service.ActionShutdown:
+				d.mu.Unlock()
 				d.initiateShutdown(effectiveCode)
+				continue
 
 			case service.ActionSuccessShutdown:
+				d.mu.Unlock()
 				d.initiateShutdown(0)
+				continue
 
 			case service.ActionFailureShutdown:
+				d.mu.Unlock()
 				d.initiateShutdown(effectiveCode)
+				continue
 
 			case service.ActionIgnore:
 				log.Printf("%s: ignoring exit", svc.Name)
@@ -360,7 +371,7 @@ func run(entrypointArgs []string) int {
 		}
 		d.mu.Unlock()
 
-		if d.shuttingDown {
+		if d.shuttingDown.Load() {
 			d.mu.Lock()
 			anyRunning := false
 			for _, s := range d.services {
@@ -378,17 +389,24 @@ func run(entrypointArgs []string) int {
 
 	ctrlServer.Stop()
 	d.stopChecks()
+	// All sources that write to restartCh (reap loop, check callbacks, control
+	// socket RestartFn) have now stopped. Wait for any in-flight sender
+	// goroutines, then close the channel so the restart goroutine's range loop
+	// terminates naturally.
+	d.senderWg.Wait()
+	close(d.restartCh)
 	d.closeLogTargets()
 
-	return d.exitCode
+	return int(d.exitCode.Load())
 }
 
 // waitOneshot waits for a oneshot process to exit, with an optional timeout.
 // If timeoutStr is empty, it waits indefinitely. Returns the exit code or an
 // error if the timeout is exceeded.
 //
-// Uses a blocking Wait4 in a goroutine rather than WNOHANG polling to avoid
-// race conditions with the main reap loop or PID reuse.
+// Safety invariant: this is called during the startup loop, which completes
+// entirely before the main reap loop (Wait4(-1,...)) starts. There is therefore
+// no concurrent Wait4(-1,...) racing with the specific-PID Wait4 goroutine here.
 func waitOneshot(pid int, timeoutStr string) (int, error) {
 	type waitResult struct {
 		err  error
@@ -419,6 +437,8 @@ func waitOneshot(pid int, timeoutStr string) (int, error) {
 	case r := <-ch:
 		return r.code, r.err
 	case <-time.After(timeout):
+		// Drain the goroutine so it does not leak after the caller kills the process.
+		go func() { <-ch }()
 		return 0, fmt.Errorf("timed out after %s", timeout)
 	}
 }

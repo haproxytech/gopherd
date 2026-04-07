@@ -95,7 +95,9 @@ func (cs *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("control socket: %w", err)
 	}
-	os.Chmod(cs.SocketPath, cs.socketMode)
+	if err := os.Chmod(cs.SocketPath, cs.socketMode); err != nil {
+		log.Printf("warning: control socket: chmod %s: %v", cs.SocketPath, err)
+	}
 
 	cs.listener = ln
 	go cs.acceptLoop()
@@ -157,6 +159,16 @@ func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 	}
 
 	uid := peerUID(conn)
+	// On Linux, enforce that only root (uid 0) or the daemon's own user may
+	// issue commands. This is defense-in-depth on top of socket file
+	// permissions (mode 0660). On other platforms uid is -1 (unavailable)
+	// and access control falls back to filesystem permissions alone.
+	if uid != -1 && uid != 0 && uid != os.Geteuid() {
+		log.Printf("control: uid=%d rejected: permission denied", uid)
+		fmt.Fprintf(conn, "error: permission denied\n")
+		<-cmdSem
+		return
+	}
 	log.Printf("control: uid=%d cmd=%q", uid, line)
 
 	// Clear deadline for command handling (logs -f may stream indefinitely).

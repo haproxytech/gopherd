@@ -177,6 +177,7 @@ func (c *Checker) Run() {
 			err := c.Execute()
 
 			c.mu.Lock()
+			var callFailure bool
 			if err != nil {
 				c.failures++
 				if c.metricsFn != nil {
@@ -185,9 +186,7 @@ func (c *Checker) Run() {
 				if c.failures >= c.threshold && c.healthy {
 					c.healthy = false
 					log.Printf("check %s: unhealthy (%d consecutive failures): %v", c.name, c.failures, err)
-					if c.onFailureFn != nil {
-						c.onFailureFn(c.name)
-					}
+					callFailure = true
 				}
 			} else {
 				if c.metricsFn != nil {
@@ -200,6 +199,12 @@ func (c *Checker) Run() {
 				c.healthy = true
 			}
 			c.mu.Unlock()
+			// Call onFailureFn outside the lock to avoid a lock-order inversion:
+			// onFailureFn acquires d.mu, and d.mu is also held when stopChecks()
+			// calls c.Stop(). Releasing c.mu first keeps the ordering consistent.
+			if callFailure && c.onFailureFn != nil {
+				c.onFailureFn(c.name)
+			}
 
 			select {
 			case <-ticker.C:

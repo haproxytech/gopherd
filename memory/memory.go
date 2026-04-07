@@ -18,6 +18,7 @@ package memory
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -98,7 +99,10 @@ func systemMemMiB() (int64, error) {
 		}
 		return kb / 1024, nil
 	}
-	return 0, sc.Err()
+	if err := sc.Err(); err != nil {
+		return 0, err
+	}
+	return 0, fmt.Errorf("MemTotal not found in %s", procMeminfo)
 }
 
 // cgroupMemMiB reads the cgroup memory limit.

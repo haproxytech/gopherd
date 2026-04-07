@@ -167,11 +167,11 @@ func TestInitiateShutdown(t *testing.T) {
 		{Name: "app", Command: "/bin/app"},
 	})
 	d.initiateShutdown(42)
-	if !d.shuttingDown {
+	if !d.shuttingDown.Load() {
 		t.Error("expected shuttingDown=true")
 	}
-	if d.exitCode != 42 {
-		t.Errorf("expected exitCode=42, got %d", d.exitCode)
+	if d.exitCode.Load() != 42 {
+		t.Errorf("expected exitCode=42, got %d", d.exitCode.Load())
 	}
 }
 
@@ -190,7 +190,7 @@ func TestHandleCheckFailureShutdown(t *testing.T) {
 		{Name: "app", Command: "/bin/app", OnCheckFailure: map[string]string{"health": "shutdown"}},
 	})
 	d.handleCheckFailure("health")
-	if !d.shuttingDown {
+	if !d.shuttingDown.Load() {
 		t.Error("expected shutdown on check failure with shutdown action")
 	}
 }
@@ -201,7 +201,7 @@ func TestHandleCheckFailureIgnore(t *testing.T) {
 		{Name: "app", Command: "/bin/app", OnCheckFailure: map[string]string{"health": "ignore"}},
 	})
 	d.handleCheckFailure("health")
-	if d.shuttingDown {
+	if d.shuttingDown.Load() {
 		t.Error("expected no shutdown on ignore action")
 	}
 }
@@ -213,7 +213,7 @@ func TestHandleCheckFailureUnknownCheck(t *testing.T) {
 	})
 	// Should not panic for checks no service cares about.
 	d.handleCheckFailure("nonexistent")
-	if d.shuttingDown {
+	if d.shuttingDown.Load() {
 		t.Error("should not shut down for unrelated check")
 	}
 }
@@ -223,12 +223,12 @@ func TestHandleCheckFailureSkipsDuringShutdown(t *testing.T) {
 	d := newTestDaemon([]service.Process{
 		{Name: "app", Command: "/bin/app", OnCheckFailure: map[string]string{"health": "shutdown"}},
 	})
-	d.shuttingDown = true
-	d.exitCode = 0
+	d.shuttingDown.Store(true)
+	d.exitCode.Store(0)
 	d.handleCheckFailure("health")
 	// exitCode should not change since we were already shutting down.
-	if d.exitCode != 0 {
-		t.Errorf("expected exitCode to remain 0 during shutdown, got %d", d.exitCode)
+	if d.exitCode.Load() != 0 {
+		t.Errorf("expected exitCode to remain 0 during shutdown, got %d", d.exitCode.Load())
 	}
 }
 
