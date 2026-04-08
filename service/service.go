@@ -203,6 +203,35 @@ func New(p Process, globalPrefix string) *Service {
 	}
 }
 
+// stripDotEnvComment removes an unquoted inline comment from a .env value.
+// Inline comments start with " #" (space followed by hash) outside of any
+// quoted region. Single and double quotes protect hash characters, matching
+// the same convention used by Docker's --env-file and most .env parsers.
+//
+// Examples:
+//
+//	value # comment      → value
+//	"value # not"        → "value # not"   (hash inside double quotes)
+//	'value # not'        → 'value # not'   (hash inside single quotes)
+//	#tag                 → #tag            (no preceding space, kept literal)
+func stripDotEnvComment(v string) string {
+	inSingle := false
+	inDouble := false
+	for i := 0; i < len(v); i++ {
+		switch {
+		case v[i] == '\\' && inDouble && i+1 < len(v):
+			i++ // skip escaped character inside double-quoted string
+		case v[i] == '\'' && !inDouble:
+			inSingle = !inSingle
+		case v[i] == '"' && !inSingle:
+			inDouble = !inDouble
+		case v[i] == '#' && !inSingle && !inDouble && i > 0 && v[i-1] == ' ':
+			return strings.TrimRight(v[:i], " ")
+		}
+	}
+	return v
+}
+
 // dotenvUnescapeDouble processes backslash escape sequences in a .env
 // double-quoted value. Handles the common sequences: \n, \t, \r, \\, \".
 func dotenvUnescapeDouble(s string) string {
@@ -265,6 +294,9 @@ func parseDotEnv(path string) (map[string]string, error) {
 		if stat.Uid != 0 && stat.Uid != euid {
 			return nil, fmt.Errorf("dotenv %s is owned by uid %d (expected root or uid %d); refusing to open", path, stat.Uid, euid)
 		}
+		if mode&0o020 != 0 {
+			log.Printf("warning: dotenv %s is group-writable (mode %04o, owner uid=%d)", path, mode.Perm(), stat.Uid)
+		}
 	}
 	data, err := io.ReadAll(f)
 	if err != nil {
@@ -281,6 +313,8 @@ func parseDotEnv(path string) (map[string]string, error) {
 			continue
 		}
 		v = strings.TrimSpace(v)
+		// Strip unquoted inline comments (e.g. "value # comment" → "value").
+		v = stripDotEnvComment(v)
 		// Strip matching outer quotes. Double-quoted values have their
 		// backslash escape sequences processed (e.g. \n, \t) consistent
 		// with how the YAML parser handles double-quoted strings.
@@ -332,6 +366,9 @@ var memRe = regexp.MustCompile(`\{\{\s*mem\s+(.+?)\s*\}\}`)
 // Expansion is single-pass: if a variable's value itself contains {{.VAR}} or
 // {{mem EXPR}} placeholders they are not re-expanded. Variables defined in the
 // environment: block therefore cannot reference each other.
+//
+// Uses FindAllStringSubmatchIndex for a single-pass replacement, avoiding the
+// double-regex overhead of ReplaceAllStringFunc + FindStringSubmatch.
 func expandTemplates(values []string, env map[string]string, totalMiB int64) ([]string, error) {
 	out := make([]string, len(values))
 	for i, s := range values {
@@ -339,29 +376,35 @@ func expandTemplates(values []string, env map[string]string, totalMiB int64) ([]
 			out[i] = s
 			continue
 		}
-		var memErr error
-		s = memRe.ReplaceAllStringFunc(s, func(match string) string {
-			sub := memRe.FindStringSubmatch(match)
-			if len(sub) < 2 {
-				return match
+		// Expand {{mem EXPR}} placeholders first.
+		if locs := memRe.FindAllStringSubmatchIndex(s, -1); locs != nil {
+			var b strings.Builder
+			prev := 0
+			for _, loc := range locs {
+				b.WriteString(s[prev:loc[0]])
+				mib, err := memory.Eval(s[loc[2]:loc[3]], totalMiB)
+				if err != nil {
+					return nil, err
+				}
+				b.WriteString(strconv.FormatInt(mib, 10))
+				prev = loc[1]
 			}
-			mib, err := memory.Eval(sub[1], totalMiB)
-			if err != nil {
-				memErr = err
-				return match
-			}
-			return strconv.FormatInt(mib, 10)
-		})
-		if memErr != nil {
-			return nil, memErr
+			b.WriteString(s[prev:])
+			s = b.String()
 		}
-		out[i] = templateRe.ReplaceAllStringFunc(s, func(match string) string {
-			sub := templateRe.FindStringSubmatch(match)
-			if len(sub) < 2 {
-				return match
+		// Expand {{.VAR}} placeholders.
+		if locs := templateRe.FindAllStringSubmatchIndex(s, -1); locs != nil {
+			var b strings.Builder
+			prev := 0
+			for _, loc := range locs {
+				b.WriteString(s[prev:loc[0]])
+				b.WriteString(env[s[loc[2]:loc[3]]])
+				prev = loc[1]
 			}
-			return env[sub[1]]
-		})
+			b.WriteString(s[prev:])
+			s = b.String()
+		}
+		out[i] = s
 	}
 	return out, nil
 }
@@ -446,7 +489,7 @@ func (s *Service) Start() (int, error) {
 	s.running.Store(true)
 	s.stopped.Store(false)
 	s.startedAt = time.Now()
-	return int(s.Pid.Load()), nil
+	return cmd.Process.Pid, nil
 }
 
 // Stop sends the configured stop signal to the process group and schedules

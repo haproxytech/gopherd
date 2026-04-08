@@ -18,6 +18,7 @@ package check
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -216,11 +217,13 @@ func (c *Checker) Run() {
 }
 
 // WaitReady runs the check in a loop until it passes once or ctx is cancelled.
+// The polling interval is capped at 1 second so a check with a long period
+// (e.g., 30s) does not stall service startup for an entire period between tries.
 func (c *Checker) WaitReady(ctx context.Context) error {
 	if err := c.Execute(); err == nil {
 		return nil
 	}
-	ticker := time.NewTicker(c.period)
+	ticker := time.NewTicker(min(c.period, time.Second))
 	defer ticker.Stop()
 	for {
 		select {
@@ -287,6 +290,8 @@ func (c *Checker) checkHTTP(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("http check: %w", err)
 	}
+	// Drain the body before closing so the transport can reuse the TCP connection.
+	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("http check: status %d", resp.StatusCode)

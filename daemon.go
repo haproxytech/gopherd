@@ -99,6 +99,10 @@ func resolveStopSignal(cfgSignal string) syscall.Signal {
 	return sig
 }
 
+// errShuttingDown is returned by startService when the daemon has already
+// started its shutdown sequence. Callers must not treat this as a fatal error.
+var errShuttingDown = fmt.Errorf("daemon is shutting down")
+
 // daemon holds all mutable daemon state so reload can update it.
 type daemon struct {
 	cfg       *yml.Config
@@ -119,6 +123,9 @@ type daemon struct {
 	senderWg sync.WaitGroup
 
 	mu sync.RWMutex
+	// reloadMu serialises concurrent hot-reloads so that two rapid SIGHUPs
+	// cannot race on d.checkers, d.cfg, or d.services.
+	reloadMu sync.Mutex
 
 	// exitCode and shuttingDown are accessed from multiple goroutines.
 	// Use atomic types so they can be read without holding mu.
@@ -137,9 +144,17 @@ type restartReq struct {
 }
 
 func (d *daemon) startService(svc *service.Service) (int, error) {
-	// Register the service in pidMap while holding mu, so the reap loop
-	// cannot observe the process exit before we have recorded the PID.
+	// Register the service in pidMap while holding mu so the reap loop cannot
+	// observe the process exit before we have recorded the PID. Checking
+	// shuttingDown under the same lock closes the race where a concurrent
+	// initiateShutdown completes stopAll() between the caller's pre-check and
+	// this function's fork/exec, which would start a process that never gets
+	// a stop signal.
 	d.mu.Lock()
+	if d.shuttingDown.Load() {
+		d.mu.Unlock()
+		return 0, errShuttingDown
+	}
 	pid, err := svc.Start()
 	if err != nil {
 		d.mu.Unlock()
@@ -327,6 +342,11 @@ func (d *daemon) buildServices() {
 		if p.UseEntrypointArgs && len(d.entrypointArgs) > 0 {
 			p.Args = append(p.Args, d.entrypointArgs...)
 		}
+		// Resolve the effective prefix into p.Prefix so processConfigChanged
+		// can detect global prefix changes on reload (not just per-service ones).
+		if p.Prefix == "" {
+			p.Prefix = d.cfg.Prefix
+		}
 		svc := service.New(p, d.cfg.Prefix)
 		d.services[svc.Name] = svc
 		for _, lt := range d.logTargets {
@@ -338,21 +358,28 @@ func (d *daemon) buildServices() {
 	}
 }
 
-func (d *daemon) startOrder() ([]string, error) {
-	orderServices := make([]order.Service, len(d.cfg.Processes))
-	for i, p := range d.cfg.Processes {
+// buildOrderServices converts a Config's process list into the format needed
+// for topological sorting. Extracted so reload() can validate the new config's
+// dependency graph before mutating any daemon state.
+func buildOrderServices(cfg *yml.Config) []order.Service {
+	result := make([]order.Service, len(cfg.Processes))
+	for i, p := range cfg.Processes {
 		name := p.Name
 		if name == "" {
 			name = p.Command
 		}
-		orderServices[i] = order.Service{
+		result[i] = order.Service{
 			Name:     name,
 			After:    p.After,
 			Before:   p.Before,
 			Requires: p.Requires,
 		}
 	}
-	return order.TopoSort(orderServices)
+	return result
+}
+
+func (d *daemon) startOrder() ([]string, error) {
+	return order.TopoSort(buildOrderServices(d.cfg))
 }
 
 func (d *daemon) startChecks() {
@@ -411,6 +438,11 @@ func (d *daemon) closeLogTargets() {
 
 // reload re-reads the config and reconciles services, checks, and log targets.
 func (d *daemon) reload() (string, error) {
+	// Serialize concurrent reloads (e.g., two rapid SIGHUPs) so they cannot
+	// race on d.checkers, d.cfg, or d.services.
+	d.reloadMu.Lock()
+	defer d.reloadMu.Unlock()
+
 	data, err := readConfigFile(d.configPath)
 	if err != nil {
 		return "", fmt.Errorf("reload blocked: %w", err)
@@ -418,6 +450,14 @@ func (d *daemon) reload() (string, error) {
 	newCfg, err := yml.Unmarshal(data)
 	if err != nil {
 		return "", fmt.Errorf("reload config: %w", err)
+	}
+
+	// Pre-validate the dependency graph before acquiring d.mu or mutating any
+	// state. This ensures a bad config (e.g., cycle) fails fast with no
+	// side-effects, rather than leaving services in a half-reconciled state.
+	startOrd, err := order.TopoSort(buildOrderServices(newCfg))
+	if err != nil {
+		return "", fmt.Errorf("reload dependencies: %w", err)
 	}
 
 	d.mu.Lock()
@@ -513,13 +553,6 @@ func (d *daemon) reload() (string, error) {
 		}
 	}
 
-	// Compute start order while still holding the lock.
-	startOrd, err := d.startOrder()
-	if err != nil {
-		d.mu.Unlock()
-		return "", fmt.Errorf("reload dependencies: %w", err)
-	}
-
 	// Update shutdown sequence and mode from new config.
 	d.shutdownSeq = startOrd
 	d.shutdownMode = newCfg.ShutdownOrder
@@ -553,7 +586,7 @@ func (d *daemon) reload() (string, error) {
 	}
 
 	for _, svc := range toStart {
-		if _, err := d.startService(svc); err != nil {
+		if _, err := d.startService(svc); err != nil && err != errShuttingDown {
 			log.Printf("reload: start %s failed: %v", svc.Name, err)
 		}
 	}
@@ -587,6 +620,7 @@ func (d *daemon) setupControl() *control.Server {
 		if len(lines) == 0 {
 			return "no services"
 		}
+		slices.Sort(lines)
 		return strings.Join(lines, "\n")
 	}
 	ctrlServer.StatusFn = func(name string) (string, error) {
@@ -679,12 +713,51 @@ func (d *daemon) setupControl() *control.Server {
 		if !ok {
 			return nil, nil, nil, fmt.Errorf("unknown service %q", name)
 		}
-		recent := svc.Stdout.Recent()
+		// Merge recent lines from both stdout and stderr (stdout first).
+		recent := append(svc.Stdout.Recent(), svc.Stderr.Recent()...)
 		if !follow {
 			return recent, nil, nil, nil
 		}
-		ch, unsub := svc.Stdout.Subscribe()
-		return recent, ch, unsub, nil
+		// Fan-in stdout and stderr subscription channels so the caller
+		// receives lines from both streams. A stop channel lets unsub()
+		// unblock pipe goroutines that are waiting to send to merged,
+		// preventing goroutine leaks when the client disconnects.
+		outCh, outUnsub := svc.Stdout.Subscribe()
+		errCh, errUnsub := svc.Stderr.Subscribe()
+		merged := make(chan []byte, 256)
+		stop := make(chan struct{})
+		go func() {
+			defer close(merged)
+			var wg sync.WaitGroup
+			wg.Add(2)
+			pipe := func(src <-chan []byte) {
+				defer wg.Done()
+				for {
+					select {
+					case b, ok := <-src:
+						if !ok {
+							return
+						}
+						select {
+						case merged <- b:
+						case <-stop:
+							return
+						}
+					case <-stop:
+						return
+					}
+				}
+			}
+			go pipe(outCh)
+			go pipe(errCh)
+			wg.Wait()
+		}()
+		unsub := func() {
+			close(stop)
+			outUnsub()
+			errUnsub()
+		}
+		return recent, merged, unsub, nil
 	}
 	return ctrlServer
 }
@@ -699,7 +772,15 @@ func (d *daemon) setupControl() *control.Server {
 // ReadyCheck, ReadyTimeout, and KillDelay ARE included: they affect how the
 // process is started (readiness gating) and stopped (kill delay), so a config
 // change should cause the service to restart with the new values.
+// Startup IS included: changing "oneshot" vs normal vs "disabled" changes the
+// process lifecycle model and must take effect immediately.
 func processConfigChanged(oldp, newp service.Process) bool {
+	if oldp.Prefix != newp.Prefix {
+		return true
+	}
+	if oldp.Startup != newp.Startup {
+		return true
+	}
 	if oldp.Command != newp.Command {
 		return true
 	}

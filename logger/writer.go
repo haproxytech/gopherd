@@ -140,19 +140,37 @@ func (pw *PrefixWriter) Subscribe() (<-chan []byte, func()) {
 	return ch, unsub
 }
 
-// Recent returns a copy of recent prefixed log lines from the ring buffer.
+// Recent returns a deep copy of recent prefixed log lines from the ring buffer.
+// Each returned slice is an independent copy so concurrent ring writes cannot
+// overwrite the bytes that callers (e.g. the logs command handler) are reading.
 func (pw *PrefixWriter) Recent() [][]byte {
 	pw.mu.Lock()
 	defer pw.mu.Unlock()
+
+	copySlot := func(slot []byte) []byte {
+		cpy := make([]byte, len(slot))
+		copy(cpy, slot)
+		return cpy
+	}
+
 	if !pw.ringFull {
 		out := make([][]byte, pw.ringPos)
-		copy(out, pw.ring[:pw.ringPos])
+		for i, slot := range pw.ring[:pw.ringPos] {
+			out[i] = copySlot(slot)
+		}
 		return out
 	}
 	// Ring has wrapped: return from ringPos..end, then 0..ringPos (oldest to newest).
 	out := make([][]byte, defaultRingSize)
-	n := copy(out, pw.ring[pw.ringPos:])
-	copy(out[n:], pw.ring[:pw.ringPos])
+	n := 0
+	for _, slot := range pw.ring[pw.ringPos:] {
+		out[n] = copySlot(slot)
+		n++
+	}
+	for _, slot := range pw.ring[:pw.ringPos] {
+		out[n] = copySlot(slot)
+		n++
+	}
 	return out
 }
 

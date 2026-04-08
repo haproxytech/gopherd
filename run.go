@@ -250,15 +250,13 @@ func run(entrypointArgs []string) int {
 				continue
 			}
 			time.Sleep(req.delay)
-			d.mu.Lock()
-			if d.shuttingDown.Load() {
-				d.mu.Unlock()
-				continue
-			}
-			d.mu.Unlock()
+			// startService checks shuttingDown atomically with the fork/exec
+			// under d.mu, so no separate pre-check is needed here.
 			if _, err := d.startService(req.svc); err != nil {
-				log.Printf("restart %s failed: %v", req.svc.Name, err)
-				d.initiateShutdown(1)
+				if err != errShuttingDown {
+					log.Printf("restart %s failed: %v", req.svc.Name, err)
+					d.initiateShutdown(1)
+				}
 			}
 		}
 	}()
