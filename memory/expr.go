@@ -16,6 +16,7 @@ package memory
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -74,17 +75,20 @@ func Eval(expr string, totalMiB int64) (int64, error) {
 }
 
 // toMiB converts a value with a unit to MiB.
+// math.Round is used instead of truncation so that values like 1 MB
+// (0.953 MiB) round to 1 MiB rather than 0, preventing a confusing
+// "evaluates to 0 MiB" error for small but valid inputs.
 func toMiB(val float64, unit string) int64 {
 	switch strings.ToUpper(unit) {
 	case "MB":
-		return int64(val * 1000 * 1000 / (1024 * 1024))
+		return int64(math.Round(val * 1e6 / (1 << 20)))
 	case "MIB":
-		return int64(val)
+		return int64(math.Round(val))
 	case "GB":
-		return int64(val * 1000 * 1000 * 1000 / (1024 * 1024))
+		return int64(math.Round(val * 1e9 / (1 << 20)))
 	case "GIB":
-		return int64(val * 1024)
+		return int64(math.Round(val * 1024))
 	default:
-		return int64(val)
+		return int64(math.Round(val))
 	}
 }

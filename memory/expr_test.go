@@ -31,15 +31,17 @@ func TestEval(t *testing.T) {
 		{"50%", 1024, 512, false},
 
 		// Percentage with subtraction.
-		{"100% - 200MB", 3000, 2810, false},
+		// Note: MB/GB use SI units (1 MB = 1,000,000 bytes); conversion to MiB
+		// uses math.Round, so 200 MB = 191 MiB and 1 GB = 954 MiB.
+		{"100% - 200MB", 3000, 2809, false},
 		{"100% - 200MiB", 3000, 2800, false},
-		{"100% - 1GB", 3000, 2047, false},
+		{"100% - 1GB", 3000, 2046, false},
 		{"100% - 1GiB", 3000, 1976, false},
 
 		// Absolute values.
 		{"512MB", 3000, 488, false},
 		{"512MiB", 3000, 512, false},
-		{"1GB", 3000, 953, false},
+		{"1GB", 3000, 954, false},
 		{"2GiB", 3000, 2048, false},
 
 		// Whitespace tolerance.
