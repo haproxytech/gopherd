@@ -296,13 +296,16 @@ func (d *daemon) handleCheckFailure(checkName string) {
 			// Capture done before Stop so the restart handler waits on this
 			// specific exit, not a future done channel created by a concurrent
 			// restart that may have already re-created svc.done.
+			// Use senderWg.Go (blocking send in a tracked goroutine) instead of a
+			// non-blocking select so the restart is never silently dropped. A
+			// dropped restart combined with the default OnSuccess=ActionShutdown
+			// would cause an unexpected daemon shutdown when the stopped service
+			// exits with effectiveCode=0 (WasStopped+signal-death path).
 			done := svc.Done()
 			svc.Stop()
-			select {
-			case d.restartCh <- restartReq{svc: svc, done: done, delay: 0}:
-			default:
-				log.Printf("check %s: restart queue full, dropping restart for %s", checkName, svc.Name)
-			}
+			d.senderWg.Go(func() {
+				d.restartCh <- restartReq{svc: svc, done: done, delay: 0}
+			})
 			continue
 		case service.ActionShutdown:
 			d.mu.Unlock()
@@ -540,6 +543,16 @@ func (d *daemon) reload() (string, error) {
 					oldSvc.Stderr.AddTarget(lt.Writer)
 				}
 			}
+			// Update policy fields in-place. These do not require a process
+			// restart, but must be applied immediately so that a reload
+			// changing on-success, on-failure, on-check-failure, or requires
+			// takes effect for the current run rather than being silently lost.
+			// All four fields are read by the reap loop or check callbacks
+			// under d.mu, which is held here, so the update is race-free.
+			oldSvc.OnSuccess = newSvc.OnSuccess
+			oldSvc.OnFailure = newSvc.OnFailure
+			oldSvc.OnCheckFailure = newSvc.OnCheckFailure
+			oldSvc.Requires = newSvc.Requires
 			d.services[name] = oldSvc
 		} else if oldSvc.IsRunning() {
 			// Config changed — stop old instance. Set exit actions to ignore
@@ -765,7 +778,8 @@ func (d *daemon) setupControl() *control.Server {
 // processConfigChanged reports whether the fields of p that affect the running
 // process differ between old and new. Fields that only affect restart policy or
 // metadata are intentionally excluded since they do not require a process restart:
-//   - on-success, on-failure: applied at next exit, no restart needed
+//   - on-success, on-failure, on-check-failure, requires: updated in-place on
+//     the preserved service wrapper by reload() under d.mu; no restart needed
 //   - backoff-*: applied at next restart, no restart needed
 //   - startup-timeout: only relevant during initial start sequencing
 //

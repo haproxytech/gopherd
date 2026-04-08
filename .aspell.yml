@@ -1,0 +1,4 @@
+allowed:
+  - TOCTOU
+  - livelock
+  - EINTR
