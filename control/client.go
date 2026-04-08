@@ -21,6 +21,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 )
 
 // ClientCommands lists valid client-mode commands for disambiguation with passthrough.
@@ -60,12 +61,17 @@ func ClientCommandList() []string {
 	return out
 }
 
+// clientDialTimeout is the maximum time to wait when connecting to the
+// control socket. Matches the server's connReadTimeout so a slow-to-accept
+// server doesn't stall the CLI or startup probe indefinitely.
+const clientDialTimeout = 5 * time.Second
+
 // IsAlive checks whether a gopherd daemon is reachable on the given socket path.
 // It dials and immediately closes without sending a command. The server holds a
 // connection slot for up to connReadTimeout (5s) per call — acceptable for the
 // startup probe use case where IsAlive is called once during initialisation.
 func IsAlive(socketPath string) bool {
-	conn, err := net.Dial("unix", socketPath)
+	conn, err := net.DialTimeout("unix", socketPath, clientDialTimeout)
 	if err != nil {
 		return false
 	}
@@ -109,7 +115,7 @@ func RunClient(args []string) {
 		os.Exit(1)
 	}
 
-	conn, err := net.Dial("unix", socketPath)
+	conn, err := net.DialTimeout("unix", socketPath, clientDialTimeout)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cannot connect to gopherd (is it running?): %v\n", err)
 		os.Exit(1)

@@ -126,6 +126,8 @@ func (cs *Server) acceptLoop() {
 			if closed {
 				return
 			}
+			log.Printf("control socket: accept error: %v", err)
+			time.Sleep(5 * time.Millisecond)
 			continue
 		}
 		select {
@@ -297,6 +299,7 @@ func (cs *Server) handleLogs(conn net.Conn, parts []string) {
 
 	// Send recent buffered lines.
 	for _, line := range recent {
+		conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 		if _, err := conn.Write(line); err != nil {
 			return
 		}
@@ -307,9 +310,12 @@ func (cs *Server) handleLogs(conn net.Conn, parts []string) {
 	}
 
 	// Stream new lines until client disconnects or channel closes.
+	// A per-write deadline prevents a slow or stalled reader from holding
+	// a streaming slot (streamSem) indefinitely.
 	for line := range ch {
+		conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 		if _, err := conn.Write(line); err != nil {
-			return // client disconnected
+			return // client disconnected or timed out
 		}
 	}
 }

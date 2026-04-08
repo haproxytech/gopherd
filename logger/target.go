@@ -116,32 +116,34 @@ func openSyslog(location string) (io.WriteCloser, error) {
 }
 
 func (sw *syslogWriter) Write(p []byte) (int, error) {
-	return len(p), sw.w.Info(sanitize(string(p)))
+	return len(p), sw.w.Info(sanitize(p))
 }
 
 // sanitize strips control characters (except newline and tab) from log
-// output before forwarding to syslog. This prevents services from injecting
-// ANSI escape sequences or carriage returns into syslog entries.
-// Fast path: if no control characters are present, returns the input
-// without allocation.
-func sanitize(s string) string {
+// output before forwarding to syslog or file targets. This prevents services
+// from injecting ANSI escape sequences or carriage returns into log entries.
+// Fast path: if no control characters are present, converts p to string once
+// without allocation in the common case. Slow path builds a clean copy only
+// from the first bad byte onward, avoiding a redundant string(p) conversion
+// at the call site.
+func sanitize(p []byte) string {
 	// Quick scan: most log lines are clean ASCII.
 	firstBad := -1
-	for i := range len(s) {
-		if s[i] < 0x20 && s[i] != '\n' && s[i] != '\t' {
+	for i, b := range p {
+		if b < 0x20 && b != '\n' && b != '\t' {
 			firstBad = i
 			break
 		}
 	}
 	if firstBad < 0 {
-		return s
+		return string(p)
 	}
 	// Slow path: build result only from the first bad byte onward.
-	buf := make([]byte, firstBad, len(s))
-	copy(buf, s[:firstBad])
-	for i := firstBad; i < len(s); i++ {
-		if s[i] >= 0x20 || s[i] == '\n' || s[i] == '\t' {
-			buf = append(buf, s[i])
+	buf := make([]byte, firstBad, len(p))
+	copy(buf, p[:firstBad])
+	for i := firstBad; i < len(p); i++ {
+		if p[i] >= 0x20 || p[i] == '\n' || p[i] == '\t' {
+			buf = append(buf, p[i])
 		}
 	}
 	return string(buf)
@@ -159,8 +161,10 @@ type fileWriter struct {
 }
 
 func (fw *fileWriter) Write(p []byte) (int, error) {
-	clean := sanitize(string(p))
-	if _, err := fw.f.Write([]byte(clean)); err != nil {
+	clean := sanitize(p)
+	// io.WriteString uses *os.File's WriteString method directly, avoiding
+	// the []byte(clean) allocation that fw.f.Write([]byte(clean)) would require.
+	if _, err := io.WriteString(fw.f, clean); err != nil {
 		return 0, err
 	}
 	return len(p), nil
