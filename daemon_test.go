@@ -428,3 +428,62 @@ func TestStopChecksEmpty(t *testing.T) {
 		t.Error("expected checkers to be nil after stop")
 	}
 }
+
+// TestProcessConfigChangedCommand covers M-40: changing a service's command
+// must be detected as a configuration change requiring a restart.
+func TestProcessConfigChangedCommand(t *testing.T) {
+	t.Parallel()
+	old := service.Process{Command: "/bin/old", Args: []string{"-v"}}
+	updated := service.Process{Command: "/bin/new", Args: []string{"-v"}}
+	if !processConfigChanged(old, updated) {
+		t.Error("processConfigChanged must return true when command changes")
+	}
+}
+
+// TestProcessConfigChangedArgs covers M-39: changing a service's arguments
+// must be detected as a configuration change requiring a restart.
+func TestProcessConfigChangedArgs(t *testing.T) {
+	t.Parallel()
+	old := service.Process{Command: "/bin/app", Args: []string{"--port=8080"}}
+	updated := service.Process{Command: "/bin/app", Args: []string{"--port=9090"}}
+	if !processConfigChanged(old, updated) {
+		t.Error("processConfigChanged must return true when args change")
+	}
+}
+
+// TestProcessConfigChangedNoOp verifies that identical configs report no change.
+func TestProcessConfigChangedNoOp(t *testing.T) {
+	t.Parallel()
+	p := service.Process{Command: "/bin/app", Args: []string{"-x"}}
+	if processConfigChanged(p, p) {
+		t.Error("processConfigChanged must return false for identical config")
+	}
+}
+
+// TestIntPtrDiffers covers M-42: a nil-vs-non-nil difference must be detected
+// even when the non-nil pointer points to the zero value.
+func TestIntPtrDiffers(t *testing.T) {
+	t.Parallel()
+	zero := 0
+	one := 1
+
+	// nil vs non-nil (even pointing to zero) is a difference.
+	if !intPtrDiffers(nil, &zero) {
+		t.Error("intPtrDiffers(nil, &0) must be true")
+	}
+	if !intPtrDiffers(&zero, nil) {
+		t.Error("intPtrDiffers(&0, nil) must be true")
+	}
+	// nil vs nil is not a difference.
+	if intPtrDiffers(nil, nil) {
+		t.Error("intPtrDiffers(nil, nil) must be false")
+	}
+	// same value is not a difference.
+	if intPtrDiffers(&zero, &zero) {
+		t.Error("intPtrDiffers(&0, &0) must be false")
+	}
+	// different values is a difference.
+	if !intPtrDiffers(&zero, &one) {
+		t.Error("intPtrDiffers(&0, &1) must be true")
+	}
+}

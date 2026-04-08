@@ -277,6 +277,58 @@ func TestParseNilNode(t *testing.T) {
 	}
 }
 
+// TestParseBoolYes covers M-19: Bool() must recognise "yes" as true, not only "true".
+func TestParseBoolYes(t *testing.T) {
+	t.Parallel()
+	n, err := Parse([]byte(`enabled: yes`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !n.Get("enabled").Bool() {
+		t.Error("expected Bool() == true for 'yes'")
+	}
+}
+
+// TestHashInValueWithoutSpace covers M-20: a '#' not preceded by a space must
+// not be treated as an inline comment (e.g. URL fragments, colour codes).
+func TestHashInValueWithoutSpace(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		yaml string
+		key  string
+		want string
+	}{
+		{`color: "#ff0000"`, "color", "#ff0000"},   // double-quoted → no stripping at all
+		{`tag: '#important'`, "tag", "#important"}, // single-quoted
+		{`label: foo#bar`, "label", "foo#bar"},     // unquoted, no preceding space
+	}
+	for _, tt := range tests {
+		n, err := Parse([]byte(tt.yaml))
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", tt.yaml, err)
+		}
+		if got := n.Get(tt.key).String(); got != tt.want {
+			t.Errorf("Parse(%q).Get(%q) = %q, want %q", tt.yaml, tt.key, got, tt.want)
+		}
+	}
+}
+
+// TestUnquoteSingleChar covers M-22: unquote must not strip a single-character
+// scalar whose sole byte happens to equal a quote character.
+func TestUnquoteSingleChar(t *testing.T) {
+	t.Parallel()
+	// A value of a lone single-quote character (len=1 after colon).
+	n, err := Parse([]byte("sep: '"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := n.Get("sep").String()
+	// Must preserve the raw character, not return empty string.
+	if got == "" {
+		t.Error("single-char value was incorrectly stripped to empty string")
+	}
+}
+
 func TestParseIntPtr(t *testing.T) {
 	t.Parallel()
 	n, _ := Parse([]byte(`uid: 1000`))

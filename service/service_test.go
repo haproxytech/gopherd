@@ -369,3 +369,44 @@ func TestDotEnvProcEnvOverrides(t *testing.T) {
 		t.Errorf("proc env should override dotenv, got %q", env["MEMLIMIT"])
 	}
 }
+
+// TestDoneNeverStarted covers M-31: Done() on a service that was never started
+// must return an already-closed channel so callers unblock immediately.
+func TestDoneNeverStarted(t *testing.T) {
+	t.Parallel()
+	svc := New(Process{Command: "true"}, "")
+	ch := svc.Done()
+	select {
+	case <-ch:
+		// correct: channel is closed
+	default:
+		t.Error("Done() on never-started service returned an open channel; callers would block forever")
+	}
+}
+
+// TestDotEnvHashInValueNoSpace covers M-35: a '#' in a dotenv value that is NOT
+// preceded by a space must be kept as a literal character, not treated as a comment.
+func TestDotEnvHashInValueNoSpace(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	envFile := dir + "/app.env"
+	os.WriteFile(envFile, []byte(
+		"DB_URL=postgres://host/db#fragment\n"+
+			"COLOR=#ff0000\n"+
+			"SPACED=value # trailing\n", // space before # → strip
+	), 0o644)
+
+	env, err := buildEnvMap(envFile, nil, false)
+	if err != nil {
+		t.Fatalf("buildEnvMap: %v", err)
+	}
+	if env["DB_URL"] != "postgres://host/db#fragment" {
+		t.Errorf("DB_URL = %q; want postgres://host/db#fragment (# without space must be kept)", env["DB_URL"])
+	}
+	if env["COLOR"] != "#ff0000" {
+		t.Errorf("COLOR = %q; want #ff0000 (leading # is not a comment)", env["COLOR"])
+	}
+	if env["SPACED"] != "value" {
+		t.Errorf("SPACED = %q; want 'value' (space-preceded # is a comment)", env["SPACED"])
+	}
+}

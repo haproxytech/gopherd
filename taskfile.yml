@@ -83,6 +83,8 @@ tasks:
     vars:
       PKG: '{{default "./..." .PKG}}'
       FORMAT: '{{default "testdox" .FORMAT}}'
+    env:
+      TMPDIR: /tmp
     cmds:
       - |
         /{{.TMP}}/gotestsum/{{.GOTESTSUM_VERSION}}/gotestsum \

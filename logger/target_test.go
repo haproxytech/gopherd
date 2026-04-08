@@ -15,6 +15,7 @@
 package logger
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -64,5 +65,22 @@ func TestNewTargetSyslogEmptyLocation(t *testing.T) {
 	_, err := NewTarget("bad", TargetConfig{Type: "syslog", Location: ""})
 	if err == nil {
 		t.Error("expected error for empty location")
+	}
+}
+
+// TestSanitizePreservesNewlines covers M-51: the sanitize slow path (triggered by
+// a control character < 0x20) must preserve '\n' bytes in the output. Without the
+// '\n' exception, multi-line log entries forwarded to syslog/file targets would
+// have their newlines stripped, merging separate lines into one long line.
+func TestSanitizePreservesNewlines(t *testing.T) {
+	t.Parallel()
+	// \x01 triggers the slow path; \n must survive.
+	input := []byte("line1\x01line2\nline3\n")
+	got := sanitize(input)
+	if !strings.Contains(got, "\n") {
+		t.Errorf("sanitize() stripped newlines: %q", got)
+	}
+	if strings.Contains(got, "\x01") {
+		t.Errorf("sanitize() kept control char \\x01: %q", got)
 	}
 }

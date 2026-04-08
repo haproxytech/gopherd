@@ -16,6 +16,7 @@ package logger
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -183,6 +184,57 @@ func TestRecentRingOverflow(t *testing.T) {
 	recent := pw.Recent()
 	if len(recent) != defaultRingSize {
 		t.Errorf("expected %d recent lines, got %d", defaultRingSize, len(recent))
+	}
+}
+
+// TestRecentRingOverflowPreservesOrder covers M-46: when the ring has wrapped,
+// Recent() must return lines in chronological order (oldest→newest), not reversed.
+func TestRecentRingOverflowPreservesOrder(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	pw := NewPrefixWriter(&buf, "svc", "none")
+
+	// Write defaultRingSize+10 distinct lines so the ring wraps by 10.
+	// Lines are numbered 0..defaultRingSize+9; after wrap the ring holds
+	// lines 10..defaultRingSize+9 (oldest=10, newest=defaultRingSize+9).
+	total := defaultRingSize + 10
+	for i := range total {
+		fmt.Fprintf(pw, "line-%04d\n", i)
+	}
+
+	recent := pw.Recent()
+	if len(recent) != defaultRingSize {
+		t.Fatalf("expected %d lines, got %d", defaultRingSize, len(recent))
+	}
+
+	// First entry must be the oldest surviving line (line-0010).
+	first := strings.TrimSpace(string(recent[0]))
+	if first != "line-0010" {
+		t.Errorf("Recent()[0] = %q; want line-0010 (oldest, not newest)", first)
+	}
+
+	// Last entry must be the newest line.
+	last := strings.TrimSpace(string(recent[defaultRingSize-1]))
+	wantLast := fmt.Sprintf("line-%04d", total-1)
+	if last != wantLast {
+		t.Errorf("Recent()[%d] = %q; want %s (newest)", defaultRingSize-1, last, wantLast)
+	}
+}
+
+// TestFlushIdempotent covers M-49: after Flush(), the internal buffer must be
+// cleared so a second Flush() does not duplicate the partial line.
+func TestFlushIdempotent(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	pw := NewPrefixWriter(&buf, "svc", "none")
+	pw.Write([]byte("partial"))
+	pw.Flush()
+	pw.Flush() // second flush must be a no-op
+
+	// "partial" must appear exactly once in the output.
+	count := strings.Count(buf.String(), "partial")
+	if count != 1 {
+		t.Errorf("'partial' appears %d times after double Flush; want exactly 1", count)
 	}
 }
 

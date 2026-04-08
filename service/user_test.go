@@ -15,6 +15,7 @@
 package service
 
 import (
+	"os"
 	"testing"
 )
 
@@ -57,5 +58,44 @@ func TestResolveCredentialGroupOnly(t *testing.T) {
 	}
 	if cred.Gid != 1000 {
 		t.Errorf("gid=%d, want 1000", cred.Gid)
+	}
+}
+
+// TestResolveCredentialGroupOnlyUID covers M-37: when only a group is specified
+// the UID must be inherited from the current process, not left at 0 (root).
+func TestResolveCredentialGroupOnlyUID(t *testing.T) {
+	t.Parallel()
+	if os.Getuid() == 0 {
+		t.Skip("running as root: cannot distinguish inherited UID from zero-value UID")
+	}
+	gid := 1000
+	cred, err := ResolveCredential("", "", nil, &gid)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cred == nil {
+		t.Fatal("expected non-nil credential")
+	}
+	want := uint32(os.Getuid())
+	if cred.Uid != want {
+		t.Errorf("uid=%d, want %d (current process uid)", cred.Uid, want)
+	}
+}
+
+// TestResolveCredentialGroupOnlySupplementaryGroups covers M-36: when only a
+// group is specified the supplementary groups must be restricted to just that
+// GID, not nil (which would inherit the parent's full supplementary group list).
+func TestResolveCredentialGroupOnlySupplementaryGroups(t *testing.T) {
+	t.Parallel()
+	gid := 1000
+	cred, err := ResolveCredential("", "", nil, &gid)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cred == nil {
+		t.Fatal("expected non-nil credential")
+	}
+	if len(cred.Groups) != 1 || cred.Groups[0] != 1000 {
+		t.Errorf("Groups=%v, want [1000] (must restrict supplementary groups to target GID)", cred.Groups)
 	}
 }

@@ -64,3 +64,44 @@ func TestReset(t *testing.T) {
 		t.Errorf("after reset, expected ~100ms, got %v", d)
 	}
 }
+
+// TestResetGivesInitialDelay covers M-07: Reset() must set attempt to 0, not 1.
+// With attempt=1 the first Next() after Reset() returns delay*factor^1 (200ms)
+// instead of delay*factor^0 (100ms). We allow a 20% window to absorb jitter
+// while still clearly distinguishing the two levels.
+func TestResetGivesInitialDelay(t *testing.T) {
+	t.Parallel()
+	b := New(100*time.Millisecond, 2.0, 10*time.Second)
+	for range 10 {
+		b.Next()
+	}
+	b.Reset()
+	d := b.Next()
+	// After reset, first delay must be close to 100ms (±10% jitter → [90ms,110ms]).
+	// If reset leaves attempt=1 the value would be ~200ms, well above 150ms.
+	if d > 150*time.Millisecond {
+		t.Errorf("after reset first delay = %v; want ≤150ms (should be ~100ms, not ~200ms)", d)
+	}
+	if d < 50*time.Millisecond {
+		t.Errorf("after reset first delay = %v; want ≥50ms", d)
+	}
+}
+
+// TestJitterBidirectional covers M-06: jitter must be ±10%, not 0–10%.
+// With one-sided jitter Next() can never return less than the base delay.
+// Over many samples at least one must fall below the base value.
+func TestJitterBidirectional(t *testing.T) {
+	t.Parallel()
+	const base = 500 * time.Millisecond
+	b := New(base, 1.0, 10*time.Second) // factor=1 keeps d==base every call
+	below := false
+	for range 200 {
+		if b.Next() < base {
+			below = true
+			break
+		}
+	}
+	if !below {
+		t.Error("jitter appears one-sided: no sample fell below base delay in 200 calls")
+	}
+}

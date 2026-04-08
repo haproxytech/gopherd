@@ -221,6 +221,36 @@ func TestSelfCgroupPath(t *testing.T) {
 	}
 }
 
+// TestCgroupV2PrecedesV1 covers M-11: cgroupMemMiB must try v2 before v1.
+// If the order were reversed a container that only has a v2 limit would get
+// the v1 path (returning 0) and fall back to system RAM.
+func TestCgroupV2PrecedesV1(t *testing.T) {
+	dir := setupFakeFS(t)
+
+	// /proc/self/cgroup: both v2 and v1 entries present.
+	selfCg := filepath.Join(dir, "self_cgroup")
+	os.WriteFile(selfCg, []byte("0::/\n6:memory:/\n"), 0o644)
+	procSelfCg = selfCg
+
+	// v2 root: limit 512 MiB.
+	cgRoot := filepath.Join(dir, "cg2")
+	os.MkdirAll(cgRoot, 0o755)
+	os.WriteFile(filepath.Join(cgRoot, "memory.max"), []byte("536870912\n"), 0o644) // 512 MiB
+	cgroupV2Root = cgRoot
+
+	// v1 root: different limit 1024 MiB.
+	cgV1 := filepath.Join(dir, "cg1")
+	os.MkdirAll(cgV1, 0o755)
+	os.WriteFile(filepath.Join(cgV1, "memory.limit_in_bytes"), []byte("1073741824\n"), 0o644) // 1024 MiB
+	cgroupV1Root = cgV1
+
+	got := cgroupMemMiB()
+	// v2 value (512) should win; v1 value (1024) must not be returned.
+	if got != 512 {
+		t.Errorf("cgroupMemMiB() = %d, want 512 (v2 should precede v1)", got)
+	}
+}
+
 func TestCgroupV2_PathTraversalBlocked(t *testing.T) {
 	// os.Root prevents path traversal at the kernel level.
 	// Even if /proc/self/cgroup contains "..", the Open call fails.

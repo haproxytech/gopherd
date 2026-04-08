@@ -126,3 +126,24 @@ func TestComplex(t *testing.T) {
 		t.Errorf("expected d last, got %v", order)
 	}
 }
+
+// TestAfterRequiresSameDepDeduplication covers M-02: when a service lists the
+// same dependency in both After and Requires, addEdge must deduplicate so that
+// inDegree is only incremented once. Without deduplication the node appears to
+// have an extra incoming edge and Kahn's algorithm falsely reports a cycle.
+func TestAfterRequiresSameDepDeduplication(t *testing.T) {
+	t.Parallel()
+	order, err := TopoSort([]Service{
+		{Name: "a"},
+		{Name: "b", After: []string{"a"}, Requires: []string{"a"}},
+	})
+	if err != nil {
+		t.Fatalf("after+requires on same dep reported spurious cycle: %v", err)
+	}
+	if len(order) != 2 {
+		t.Fatalf("expected 2 services, got %d: %v", len(order), order)
+	}
+	if order[0] != "a" || order[1] != "b" {
+		t.Errorf("expected [a b], got %v", order)
+	}
+}
