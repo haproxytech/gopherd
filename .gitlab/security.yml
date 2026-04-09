@@ -5,7 +5,7 @@ license:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
     - if: $CI_PIPELINE_SOURCE == 'push'
   image:
-    name: $HAPROXY_REGISTRY_GO/golang:$GO_VERSION
+    name: $HAPROXY_REGISTRY_GO/golang:latest-alpine
     entrypoint: [""]
   tags:
     - go
@@ -31,7 +31,7 @@ govulncheck:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
     - if: $CI_PIPELINE_SOURCE == 'push'
   image:
-    name: $HAPROXY_REGISTRY_GO/golang:$GO_VERSION
+    name: $HAPROXY_REGISTRY_GO/golang:latest-alpine
     entrypoint: [""]
   tags:
     - go

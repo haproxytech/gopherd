@@ -5,10 +5,12 @@ tidy:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
     - if: $CI_PIPELINE_SOURCE == 'push'
   image:
-    name: $HAPROXY_REGISTRY_GO/golang:$GO_VERSION
+    name: $HAPROXY_REGISTRY_GO/golang:latest-alpine
     entrypoint: [""]
   tags:
     - go
+  before_script:
+    - go version
   script:
     - go mod tidy
     - test -z "$(git diff 2> /dev/null)" || exit 'Go modules not tidied, issue \`go mod tidy\` and commit the result'
@@ -32,10 +34,12 @@ format:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
     - if: $CI_PIPELINE_SOURCE == 'push'
   image:
-    name: $HAPROXY_REGISTRY_GO/golang:$GO_VERSION
+    name: $HAPROXY_REGISTRY_GO/golang:latest-alpine
     entrypoint: [""]
   tags:
     - go
+  before_script:
+    - go version
   script:
     - task format
     - test -z "$(git diff 2> /dev/null)" || exit 'Go code not formatted, issue \`task format\` and commit the result'
@@ -60,10 +64,12 @@ lint:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
     - if: $CI_PIPELINE_SOURCE == 'push'
   image:
-    name: $HAPROXY_REGISTRY_GO/golang:$GO_VERSION
+    name: $HAPROXY_REGISTRY_GO/golang:latest-alpine
     entrypoint: [""]
   tags:
     - go
+  before_script:
+    - go version
   script:
     - task lint
   after_script:
@@ -85,10 +91,12 @@ commit-policy:
   rules:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
   image:
-    name: $HAPROXY_REGISTRY_GO/golang:$GO_VERSION
+    name: $HAPROXY_REGISTRY_GO/golang:latest-alpine
     entrypoint: [""]
   tags:
     - go
+  before_script:
+    - go version
   script:
     - task check-commit
   after_script:

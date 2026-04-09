@@ -3,3 +3,4 @@ allowed:
   - livelock
   - EINTR
   - wakeup
+  - parallelize
