@@ -1,22 +1,22 @@
 #https://taskfile.dev/
 version: "3"
 
+vars:
+  YQ: github.com/mikefarah/yq/v4@v4.47.1
+  CHECK_COMMIT: github.com/haproxytech/check-commit/v5@v5.5.3
+  BETTERALIGN: github.com/dkorunic/betteralign/cmd/betteralign@v0.9.1
+  STATICCHECK: honnef.co/go/tools/cmd/staticcheck@v0.7.0
+  GOVULNCHECK: golang.org/x/vuln/cmd/govulncheck@v1.1.4
+  GOFUMPT: mvdan.cc/gofumpt@v0.9.2
+  REVIVE: github.com/mgechev/revive@v1.15.0
+  GOTESTSUM: gotest.tools/gotestsum@v1.13.0
+  GO_LICENSES: github.com/google/go-licenses@v1.6.0
+
+env:
+  TMP: tmp
+
 dotenv:
   - .env
-
-includes:
-  vars:
-    taskfile: taskfile/.vars.yml
-    flatten: true
-  tools:
-    taskfile: taskfile/.tools.yml
-    flatten: true
-  git:
-    taskfile: taskfile/git.yml
-    flatten: true
-  go-tools:
-    taskfile: taskfile/go-tools.yml
-    flatten: true
 
 tasks:
   ci:
@@ -83,11 +83,9 @@ tasks:
     vars:
       PKG: '{{default "./..." .PKG}}'
       FORMAT: '{{default "testdox" .FORMAT}}'
-    env:
-      TMPDIR: /tmp
     cmds:
       - |
-        /{{.TMP}}/gotestsum/{{.GOTESTSUM_VERSION}}/gotestsum \
+        $(check-go-tool {{.GOTESTSUM}}) \
           --format-icons=hivis \
           --format={{.FORMAT}} \
           --format-hide-empty-pkg \
@@ -116,9 +114,9 @@ tasks:
         vars:
           TOOLS: [BETTERALIGN, REVIVE, STATICCHECK]
     cmds:
-      - /{{.TMP}}/revive/{{.REVIVE_VERSION}}/revive -formatter friendly -set_exit_status ./...
-      - /{{.TMP}}/staticcheck/{{.STATICCHECK_VERSION}}/staticcheck ./...
-      - /{{.TMP}}/betteralign/{{.BETTERALIGN_VERSION}}/betteralign ./...
+      - "$(check-go-tool {{.REVIVE}}) -formatter friendly -set_exit_status ./..."
+      - "$(check-go-tool {{.STATICCHECK}}) ./..."
+      - "$(check-go-tool {{.BETTERALIGN}}) ./..."
 
   format:
     desc: "format the code"
@@ -128,8 +126,8 @@ tasks:
           TOOLS: [BETTERALIGN, GOFUMPT]
     cmds:
       - go fix ./...
-      - /{{.TMP}}/betteralign/{{.BETTERALIGN_VERSION}}/betteralign -apply ./... || true
-      - /{{.TMP}}/gofumpt/{{.GOFUMPT_VERSION}}/gofumpt -l -w .
+      - "$(check-go-tool {{.BETTERALIGN}}) -apply ./... || true"
+      - "$(check-go-tool {{.GOFUMPT}}) -l -w ."
 
   check-commit:
     deps:
@@ -137,7 +135,7 @@ tasks:
         vars:
           TOOL: CHECK_COMMIT
     cmds:
-      - /{{.TMP}}/check-commit/{{.CHECK_COMMIT_VERSION}}/check-commit
+      - "$(check-go-tool {{.CHECK_COMMIT}})"
 
   govulncheck:
     deps:
@@ -145,7 +143,7 @@ tasks:
         vars:
           TOOL: GOVULNCHECK
     cmds:
-      - /{{.TMP}}/govulncheck/{{.GOVULNCHECK_VERSION}}/govulncheck -show verbose ./...
+      - "$(check-go-tool {{.GOVULNCHECK}}) -show verbose ./..."
 
   licenses:
     desc: "check licenses"
@@ -156,11 +154,49 @@ tasks:
     cmds:
       - |
         PROJECT="$(go list -m)"
-        /{{.TMP}}/go-licenses/{{.GO_LICENSES_VERSION}}/go-licenses report --ignore "$PROJECT" .
-        /{{.TMP}}/go-licenses/{{.GO_LICENSES_VERSION}}/go-licenses check --ignore "$PROJECT" .
+        BIN="$(check-go-tool {{.GO_LICENSES}})"
+        $BIN report --ignore "$PROJECT" .
+        $BIN check --ignore "$PROJECT" .
 
   legal:
     desc: "check legal"
     cmds:
       - task: govulncheck
       - task: licenses
+
+  git-install-pre-push-hook:
+    cmds:
+      - echo '#!/bin/sh' > .git/hooks/pre-push
+      - echo 'task ci' >> .git/hooks/pre-push
+      - chmod +x .git/hooks/pre-push
+
+# internal
+
+  ensure-check-go-tool:
+    desc: 'ensure check-go-tool is installed'
+    silent: true
+    internal: true
+    status:
+      - command -v check-go-tool
+    cmds:
+      - go install github.com/oktalz/check-go-tool@latest
+
+  check-go-tool:
+    desc: 'ensure go tool is installed/available'
+    silent: true
+    internal: true
+    deps:
+      - task: ensure-check-go-tool
+    cmds:
+      - check-go-tool '{{ index . .TOOL }}' >/dev/null
+
+  check-go-tools:
+    desc: 'ensure all go tools are installed'
+    silent: true
+    internal: true
+    cmds:
+      - for:
+          var: TOOLS
+        task: check-go-tool
+        vars:
+          TOOL: '{{.ITEM}}'
