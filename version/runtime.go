@@ -52,8 +52,8 @@ func Set() error {
 	if get(buildInfo, "vcs.modified") == "true" {
 		dirty = ".dirty"
 	}
-	Version = strings.Replace(buildInfo.Main.Version, "(devel)", "dev", 1) + "." + commit + dirty
-	Tag = strings.Replace(buildInfo.Main.Version, "(devel)", "dev", 1)
+	Version = strings.ReplaceAll(buildInfo.Main.Version, "(devel)", "dev") + "." + commit + dirty
+	Tag = strings.ReplaceAll(buildInfo.Main.Version, "(devel)", "dev")
 
 	return nil
 }

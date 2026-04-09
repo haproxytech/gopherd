@@ -96,6 +96,10 @@ func resolveStopSignal(cfgSignal string) syscall.Signal {
 		log.Printf("warning: invalid stop-signal %q, using SIGTERM", name)
 		return syscall.SIGTERM
 	}
+	if sig == syscall.SIGKILL || sig == syscall.SIGSTOP {
+		log.Printf("warning: stop-signal %q cannot be caught; using SIGTERM", name)
+		return syscall.SIGTERM
+	}
 	return sig
 }
 
@@ -476,6 +480,19 @@ func (d *daemon) reload() (string, error) {
 		return "", fmt.Errorf("reload config: %w", err)
 	}
 
+	// Enforce use-entrypoint-args uniqueness on reload, matching the startup check
+	// in run(). Without this a hot-reload could install a config that would have
+	// been rejected at startup.
+	var entrypointCount int
+	for _, p := range newCfg.Processes {
+		if p.UseEntrypointArgs {
+			entrypointCount++
+		}
+	}
+	if entrypointCount > 1 {
+		return "", fmt.Errorf("reload blocked: only one process may set use-entrypoint-args: true")
+	}
+
 	// Pre-validate the dependency graph before acquiring d.mu or mutating any
 	// state. This ensures a bad config (e.g., cycle) fails fast with no
 	// side-effects, rather than leaving services in a half-reconciled state.
@@ -520,6 +537,11 @@ func (d *daemon) reload() (string, error) {
 			if svc.IsRunning() {
 				svc.Stop()
 			}
+			// Disconnect from log targets before removal so the subsequent
+			// ClearTargets loop (which iterates d.services) does not miss this
+			// service. Old targets are closed immediately after that loop.
+			svc.Stdout.ClearTargets()
+			svc.Stderr.ClearTargets()
 			delete(d.services, name)
 		}
 	}
@@ -620,7 +642,7 @@ func (d *daemon) reload() (string, error) {
 	}
 
 	for _, svc := range toStart {
-		if _, err := d.startService(svc); err != nil && err != errShuttingDown {
+		if _, err := d.startService(svc); err != nil && err != errShuttingDown && err != errServiceReplaced {
 			log.Printf("reload: start %s failed: %v", svc.Name, err)
 		}
 	}

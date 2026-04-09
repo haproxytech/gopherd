@@ -171,6 +171,7 @@ func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 	// and access control falls back to filesystem permissions alone.
 	if uid != -1 && uid != 0 && uid != os.Geteuid() {
 		log.Printf("control: uid=%d rejected: permission denied", uid)
+		conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 		fmt.Fprintf(conn, "error: permission denied\n")
 		<-cmdSem
 		return
@@ -277,6 +278,7 @@ func (cs *Server) handleCommand(parts []string) string {
 
 func (cs *Server) handleLogs(conn net.Conn, parts []string) {
 	if len(parts) < 2 {
+		conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 		fmt.Fprintf(conn, "error: logs requires a service name\n")
 		return
 	}
@@ -284,12 +286,14 @@ func (cs *Server) handleLogs(conn net.Conn, parts []string) {
 	follow := len(parts) >= 3 && parts[2] == "-f"
 
 	if cs.LogsFn == nil {
+		conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 		fmt.Fprintf(conn, "error: logs not supported\n")
 		return
 	}
 
 	recent, ch, unsub, err := cs.LogsFn(name, follow)
 	if err != nil {
+		conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 		fmt.Fprintf(conn, "error: %v\n", err)
 		return
 	}

@@ -17,6 +17,7 @@ package logger
 import (
 	"fmt"
 	"io"
+	"log"
 	"log/syslog"
 	"net/url"
 	"os"
@@ -85,13 +86,22 @@ func (lt *Target) AppliesTo(serviceName string) bool {
 // Close closes the target writer.
 func (lt *Target) Close() {
 	if lt.Writer != nil {
-		lt.Writer.Close()
+		if err := lt.Writer.Close(); err != nil {
+			log.Printf("log-target %s: close: %v", lt.name, err)
+		}
 	}
+}
+
+// syslogInfoer is the subset of *syslog.Writer methods needed by syslogWriter.
+// Using an interface allows test doubles without a real syslog connection.
+type syslogInfoer interface {
+	Info(m string) error
+	Close() error
 }
 
 // syslogWriter wraps syslog.Writer to implement io.WriteCloser with line-level writes.
 type syslogWriter struct {
-	w *syslog.Writer
+	w syslogInfoer
 }
 
 func openSyslog(location string) (io.WriteCloser, error) {
@@ -116,7 +126,10 @@ func openSyslog(location string) (io.WriteCloser, error) {
 }
 
 func (sw *syslogWriter) Write(p []byte) (int, error) {
-	return len(p), sw.w.Info(sanitize(p))
+	if err := sw.w.Info(sanitize(p)); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 // sanitize strips control characters (except newline and tab) from log

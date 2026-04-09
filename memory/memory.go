@@ -109,7 +109,7 @@ func systemMemMiB() (int64, error) {
 		if err != nil {
 			return 0, err
 		}
-		return kb / 1024, nil
+		return (kb + 512) / 1024, nil
 	}
 	if err := sc.Err(); err != nil {
 		return 0, err

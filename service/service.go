@@ -63,6 +63,17 @@ func ParseExitAction(s string, defaultAction ExitAction) ExitAction {
 	}
 }
 
+// ValidateExitAction returns an error if s is not a recognised exit action.
+// Empty string is accepted (callers substitute a default).
+func ValidateExitAction(s string) error {
+	switch ExitAction(s) {
+	case ActionRestart, ActionShutdown, ActionSuccessShutdown, ActionFailureShutdown, ActionIgnore, "":
+		return nil
+	default:
+		return fmt.Errorf("unknown exit action %q (valid: restart, shutdown, success-shutdown, failure-shutdown, ignore)", s)
+	}
+}
+
 // Process holds the configuration for a single process.
 type Process struct {
 	UserID            *int
@@ -312,6 +323,12 @@ func parseDotEnv(path string) (map[string]string, error) {
 		if !ok {
 			continue
 		}
+		k = strings.TrimSpace(k)
+		if k == "" {
+			// Skip lines like "=value" that produce an empty key; an empty key
+			// would create an invalid "=value" entry in cmd.Env (B5).
+			continue
+		}
 		v = strings.TrimSpace(v)
 		// Strip unquoted inline comments (e.g. "value # comment" → "value").
 		v = stripDotEnvComment(v)
@@ -324,7 +341,7 @@ func parseDotEnv(path string) (map[string]string, error) {
 		} else if len(v) >= 2 && v[0] == '\'' && v[len(v)-1] == '\'' {
 			v = v[1 : len(v)-1]
 		}
-		env[strings.TrimSpace(k)] = v
+		env[k] = v
 	}
 	return env, nil
 }
@@ -337,7 +354,7 @@ func buildEnvMap(dotenvPath string, procEnv map[string]string, cleanEnv bool) (m
 	env := make(map[string]string)
 	if !cleanEnv {
 		for _, e := range os.Environ() {
-			if k, v, ok := strings.Cut(e, "="); ok {
+			if k, v, ok := strings.Cut(e, "="); ok && k != "" {
 				env[k] = v
 			}
 		}
@@ -522,14 +539,21 @@ func (s *Service) Stop() {
 	}
 }
 
-// Signal sends an arbitrary signal to the process.
+// Signal sends an arbitrary signal to the entire process group. The service is
+// started with Setpgid=true so -pid addresses all processes in the group, not
+// just the process leader. This matches the behaviour of Stop().
 func (s *Service) Signal(sig os.Signal) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.running.Load() || s.cmd == nil || s.cmd.Process == nil {
 		return
 	}
-	_ = s.cmd.Process.Signal(sig)
+	// Use comma-ok to avoid a panic if sig is not a syscall.Signal (B6).
+	sysSig, ok := sig.(syscall.Signal)
+	if !ok {
+		return
+	}
+	_ = syscall.Kill(-int(s.Pid.Load()), sysSig)
 }
 
 // MarkExited marks the service as no longer running and returns how long it ran.

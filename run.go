@@ -129,12 +129,12 @@ func run(entrypointArgs []string) int {
 			log.Printf("started oneshot %s (pid %d)", svc.Name, pid)
 
 			code, err := waitOneshot(pid, svc.Proc.StartupTimeout)
-			svc.MarkExited()
 			if err != nil {
 				// Timeout — kill the process and fail.
 				syscall.Kill(-pid, syscall.SIGKILL)
 				log.Fatalf("oneshot %s: %v", svc.Name, err)
 			}
+			svc.MarkExited()
 			if code != 0 {
 				if svc.OnFailure == service.ActionIgnore {
 					log.Printf("oneshot %s exited with status %d (ignored)", svc.Name, code)
@@ -253,10 +253,14 @@ func run(entrypointArgs []string) int {
 			// Sleep the backoff delay, but wake early if shutdown is initiated.
 			// Without this select, a 30 s backoff would stall daemon exit for
 			// the full delay even after initiateShutdown has been called.
+			// time.NewTimer is used instead of time.After so the timer can be
+			// stopped and its goroutine reclaimed when shutdown fires first.
 			if req.delay > 0 {
+				timer := time.NewTimer(req.delay)
 				select {
-				case <-time.After(req.delay):
+				case <-timer.C:
 				case <-d.shutdownCh:
+					timer.Stop()
 				}
 			}
 			// startService checks shuttingDown atomically with the fork/exec
@@ -294,7 +298,13 @@ func run(entrypointArgs []string) int {
 			delete(d.pidMap, pid)
 			runDuration := svc.MarkExited()
 			log.Printf("%s exited (status %d)", svc.Name, code)
-			d.m.ServiceExited(svc.Name, code)
+			// Compute effective code before recording metrics: intentional stops
+			// (WasStopped) should record exit code 0, not a crash/failure code.
+			effectiveCode := code
+			if svc.WasStopped() && code > 128 {
+				effectiveCode = 0
+			}
+			d.m.ServiceExited(svc.Name, effectiveCode)
 
 			if d.shuttingDown.Load() {
 				// Use pidMap rather than d.services: services removed during a
@@ -308,14 +318,6 @@ func run(entrypointArgs []string) int {
 					break
 				}
 				continue
-			}
-
-			// If we intentionally stopped the service (via Stop()), treat
-			// the signal-death exit code as 0 for action evaluation.
-			// This prevents stop-signal deaths from looking like crashes.
-			effectiveCode := code
-			if svc.WasStopped() && code > 128 {
-				effectiveCode = 0
 			}
 
 			success := effectiveCode == 0
@@ -420,10 +422,16 @@ func waitOneshot(pid int, timeoutStr string) (int, error) {
 	ch := make(chan waitResult, 1)
 	go func() {
 		var ws syscall.WaitStatus
-		_, err := syscall.Wait4(pid, &ws, 0, nil)
-		if err != nil {
-			ch <- waitResult{err: fmt.Errorf("wait4: %w", err)}
-			return
+		for {
+			_, err := syscall.Wait4(pid, &ws, 0, nil)
+			if err == syscall.EINTR {
+				continue
+			}
+			if err != nil {
+				ch <- waitResult{err: fmt.Errorf("wait4: %w", err)}
+				return
+			}
+			break
 		}
 		ch <- waitResult{code: waitStatusCode(ws)}
 	}()

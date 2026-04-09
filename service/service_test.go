@@ -15,7 +15,9 @@
 package service
 
 import (
+	"fmt"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -408,6 +410,117 @@ func TestDotEnvHashInValueNoSpace(t *testing.T) {
 	}
 	if env["SPACED"] != "value" {
 		t.Errorf("SPACED = %q; want 'value' (space-preceded # is a comment)", env["SPACED"])
+	}
+}
+
+// TestSignalUsesProcessGroup verifies that Signal() sends to the entire process
+// group (using syscall.Kill(-pid, sig)) rather than only the process leader
+// (cmd.Process.Signal). A background child spawned by the service process must
+// also receive the signal when Signal() is called.
+func TestSignalUsesProcessGroup(t *testing.T) {
+	t.Parallel()
+	pidFile := t.TempDir() + "/child.pid"
+
+	// The parent sh (in its own process group via Setpgid) forks a background
+	// sleep and records the child PID. On SIGUSR1 (default=Terminate), both the
+	// sh and the background sleep should exit when the whole group is signalled.
+	// With process-only signalling, only sh exits; sleep survives as an orphan.
+	svc := New(Process{
+		Command: "sh",
+		Args:    []string{"-c", "sleep 100 & echo $! > " + pidFile + "; wait"},
+	}, "")
+	pid, err := svc.Start()
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() {
+		syscall.Kill(-pid, syscall.SIGKILL)
+		var ws syscall.WaitStatus
+		syscall.Wait4(pid, &ws, 0, nil)
+		svc.MarkExited()
+	})
+
+	// Wait up to 500ms for the shell to write the child PID file.
+	var childPIDBytes []byte
+	for range 50 {
+		childPIDBytes, _ = os.ReadFile(pidFile)
+		if len(childPIDBytes) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(childPIDBytes) == 0 {
+		t.Fatal("child process did not write PID file within 500ms")
+	}
+	var childPID int
+	if n, _ := fmt.Sscan(strings.TrimSpace(string(childPIDBytes)), &childPID); n != 1 || childPID == 0 {
+		t.Fatalf("invalid child PID in file: %q", childPIDBytes)
+	}
+
+	// Signal the service. New code sends to the process group; old code sends
+	// only to sh. SIGUSR1 has default disposition "Terminate", so both sh and
+	// sleep must exit when the group is signalled.
+	svc.Signal(syscall.SIGUSR1)
+	time.Sleep(150 * time.Millisecond)
+
+	// kill -0 returns ESRCH if the process is not running.
+	err = syscall.Kill(childPID, 0)
+	if err == nil {
+		t.Error("child (sleep) is still running after Signal(); Signal must use process group Kill(-pid, sig), not cmd.Process.Signal()")
+	}
+}
+
+// dummySignal is a custom os.Signal type that is NOT a syscall.Signal.
+// Passing it to Signal() should not cause a panic (B6).
+type dummySignal struct{}
+
+func (dummySignal) Signal()        {}
+func (dummySignal) String() string { return "dummy" }
+
+// TestSignalNonSyscallSignalNoPanic verifies that Signal() with a non-syscall.Signal
+// value does not panic. Without the comma-ok fix the type assertion panics (B6).
+func TestSignalNonSyscallSignalNoPanic(t *testing.T) {
+	t.Parallel()
+	svc := New(Process{Command: "sleep", Args: []string{"10"}}, "")
+	pid, err := svc.Start()
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() {
+		svc.Stop()
+		var ws syscall.WaitStatus
+		syscall.Wait4(pid, &ws, 0, nil)
+		svc.MarkExited()
+	})
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("Signal() panicked with non-syscall.Signal: %v", r)
+		}
+	}()
+	svc.Signal(dummySignal{})
+}
+
+// TestDotEnvEmptyKeySkipped verifies that dotenv lines of the form "=value" or
+// "   =value" produce no empty-string key in the environment map. Without the
+// fix, env[""] = "value" which creates an invalid "=value" entry in cmd.Env (B5).
+func TestDotEnvEmptyKeySkipped(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	envFile := dir + "/empty-key.env"
+	if err := os.WriteFile(envFile, []byte("=value\n   =another\nVALID=yes\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	env, err := buildEnvMap(envFile, nil, false)
+	if err != nil {
+		t.Fatalf("buildEnvMap: %v", err)
+	}
+	if _, ok := env[""]; ok {
+		t.Errorf("empty key must be skipped in dotenv; got env[\"\"] = %q", env[""])
+	}
+	if env["VALID"] != "yes" {
+		t.Errorf("VALID = %q, want yes", env["VALID"])
 	}
 }
 

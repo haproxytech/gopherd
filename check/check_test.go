@@ -516,3 +516,56 @@ func TestTCPPortAboveMax(t *testing.T) {
 		t.Error("expected error for TCP port 65536")
 	}
 }
+
+// TestStopSetsStopped verifies that Stop() sets the stopped atomic flag so that
+// any in-flight onFailureFn invocation can detect the checker was stopped and
+// avoid a stale callback after the checker has been shut down (B3).
+func TestStopSetsStopped(t *testing.T) {
+	t.Parallel()
+	c, err := New("stop-flag", Config{TCP: &TCP{Port: 80}}, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if c.stopped.Load() {
+		t.Error("stopped should be false before Stop()")
+	}
+	c.Stop()
+	if !c.stopped.Load() {
+		t.Error("stopped should be true after Stop()")
+	}
+}
+
+// trackingTransport is an http.RoundTripper that records CloseIdleConnections calls.
+type trackingTransport struct {
+	http.RoundTripper
+	closed atomic.Bool
+}
+
+func (t *trackingTransport) CloseIdleConnections() {
+	t.closed.Store(true)
+}
+
+// TestStopClosesHTTPIdleConnections covers O3: Stop() must call
+// CloseIdleConnections() on the HTTP client so that pooled connections and their
+// associated goroutines are released when the checker shuts down.
+func TestStopClosesHTTPIdleConnections(t *testing.T) {
+	t.Parallel()
+	c, err := New("http-idle", Config{
+		HTTP:    &HTTP{URL: "http://localhost"},
+		Period:  "5s",
+		Timeout: "1s",
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Inject a tracking transport so we can observe CloseIdleConnections.
+	tr := &trackingTransport{RoundTripper: http.DefaultTransport}
+	c.httpClient = &http.Client{Transport: tr}
+
+	c.Stop()
+
+	if !tr.closed.Load() {
+		t.Error("Stop() did not call CloseIdleConnections() on the HTTP client transport")
+	}
+}

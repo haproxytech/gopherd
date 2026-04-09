@@ -82,6 +82,29 @@ func TestResolveCredentialGroupOnlyUID(t *testing.T) {
 	}
 }
 
+// TestResolveCredentialUserIDOnlyGID covers N1: when only numeric user-id is
+// specified (no group-id or group name), the GID must not be zero (root group).
+// It must be inherited from the current process GID, symmetric with the
+// group-only case which inherits the current process UID.
+func TestResolveCredentialUserIDOnlyGID(t *testing.T) {
+	t.Parallel()
+	if os.Getuid() == 0 {
+		t.Skip("running as root: cannot distinguish inherited GID from zero-value GID")
+	}
+	uid := os.Getuid()
+	cred, err := ResolveCredential("", "", &uid, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cred == nil {
+		t.Fatal("expected non-nil credential")
+	}
+	want := uint32(os.Getgid())
+	if cred.Gid != want {
+		t.Errorf("gid=%d, want %d (current process gid); numeric user-id without group-id must not default to root group (0)", cred.Gid, want)
+	}
+}
+
 // TestResolveCredentialGroupOnlySupplementaryGroups covers M-36: when only a
 // group is specified the supplementary groups must be restricted to just that
 // GID, not nil (which would inherit the parent's full supplementary group list).

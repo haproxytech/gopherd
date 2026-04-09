@@ -382,3 +382,74 @@ processes:
 		t.Error("expected error for invalid shutdown-order")
 	}
 }
+
+// TestUnmarshalRejectsEmptyCommand verifies that Unmarshal returns an error when
+// a process entry has no command configured. Without the fix, gopherd would
+// silently try to exec "" and fail at runtime (I1).
+func TestUnmarshalRejectsEmptyCommand(t *testing.T) {
+	t.Parallel()
+	_, err := Unmarshal([]byte(`
+processes:
+  - name: nocommand
+    command:
+`))
+	if err == nil {
+		t.Error("expected error for process with empty command")
+	}
+}
+
+// TestUnmarshalRejectsNamedProcessNoCommand verifies that a named process
+// without a command is also rejected.
+func TestUnmarshalRejectsNamedProcessNoCommand(t *testing.T) {
+	t.Parallel()
+	_, err := Unmarshal([]byte(`
+processes:
+  - name: app
+`))
+	if err == nil {
+		t.Error("expected error for named process with no command field")
+	}
+}
+
+// TestUnmarshalRejectsInvalidOnSuccess covers O10: an invalid on-success value
+// must be caught by Unmarshal and returned as an error, not deferred to
+// ParseExitAction's log.Fatalf which would crash the daemon at service start.
+func TestUnmarshalRejectsInvalidOnSuccess(t *testing.T) {
+	t.Parallel()
+	_, err := Unmarshal([]byte(`
+processes:
+  - command: /bin/app
+    on-success: bogus-action
+`))
+	if err == nil {
+		t.Error("expected error for invalid on-success action")
+	}
+}
+
+// TestUnmarshalRejectsInvalidOnFailure covers O10: same validation for on-failure.
+func TestUnmarshalRejectsInvalidOnFailure(t *testing.T) {
+	t.Parallel()
+	_, err := Unmarshal([]byte(`
+processes:
+  - command: /bin/app
+    on-failure: not-valid
+`))
+	if err == nil {
+		t.Error("expected error for invalid on-failure action")
+	}
+}
+
+// TestUnmarshalRejectsInvalidOnCheckFailure covers O10: same validation for
+// on-check-failure map values.
+func TestUnmarshalRejectsInvalidOnCheckFailure(t *testing.T) {
+	t.Parallel()
+	_, err := Unmarshal([]byte(`
+processes:
+  - command: /bin/app
+    on-check-failure:
+      mycheck: explode
+`))
+	if err == nil {
+		t.Error("expected error for invalid on-check-failure action value")
+	}
+}

@@ -63,7 +63,9 @@ type rawLine struct {
 
 func splitLines(data []byte) []rawLine {
 	var lines []rawLine
-	for i, raw := range strings.Split(string(data), "\n") {
+	i := 0
+	for raw := range strings.SplitSeq(string(data), "\n") {
+		i++
 		trimmed := strings.TrimRight(raw, " \t\r")
 		if trimmed == "" || strings.TrimSpace(trimmed) == "" {
 			continue
@@ -74,7 +76,7 @@ func splitLines(data []byte) []rawLine {
 		}
 		content = stripInlineComment(content)
 		indent := len(trimmed) - len(strings.TrimLeft(trimmed, " "))
-		lines = append(lines, rawLine{indent: indent, text: content, num: i + 1})
+		lines = append(lines, rawLine{indent: indent, text: content, num: i})
 	}
 	return lines
 }

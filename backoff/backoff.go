@@ -25,9 +25,10 @@ import (
 // Not thread-safe: Next() and Reset() must be called from a single goroutine or
 // under an external lock. In gopherd, both are called from the reap loop under d.mu.
 type Backoff struct {
-	delay  time.Duration // initial delay (default 500ms)
-	factor float64       // multiplier per attempt (default 2.0)
-	Limit  time.Duration // max delay cap (default 30s)
+	delay   time.Duration // initial delay (default 500ms)
+	factor  float64       // multiplier per attempt (default 2.0)
+	Limit   time.Duration // max delay cap (default 30s)
+	atLimit bool          // true once math.Pow would exceed Limit; skips redundant computation (P3)
 
 	attempt int
 }
@@ -49,9 +50,16 @@ func New(delay time.Duration, factor float64, limit time.Duration) *Backoff {
 
 // Next returns the next backoff duration with ±10% jitter.
 func (b *Backoff) Next() time.Duration {
-	d := float64(b.delay) * math.Pow(b.factor, float64(b.attempt))
-	if d > float64(b.Limit) {
+	var d float64
+	if b.atLimit {
+		// Already at cap — skip math.Pow to avoid computing +Inf for large attempt (P3).
 		d = float64(b.Limit)
+	} else {
+		d = float64(b.delay) * math.Pow(b.factor, float64(b.attempt))
+		if d > float64(b.Limit) {
+			d = float64(b.Limit)
+			b.atLimit = true
+		}
 	}
 	b.attempt++
 	// Add ±10% jitter
@@ -66,4 +74,5 @@ func (b *Backoff) Next() time.Duration {
 // Reset resets the backoff counter (called when a process runs longer than limit).
 func (b *Backoff) Reset() {
 	b.attempt = 0
+	b.atLimit = false
 }

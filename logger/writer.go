@@ -112,10 +112,12 @@ func (pw *PrefixWriter) AddTarget(w io.Writer) {
 
 // ClearTargets removes all additional writers registered via AddTarget.
 // Used during reload to disconnect old log-target writers before re-wiring new ones.
+// Setting extra to nil (not extra[:0]) releases the backing array so stale writer
+// references become GC-eligible immediately (B4).
 func (pw *PrefixWriter) ClearTargets() {
 	pw.mu.Lock()
 	defer pw.mu.Unlock()
-	pw.extra = pw.extra[:0]
+	pw.extra = nil
 }
 
 // Subscribe returns a channel that receives new prefixed log lines and an

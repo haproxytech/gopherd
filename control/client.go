@@ -79,6 +79,33 @@ func IsAlive(socketPath string) bool {
 	return true
 }
 
+// buildClientCommand translates CLI args into the wire command sent to the
+// daemon. It handles both "<service> <action>" and "<action> <service>" forms
+// for the two-argument service commands.
+func buildClientCommand(args []string) (string, error) {
+	switch {
+	case len(args) == 1 && (args[0] == "list" || args[0] == "stats" || args[0] == "reload"):
+		return args[0], nil
+	case len(args) == 3 && args[0] == "signal":
+		return "signal " + args[1] + " " + args[2], nil
+	case len(args) >= 2 && args[0] == "logs":
+		return strings.Join(args, " "), nil
+	case len(args) == 2:
+		// Support both "gopherd <service> <action>" and "gopherd <action> <service>".
+		action, svcName := args[1], args[0]
+		if serviceActions[args[0]] {
+			// action-first form: "gopherd restart haproxy"
+			action, svcName = args[0], args[1]
+		}
+		if !serviceActions[action] {
+			return "", fmt.Errorf("unknown action %q (try: start, stop, restart, status)", action)
+		}
+		return action + " " + svcName, nil
+	default:
+		return "", fmt.Errorf("usage: gopherd <service> <start|stop|restart|status>")
+	}
+}
+
 // RunClient connects to the gopherd control socket and sends a command.
 func RunClient(args []string) {
 	socketPath := DefaultSocketPath
@@ -86,27 +113,9 @@ func RunClient(args []string) {
 		socketPath = v
 	}
 
-	var command string
-	switch {
-	case len(args) == 1 && (args[0] == "list" || args[0] == "stats" || args[0] == "reload"):
-		command = args[0]
-	case len(args) == 3 && args[0] == "signal":
-		command = "signal " + args[1] + " " + args[2]
-	case len(args) >= 2 && args[0] == "logs":
-		// logs <service> [-f]
-		command = strings.Join(args, " ")
-	case len(args) == 2:
-		svcName := args[0]
-		action := args[1]
-		switch action {
-		case "start", "stop", "restart", "status":
-			command = action + " " + svcName
-		default:
-			fmt.Fprintf(os.Stderr, "unknown action %q (try: start, stop, restart, status)\n", action)
-			os.Exit(1)
-		}
-	default:
-		fmt.Fprintf(os.Stderr, "usage: gopherd <service> <start|stop|restart|status>\n")
+	command, err := buildClientCommand(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
 		fmt.Fprintf(os.Stderr, "       gopherd signal <service> <signal-name>\n")
 		fmt.Fprintf(os.Stderr, "       gopherd logs <service> [-f]\n")
 		fmt.Fprintf(os.Stderr, "       gopherd reload\n")

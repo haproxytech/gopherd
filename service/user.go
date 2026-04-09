@@ -96,5 +96,12 @@ func ResolveCredential(userName, groupName string, userID, groupID *int) (*sysca
 		groups = []uint32{gid}
 	}
 
+	// If only a numeric user-id is specified without a group, preserve the
+	// current process GID instead of defaulting to zero (root group). This
+	// mirrors the group-only case above which preserves the current UID.
+	if hasUser && !hasGroup {
+		gid = uint32(os.Getgid())
+	}
+
 	return &syscall.Credential{Uid: uid, Gid: gid, Groups: groups}, nil
 }

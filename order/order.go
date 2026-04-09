@@ -86,8 +86,9 @@ func TopoSort(services []Service) ([]string, error) {
 	}
 
 	// Kahn's algorithm. Use a head index instead of queue = queue[1:] to
-	// avoid the O(n) slice shift on every dequeue.
-	var queue []string
+	// avoid the O(n) slice shift on every dequeue. Pre-allocate to avoid
+	// repeated reallocations as nodes are enqueued (P2).
+	queue := make([]string, 0, len(services))
 	for _, s := range services {
 		if inDegree[s.Name] == 0 {
 			queue = append(queue, s.Name)

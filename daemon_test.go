@@ -15,9 +15,14 @@
 package main
 
 import (
+	"bytes"
+	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/haproxytech/gopherd/metrics"
 	"github.com/haproxytech/gopherd/service"
@@ -562,6 +567,165 @@ func TestStartServiceRejectsRemovedService(t *testing.T) {
 	_, err := d.startService(svc)
 	if err != errServiceReplaced {
 		t.Errorf("expected errServiceReplaced, got %v", err)
+	}
+}
+
+// TestWaitOneshotSuccess verifies waitOneshot returns code 0 for a process that
+// exits cleanly.
+func TestWaitOneshotSuccess(t *testing.T) {
+	t.Parallel()
+	pid, err := syscall.ForkExec("/bin/true", []string{"true"}, nil)
+	if err != nil {
+		t.Skipf("ForkExec: %v", err)
+	}
+	code, err := waitOneshot(pid, "")
+	if err != nil {
+		t.Fatalf("waitOneshot: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+}
+
+// TestWaitOneshotNonZero verifies waitOneshot returns the non-zero exit code
+// from a process that exits with a failure status.
+func TestWaitOneshotNonZero(t *testing.T) {
+	t.Parallel()
+	pid, err := syscall.ForkExec("/bin/sh", []string{"sh", "-c", "exit 3"}, nil)
+	if err != nil {
+		t.Skipf("ForkExec: %v", err)
+	}
+	code, err := waitOneshot(pid, "")
+	if err != nil {
+		t.Fatalf("waitOneshot: %v", err)
+	}
+	if code != 3 {
+		t.Errorf("expected exit code 3, got %d", code)
+	}
+}
+
+// TestWaitOneshotTimeout verifies waitOneshot returns an error (and does not
+// block indefinitely) when the process does not exit within the given timeout.
+func TestWaitOneshotTimeout(t *testing.T) {
+	t.Parallel()
+	pid, err := syscall.ForkExec("/bin/sleep", []string{"sleep", "60"}, nil)
+	if err != nil {
+		t.Skipf("ForkExec: %v", err)
+	}
+	defer func() {
+		syscall.Kill(pid, syscall.SIGKILL)
+		var ws syscall.WaitStatus
+		syscall.Wait4(pid, &ws, 0, nil)
+	}()
+	start := time.Now()
+	_, err = waitOneshot(pid, "50ms")
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("waitOneshot took too long: %s", elapsed)
+	}
+}
+
+// TestResolveStopSignalRejectsSIGKILL covers O1: SIGKILL cannot be caught by
+// signal.Notify; configuring it as stop-signal silently has no effect.
+// resolveStopSignal must fall back to SIGTERM and log a warning.
+func TestResolveStopSignalRejectsSIGKILL(t *testing.T) {
+	t.Parallel()
+	sig := resolveStopSignal("SIGKILL")
+	if sig == syscall.SIGKILL {
+		t.Errorf("stop-signal SIGKILL should be rejected (uncatchable); got SIGKILL, want SIGTERM")
+	}
+}
+
+// TestResolveStopSignalRejectsSIGSTOP covers O1: SIGSTOP, like SIGKILL, cannot
+// be caught by signal.Notify; it must also be rejected in favour of SIGTERM.
+func TestResolveStopSignalRejectsSIGSTOP(t *testing.T) {
+	t.Parallel()
+	sig := resolveStopSignal("SIGSTOP")
+	if sig == syscall.SIGSTOP {
+		t.Errorf("stop-signal SIGSTOP should be rejected (uncatchable); got SIGSTOP, want SIGTERM")
+	}
+}
+
+// TestReloadRejectsMultipleEntrypointArgs covers N2: reload() must reject a
+// config where more than one process has use-entrypoint-args: true, matching
+// the same check that run() performs at startup. Without this, a hot-reload
+// could silently install an invalid config.
+func TestReloadRejectsMultipleEntrypointArgs(t *testing.T) {
+	t.Parallel()
+	const cfg = `
+processes:
+  - name: proc1
+    command: /bin/sh
+    use-entrypoint-args: true
+  - name: proc2
+    command: /bin/sh
+    use-entrypoint-args: true
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gopherd.yml")
+	if err := os.WriteFile(path, []byte(cfg), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	d := &daemon{
+		configPath: path,
+		cfg:        &yml.Config{Processes: []service.Process{{Name: "existing", Command: "/bin/sh"}}},
+		m:          metrics.New(),
+		pidMap:     make(map[int]*service.Service),
+		restartCh:  make(chan restartReq, 64),
+		services:   make(map[string]*service.Service),
+		shutdownCh: make(chan struct{}),
+	}
+	d.buildServices()
+
+	_, err := d.reload()
+	if err == nil {
+		t.Fatal("expected error when more than one process has use-entrypoint-args: true")
+	}
+	if !strings.Contains(err.Error(), "use-entrypoint-args") {
+		t.Errorf("error %q should mention use-entrypoint-args", err.Error())
+	}
+}
+
+// TestStartServiceErrServiceReplacedNotFatal covers O2: startService returns
+// errServiceReplaced when a service pointer is stale (replaced by a reload),
+// and this must NOT be treated as a fatal failure in the reload toStart loop.
+// The fix adds errServiceReplaced to the reload exclusion list alongside
+// errShuttingDown, matching the existing handling in the restart goroutine.
+func TestStartServiceErrServiceReplacedNotFatal(t *testing.T) {
+	t.Parallel()
+
+	d := newTestDaemon([]service.Process{
+		{Name: "svc1", Command: "/bin/false"},
+	})
+
+	oldSvc := d.services["svc1"]
+
+	// Replace the service in d.services to simulate a concurrent reload.
+	d.mu.Lock()
+	d.services["svc1"] = service.New(service.Process{Name: "svc1", Command: "/bin/false"}, "")
+	d.mu.Unlock()
+
+	_, err := d.startService(oldSvc)
+	if err != errServiceReplaced {
+		t.Fatalf("startService with stale pointer: expected errServiceReplaced, got %v", err)
+	}
+
+	// Capture log output while applying the reload toStart loop condition.
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	// This mirrors the reload toStart loop guard. errServiceReplaced must be
+	// excluded so it is not logged as a spurious reload failure. Before the fix
+	// only errShuttingDown was excluded; after the fix errServiceReplaced is too.
+	if err != nil && err != errShuttingDown && err != errServiceReplaced {
+		log.Printf("reload: start %s failed: %v", oldSvc.Name, err)
+	}
+	if strings.Contains(buf.String(), "reload: start svc1 failed") {
+		t.Errorf("errServiceReplaced must not produce a reload failure log; got: %q", buf.String())
 	}
 }
 

@@ -15,9 +15,34 @@
 package logger
 
 import (
+	"errors"
+	"log"
+	"os"
 	"strings"
 	"testing"
 )
+
+// errSyslogInfoer is a fake syslogInfoer that always returns an error from Info.
+type errSyslogInfoer struct{ err error }
+
+func (e *errSyslogInfoer) Info(_ string) error { return e.err }
+func (e *errSyslogInfoer) Close() error        { return nil }
+
+// TestSyslogWriterIOContractOnError covers N4: syslogWriter.Write must return
+// n=0 (not n=len(p)) when Info returns an error. Returning n>0 with a non-nil
+// error violates the io.Writer contract and confuses callers that inspect n.
+func TestSyslogWriterIOContractOnError(t *testing.T) {
+	t.Parallel()
+	sw := &syslogWriter{w: &errSyslogInfoer{err: errors.New("syslog down")}}
+	p := []byte("hello log line")
+	n, err := sw.Write(p)
+	if err == nil {
+		t.Error("expected non-nil error from Write")
+	}
+	if n != 0 {
+		t.Errorf("n=%d, want 0: io.Writer contract requires n<len(p) on error", n)
+	}
+}
 
 func TestTargetAppliesToAll(t *testing.T) {
 	t.Parallel()
@@ -82,5 +107,31 @@ func TestSanitizePreservesNewlines(t *testing.T) {
 	}
 	if strings.Contains(got, "\x01") {
 		t.Errorf("sanitize() kept control char \\x01: %q", got)
+	}
+}
+
+// errOnCloseWriter is a fake io.WriteCloser whose Close always returns an error.
+type errOnCloseWriter struct{ err error }
+
+func (e *errOnCloseWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (e *errOnCloseWriter) Close() error                { return e.err }
+
+// TestTargetCloseLogsError covers O4: Target.Close() silently discards errors
+// from the underlying writer's Close. The fix logs the error so operators can
+// diagnose failed syslog or file handle closes.
+func TestTargetCloseLogsError(t *testing.T) {
+	// NOT parallel: modifies the global log output writer.
+	var buf strings.Builder
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	lt := &Target{
+		name:   "test-target",
+		Writer: &errOnCloseWriter{err: errors.New("disk full")},
+	}
+	lt.Close()
+
+	if !strings.Contains(buf.String(), "disk full") {
+		t.Errorf("Close() should log writer errors; got log: %q", buf.String())
 	}
 }

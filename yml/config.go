@@ -123,6 +123,30 @@ func Unmarshal(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("no processes defined")
 	}
 
+	for _, p := range cfg.Processes {
+		name := p.Name
+		if name == "" {
+			name = p.Command
+		}
+		if p.Command == "" {
+			if name == "" {
+				name = "(unnamed)"
+			}
+			return nil, fmt.Errorf("process %q: command is required", name)
+		}
+		if err := service.ValidateExitAction(p.OnSuccess); err != nil {
+			return nil, fmt.Errorf("process %q on-success: %w", name, err)
+		}
+		if err := service.ValidateExitAction(p.OnFailure); err != nil {
+			return nil, fmt.Errorf("process %q on-failure: %w", name, err)
+		}
+		for checkName, action := range p.OnCheckFailure {
+			if err := service.ValidateExitAction(action); err != nil {
+				return nil, fmt.Errorf("process %q on-check-failure[%s]: %w", name, checkName, err)
+			}
+		}
+	}
+
 	return cfg, nil
 }
 

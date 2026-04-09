@@ -50,6 +50,25 @@ func TestSystemMemMiB(t *testing.T) {
 	}
 }
 
+// TestSystemMemMiBRounding covers N7: systemMemMiB must round to nearest MiB
+// rather than truncate. 1536 kB = 1.5 MiB; truncation gives 1, rounding gives 2.
+func TestSystemMemMiBRounding(t *testing.T) {
+	dir := setupFakeFS(t)
+	fake := filepath.Join(dir, "meminfo")
+	// 1536 kB = exactly 1.5 MiB — demonstrates truncation vs rounding.
+	os.WriteFile(fake, []byte("MemTotal:        1536 kB\nMemFree: 512 kB\n"), 0o644)
+	procMeminfo = fake
+
+	got, err := systemMemMiB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 1536 / 1024 = 1 (truncated — wrong); (1536 + 512) / 1024 = 2 (rounded — correct).
+	if got != 2 {
+		t.Errorf("systemMemMiB() = %d, want 2 (1536 kB = 1.5 MiB must round to nearest, not truncate)", got)
+	}
+}
+
 func TestCgroupV2_WithNamespace(t *testing.T) {
 	// Cgroup v2 with cgroup namespace: path is "/" and memory.max is at root.
 	dir := setupFakeFS(t)

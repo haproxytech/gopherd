@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -78,6 +79,7 @@ type Checker struct {
 	threshold    int
 
 	failures int
+	stopped  atomic.Bool // set by Stop(); guards against stale callbacks after shutdown
 
 	mu      sync.Mutex
 	healthy bool
@@ -168,11 +170,16 @@ func New(name string, cfg Config, onFailure func(string), metricsFn func(string,
 func (c *Checker) Run() {
 	go func() {
 		// Initial delay before first check (default: 1x period, configurable via initial-delay).
+		// Use time.NewTimer so the timer is cancelled and GC-eligible when Stop() fires
+		// during the delay, rather than running until the delay expires (B1).
+		timer := time.NewTimer(c.initialDelay)
 		select {
-		case <-time.After(c.initialDelay):
+		case <-timer.C:
 		case <-c.stopCh:
+			timer.Stop()
 			return
 		}
+		timer.Stop()
 
 		ticker := time.NewTicker(c.period)
 		defer ticker.Stop()
@@ -206,7 +213,9 @@ func (c *Checker) Run() {
 			// Call onFailureFn outside the lock to avoid a lock-order inversion:
 			// onFailureFn acquires d.mu, and d.mu is also held when stopChecks()
 			// calls c.Stop(). Releasing c.mu first keeps the ordering consistent.
-			if callFailure && c.onFailureFn != nil {
+			// Guard with stopped so a callback queued just before Stop() does not
+			// fire after the checker has been shut down (B3).
+			if callFailure && c.onFailureFn != nil && !c.stopped.Load() {
 				c.onFailureFn(c.name)
 			}
 
@@ -223,7 +232,9 @@ func (c *Checker) Run() {
 // The polling interval is capped at 1 second so a check with a long period
 // (e.g., 30s) does not stall service startup for an entire period between tries.
 func (c *Checker) WaitReady(ctx context.Context) error {
-	if err := c.Execute(); err == nil {
+	if err := c.Execute(); err != nil {
+		log.Printf("check %s: waiting (initial probe failed: %v)", c.name, err)
+	} else {
 		return nil
 	}
 	ticker := time.NewTicker(min(c.period, time.Second))
@@ -242,10 +253,14 @@ func (c *Checker) WaitReady(ctx context.Context) error {
 
 // Stop stops the periodic check loop.
 func (c *Checker) Stop() {
+	c.stopped.Store(true)
 	select {
 	case <-c.stopCh:
 	default:
 		close(c.stopCh)
+	}
+	if c.httpClient != nil {
+		c.httpClient.CloseIdleConnections()
 	}
 }
 
@@ -314,11 +329,11 @@ func (c *Checker) checkTCP(ctx context.Context) error {
 
 func (c *Checker) checkExec(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, c.cfg.Exec.Command, c.cfg.Exec.Args...)
+	// Always place the check process in its own process group so that a
+	// context-cancel SIGKILL targets only the check, not the parent group (I2).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if c.credential != nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			Credential: c.credential,
-			Setpgid:    true,
-		}
+		cmd.SysProcAttr.Credential = c.credential
 	}
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("exec check: %w", err)

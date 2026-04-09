@@ -67,6 +67,53 @@ func TestClientCommandListSorted(t *testing.T) {
 // is what the scanner.Err() check in RunClient relies on: a connection reset
 // or broken pipe mid-read produces scanner.Err() != nil so the client can
 // exit non-zero instead of silently succeeding with partial output.
+// TestBuildClientCommandActionFirst covers the bug where "gopherd restart haproxy"
+// (action-first form) was recognised by IsClientCommand but then mishandled in
+// RunClient: args[1]="haproxy" was not a known action, so the client exited with
+// "unknown action 'haproxy'" instead of sending "restart haproxy" to the daemon.
+func TestBuildClientCommandActionFirst(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		args    []string
+		want    string
+		wantErr bool
+	}{
+		// service-first form (existing, must still work)
+		{[]string{"haproxy", "restart"}, "restart haproxy", false},
+		{[]string{"haproxy", "start"}, "start haproxy", false},
+		{[]string{"haproxy", "stop"}, "stop haproxy", false},
+		{[]string{"haproxy", "status"}, "status haproxy", false},
+		// action-first form (the bug: was returning "unknown action 'haproxy'")
+		{[]string{"restart", "haproxy"}, "restart haproxy", false},
+		{[]string{"start", "haproxy"}, "start haproxy", false},
+		{[]string{"stop", "haproxy"}, "stop haproxy", false},
+		{[]string{"status", "haproxy"}, "status haproxy", false},
+		// one-word commands
+		{[]string{"list"}, "list", false},
+		{[]string{"stats"}, "stats", false},
+		{[]string{"reload"}, "reload", false},
+		// invalid
+		{[]string{"haproxy", "badaction"}, "", true},
+		{[]string{}, "", true},
+	}
+	for _, tt := range tests {
+		got, err := buildClientCommand(tt.args)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("buildClientCommand(%v) = %q, nil; want error", tt.args, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("buildClientCommand(%v) error: %v", tt.args, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("buildClientCommand(%v) = %q; want %q", tt.args, got, tt.want)
+		}
+	}
+}
+
 func TestScannerErrDetectedOnReadError(t *testing.T) {
 	t.Parallel()
 	pr, pw := io.Pipe()

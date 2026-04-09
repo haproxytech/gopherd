@@ -334,6 +334,57 @@ func TestPrefixMultipleLines(t *testing.T) {
 	}
 }
 
+// TestFlushWritesToExtraTarget covers the bug where Flush() used pw.dest instead
+// of w in the extra-writers loop, so log targets never received flushed content.
+func TestFlushWritesToExtraTarget(t *testing.T) {
+	t.Parallel()
+	var dest, extra bytes.Buffer
+	pw := NewPrefixWriter(&dest, "svc", "none")
+	pw.AddTarget(&extra)
+	pw.Write([]byte("partial")) // no newline → buffered, not written yet
+	if dest.Len() != 0 || extra.Len() != 0 {
+		t.Fatal("content should be buffered before flush")
+	}
+	pw.Flush()
+	if !strings.Contains(extra.String(), "partial") {
+		t.Errorf("Flush must write to extra targets; extra got: %q", extra.String())
+	}
+}
+
+// TestFlushNoDuplicateDestWrites covers the duplicate-write side effect: when
+// there are N extra targets, the old code wrote to pw.dest N+1 times instead of once.
+func TestFlushNoDuplicateDestWrites(t *testing.T) {
+	t.Parallel()
+	var dest bytes.Buffer
+	extra1, extra2 := &bytes.Buffer{}, &bytes.Buffer{}
+	pw := NewPrefixWriter(&dest, "svc", "none")
+	pw.AddTarget(extra1)
+	pw.AddTarget(extra2)
+	pw.Write([]byte("unique")) // no newline → buffered
+	pw.Flush()
+	if count := strings.Count(dest.String(), "unique"); count != 1 {
+		t.Errorf("dest must be written exactly once; got %d copies (bug: pw.dest used instead of w in loop)", count)
+	}
+}
+
+// TestClearTargetsReleasesBackingArray verifies that ClearTargets() sets extra
+// to nil (not extra[:0]) so the backing array and stale writer references are
+// eligible for garbage collection (B4).
+func TestClearTargetsReleasesBackingArray(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	pw := NewPrefixWriter(io.Discard, "svc", "none")
+	pw.AddTarget(&buf)
+	pw.ClearTargets()
+
+	pw.mu.Lock()
+	extra := pw.extra
+	pw.mu.Unlock()
+	if extra != nil {
+		t.Error("ClearTargets should set extra to nil, not extra[:0]; stale GC references remain")
+	}
+}
+
 func BenchmarkWriteServiceTimestamp(b *testing.B) {
 	pw := NewPrefixWriter(io.Discard, "my-service", "service timestamp")
 	line := []byte("2026-04-06 some log output from the application\n")
