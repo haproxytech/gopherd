@@ -522,7 +522,11 @@ func (s *Service) Stop() {
 		return
 	}
 	s.stopped.Store(true)
-	_ = syscall.Kill(-int(s.Pid.Load()), s.stopSignal)
+	pid := int(s.Pid.Load())
+	if pid <= 0 {
+		return
+	}
+	_ = syscall.Kill(-pid, s.stopSignal)
 	if s.killDelay > 0 {
 		// Cancel any previously scheduled SIGKILL before creating a new one.
 		// Without this, a second Stop() call (e.g. from a concurrent control
@@ -532,9 +536,11 @@ func (s *Service) Stop() {
 		if s.killTimer != nil {
 			s.killTimer.Stop()
 		}
-		pid := int(s.Pid.Load())
+		kpid := int(s.Pid.Load())
 		s.killTimer = time.AfterFunc(s.killDelay, func() {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			if kpid > 0 {
+				_ = syscall.Kill(-kpid, syscall.SIGKILL)
+			}
 		})
 	}
 }
@@ -553,7 +559,11 @@ func (s *Service) Signal(sig os.Signal) {
 	if !ok {
 		return
 	}
-	_ = syscall.Kill(-int(s.Pid.Load()), sysSig)
+	pid := int(s.Pid.Load())
+	if pid <= 0 {
+		return
+	}
+	_ = syscall.Kill(-pid, sysSig)
 }
 
 // MarkExited marks the service as no longer running and returns how long it ran.

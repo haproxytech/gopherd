@@ -131,7 +131,9 @@ func run(entrypointArgs []string) int {
 			code, err := waitOneshot(pid, svc.Proc.StartupTimeout)
 			if err != nil {
 				// Timeout — kill the process and fail.
-				syscall.Kill(-pid, syscall.SIGKILL)
+				if pid > 0 {
+					syscall.Kill(-pid, syscall.SIGKILL)
+				}
 				log.Fatalf("oneshot %s: %v", svc.Name, err)
 			}
 			svc.MarkExited()
