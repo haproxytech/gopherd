@@ -16,8 +16,27 @@ package service
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
+	"syscall"
 	"testing"
 )
+
+// allowNonRootExec makes the test binary and its parent directories
+// world-accessible so a re-exec as a non-root user can reach it.
+// Only needed (and only works) when running as root.
+func allowNonRootExec(t *testing.T) {
+	t.Helper()
+	bin := os.Args[0]
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatalf("chmod binary: %v", err)
+	}
+	for dir := filepath.Dir(bin); dir != "/" && dir != "."; dir = filepath.Dir(dir) {
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatalf("chmod %s: %v", dir, err)
+		}
+	}
+}
 
 func TestResolveCredentialNil(t *testing.T) {
 	t.Parallel()
@@ -66,7 +85,18 @@ func TestResolveCredentialGroupOnly(t *testing.T) {
 func TestResolveCredentialGroupOnlyUID(t *testing.T) {
 	t.Parallel()
 	if os.Getuid() == 0 {
-		t.Skip("running as root: cannot distinguish inherited UID from zero-value UID")
+		// Re-run this test as non-root so os.Getuid() != 0.
+		allowNonRootExec(t)
+		cmd := exec.Command(os.Args[0], "-test.run=^TestResolveCredentialGroupOnlyUID$", "-test.v")
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Credential: &syscall.Credential{Uid: 1000, Gid: 1000},
+		}
+		out, err := cmd.CombinedOutput()
+		t.Logf("non-root re-exec:\n%s", out)
+		if err != nil {
+			t.Fatalf("non-root re-exec failed: %v", err)
+		}
+		return
 	}
 	gid := 1000
 	cred, err := ResolveCredential("", "", nil, &gid)
@@ -89,7 +119,18 @@ func TestResolveCredentialGroupOnlyUID(t *testing.T) {
 func TestResolveCredentialUserIDOnlyGID(t *testing.T) {
 	t.Parallel()
 	if os.Getuid() == 0 {
-		t.Skip("running as root: cannot distinguish inherited GID from zero-value GID")
+		// Re-run this test as non-root so os.Getgid() != 0.
+		allowNonRootExec(t)
+		cmd := exec.Command(os.Args[0], "-test.run=^TestResolveCredentialUserIDOnlyGID$", "-test.v")
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Credential: &syscall.Credential{Uid: 1000, Gid: 1000},
+		}
+		out, err := cmd.CombinedOutput()
+		t.Logf("non-root re-exec:\n%s", out)
+		if err != nil {
+			t.Fatalf("non-root re-exec failed: %v", err)
+		}
+		return
 	}
 	uid := os.Getuid()
 	cred, err := ResolveCredential("", "", &uid, nil)
