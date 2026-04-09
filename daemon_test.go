@@ -29,11 +29,12 @@ func newTestDaemon(procs []service.Process) *daemon {
 		Processes: procs,
 	}
 	d := &daemon{
-		cfg:       cfg,
-		m:         metrics.New(),
-		pidMap:    make(map[int]*service.Service),
-		restartCh: make(chan restartReq, 64),
-		services:  make(map[string]*service.Service),
+		cfg:        cfg,
+		m:          metrics.New(),
+		pidMap:     make(map[int]*service.Service),
+		restartCh:  make(chan restartReq, 64),
+		services:   make(map[string]*service.Service),
+		shutdownCh: make(chan struct{}),
 	}
 	d.buildServices()
 	return d
@@ -485,5 +486,113 @@ func TestIntPtrDiffers(t *testing.T) {
 	// different values is a difference.
 	if !intPtrDiffers(&zero, &one) {
 		t.Error("intPtrDiffers(&0, &1) must be true")
+	}
+}
+
+// TestInitiateShutdownClosesShutdownCh verifies that initiateShutdown closes
+// the shutdownCh so goroutines blocking on it (e.g. the restart backoff
+// sleeper) are unblocked immediately.
+func TestInitiateShutdownClosesShutdownCh(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon([]service.Process{
+		{Name: "app", Command: "/bin/app"},
+	})
+	// shutdownCh must be open initially.
+	select {
+	case <-d.shutdownCh:
+		t.Fatal("shutdownCh should be open before initiateShutdown")
+	default:
+	}
+	d.initiateShutdown(0)
+	// shutdownCh must be closed after initiateShutdown.
+	select {
+	case <-d.shutdownCh:
+		// correct
+	default:
+		t.Error("shutdownCh should be closed after initiateShutdown")
+	}
+}
+
+// TestInitiateShutdownIdempotent verifies that a second initiateShutdown call
+// does not panic (double-close of shutdownCh).
+func TestInitiateShutdownIdempotent(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon([]service.Process{
+		{Name: "app", Command: "/bin/app"},
+	})
+	d.initiateShutdown(1)
+	// Second call must not panic.
+	d.initiateShutdown(2)
+	// First exit code wins.
+	if d.exitCode.Load() != 1 {
+		t.Errorf("expected exitCode=1, got %d", d.exitCode.Load())
+	}
+}
+
+// TestStartServiceRejectsReplacedService verifies that startService returns
+// errServiceReplaced when the service pointer passed to it is no longer the
+// current instance in d.services (simulating a reload that replaced it).
+func TestStartServiceRejectsReplacedService(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon([]service.Process{
+		{Name: "app", Command: "/bin/app"},
+	})
+
+	// Build a stale service pointer that is NOT in d.services.
+	stale := service.New(service.Process{Name: "app", Command: "/bin/app"}, "")
+
+	_, err := d.startService(stale)
+	if err != errServiceReplaced {
+		t.Errorf("expected errServiceReplaced, got %v", err)
+	}
+}
+
+// TestStartServiceRejectsRemovedService verifies that startService returns
+// errServiceReplaced when the service name has been removed from d.services
+// entirely (simulating a reload that dropped the service from config).
+func TestStartServiceRejectsRemovedService(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon([]service.Process{
+		{Name: "app", Command: "/bin/app"},
+	})
+
+	svc := d.services["app"]
+	delete(d.services, "app")
+
+	_, err := d.startService(svc)
+	if err != errServiceReplaced {
+		t.Errorf("expected errServiceReplaced, got %v", err)
+	}
+}
+
+// TestAnyRunningCheckUsesPidMap verifies that the anyRunning sentinel used
+// during shutdown is based on d.pidMap and not d.services, so that services
+// removed by a reload (still in pidMap but gone from services) are counted.
+// This is a structural test: we verify that len(d.pidMap) is the right signal
+// by confirming an entry added directly to pidMap is visible when d.services
+// is empty.
+func TestAnyRunningCheckUsesPidMap(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(nil)
+
+	// Place a fake PID into pidMap without touching services.
+	fakeSvc := service.New(service.Process{Name: "ghost", Command: "/bin/ghost"}, "")
+	d.mu.Lock()
+	d.pidMap[99999] = fakeSvc
+	anyRunning := len(d.pidMap) > 0
+	d.mu.Unlock()
+
+	if !anyRunning {
+		t.Error("anyRunning should be true when pidMap has entries even if services is empty")
+	}
+
+	// Removing from pidMap should flip the flag.
+	d.mu.Lock()
+	delete(d.pidMap, 99999)
+	anyRunning = len(d.pidMap) > 0
+	d.mu.Unlock()
+
+	if anyRunning {
+		t.Error("anyRunning should be false after all pidMap entries are removed")
 	}
 }

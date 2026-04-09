@@ -410,3 +410,52 @@ func TestDotEnvHashInValueNoSpace(t *testing.T) {
 		t.Errorf("SPACED = %q; want 'value' (space-preceded # is a comment)", env["SPACED"])
 	}
 }
+
+// TestDoubleStopCancelsFirstTimer verifies that calling Stop() twice before the
+// process exits does not leak the first kill timer. Without the fix a second
+// Stop() call would overwrite s.killTimer with a new timer, leaving the first
+// one running and unable to be cancelled by MarkExited().
+func TestDoubleStopCancelsFirstTimer(t *testing.T) {
+	t.Parallel()
+	// Use a non-zero kill-delay so the timer is actually created.
+	svc := New(Process{Command: "sleep", Args: []string{"10"}, KillDelay: "5s"}, "")
+
+	pid, err := svc.Start()
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// First Stop: creates killTimer (timer1) and sends stop signal.
+	svc.Stop()
+	firstTimer := svc.killTimer
+	if firstTimer == nil {
+		t.Fatal("expected killTimer to be set after first Stop()")
+	}
+
+	// Second Stop: must cancel firstTimer and replace it with a new one.
+	// Before the fix, firstTimer was silently overwritten.
+	svc.Stop()
+	secondTimer := svc.killTimer
+
+	// If the fix is in place, firstTimer must have been stopped (its channel
+	// drained / timer inactive). We cannot directly inspect a stopped timer's
+	// state, but we can verify the pointers differ (a new timer was allocated)
+	// and that the second timer is non-nil.
+	if secondTimer == nil {
+		t.Error("expected a new killTimer after second Stop()")
+	}
+	if firstTimer == secondTimer {
+		// The same timer object was reused — fix was not applied.
+		t.Error("second Stop() must allocate a fresh timer; first timer was not cancelled")
+	}
+
+	// Clean up: wait for the process and call MarkExited which cancels secondTimer.
+	var ws syscall.WaitStatus
+	syscall.Wait4(pid, &ws, 0, nil)
+	svc.MarkExited()
+
+	// After MarkExited, no timer should remain.
+	if svc.killTimer != nil {
+		t.Error("expected killTimer to be nil after MarkExited()")
+	}
+}

@@ -2,3 +2,4 @@ allowed:
   - TOCTOU
   - livelock
   - EINTR
+  - wakeup

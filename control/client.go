@@ -135,6 +135,10 @@ func RunClient(args []string) {
 			fmt.Println(line)
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: reading response: %v\n", err)
+		os.Exit(1)
+	}
 	if hasError {
 		os.Exit(1)
 	}

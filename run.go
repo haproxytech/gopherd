@@ -89,6 +89,7 @@ func run(entrypointArgs []string) int {
 		entrypointArgs: entrypointArgs,
 		pidMap:         make(map[int]*service.Service),
 		restartCh:      make(chan restartReq, 64),
+		shutdownCh:     make(chan struct{}),
 	}
 
 	// Initialize stats tracking.
@@ -249,11 +250,21 @@ func run(entrypointArgs []string) int {
 			if req.svc.IsRunning() {
 				continue
 			}
-			time.Sleep(req.delay)
+			// Sleep the backoff delay, but wake early if shutdown is initiated.
+			// Without this select, a 30 s backoff would stall daemon exit for
+			// the full delay even after initiateShutdown has been called.
+			if req.delay > 0 {
+				select {
+				case <-time.After(req.delay):
+				case <-d.shutdownCh:
+				}
+			}
 			// startService checks shuttingDown atomically with the fork/exec
 			// under d.mu, so no separate pre-check is needed here.
+			// errServiceReplaced is returned when a reload replaced this service
+			// while the restart was queued; that is not a fatal error.
 			if _, err := d.startService(req.svc); err != nil {
-				if err != errShuttingDown {
+				if err != errShuttingDown && err != errServiceReplaced {
 					log.Printf("restart %s failed: %v", req.svc.Name, err)
 					d.initiateShutdown(1)
 				}
@@ -286,13 +297,12 @@ func run(entrypointArgs []string) int {
 			d.m.ServiceExited(svc.Name, code)
 
 			if d.shuttingDown.Load() {
-				anyRunning := false
-				for _, s := range d.services {
-					if s.IsRunning() {
-						anyRunning = true
-						break
-					}
-				}
+				// Use pidMap rather than d.services: services removed during a
+				// reload are deleted from d.services immediately but stay in
+				// pidMap until they actually exit. Checking only d.services
+				// would miss those processes and break out of the reap loop
+				// prematurely while they are still in their kill-delay window.
+				anyRunning := len(d.pidMap) > 0
 				d.mu.Unlock()
 				if !anyRunning {
 					break
@@ -374,13 +384,7 @@ func run(entrypointArgs []string) int {
 
 		if d.shuttingDown.Load() {
 			d.mu.Lock()
-			anyRunning := false
-			for _, s := range d.services {
-				if s.IsRunning() {
-					anyRunning = true
-					break
-				}
-			}
+			anyRunning := len(d.pidMap) > 0
 			d.mu.Unlock()
 			if !anyRunning {
 				break

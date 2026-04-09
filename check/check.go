@@ -152,6 +152,9 @@ func New(name string, cfg Config, onFailure func(string), metricsFn func(string,
 		c.httpReq = req
 	}
 	if cfg.TCP != nil {
+		if cfg.TCP.Port <= 0 || cfg.TCP.Port > 65535 {
+			return nil, fmt.Errorf("check %s: tcp port %d is not in valid range [1, 65535]", name, cfg.TCP.Port)
+		}
 		host := cfg.TCP.Host
 		if host == "" {
 			host = "localhost"

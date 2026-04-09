@@ -15,6 +15,9 @@
 package control
 
 import (
+	"bufio"
+	"fmt"
+	"io"
 	"slices"
 	"testing"
 )
@@ -56,5 +59,29 @@ func TestClientCommandListSorted(t *testing.T) {
 	}
 	if !slices.IsSorted(list) {
 		t.Errorf("ClientCommandList() is not sorted: %v", list)
+	}
+}
+
+// TestScannerErrDetectedOnReadError verifies that bufio.Scanner.Err() is
+// non-nil when the underlying reader returns a non-EOF error. This property
+// is what the scanner.Err() check in RunClient relies on: a connection reset
+// or broken pipe mid-read produces scanner.Err() != nil so the client can
+// exit non-zero instead of silently succeeding with partial output.
+func TestScannerErrDetectedOnReadError(t *testing.T) {
+	t.Parallel()
+	pr, pw := io.Pipe()
+	// Write a partial line (no newline), then close with a non-EOF error to
+	// simulate a TCP RST or broken pipe mid-response.
+	go func() {
+		_, _ = pw.Write([]byte("partial line without newline"))
+		pw.CloseWithError(fmt.Errorf("connection reset by peer"))
+	}()
+
+	scanner := bufio.NewScanner(pr)
+	for scanner.Scan() {
+		// consume any complete lines
+	}
+	if scanner.Err() == nil {
+		t.Error("scanner.Err() must be non-nil when the underlying reader returns a non-EOF error")
 	}
 }

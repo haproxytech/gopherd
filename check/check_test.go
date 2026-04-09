@@ -487,3 +487,32 @@ func TestWaitReadyLargePeriodCapped(t *testing.T) {
 		t.Errorf("WaitReady should succeed within 1.5s (period capped at 1s), got: %v", err)
 	}
 }
+
+// TestTCPPortZero verifies that a TCP check with port 0 (which results from a
+// mis-parsed or missing port value in config) is rejected at check creation
+// time with a clear error rather than silently producing a broken check.
+func TestTCPPortZero(t *testing.T) {
+	t.Parallel()
+	_, err := New("bad-port", Config{TCP: &TCP{Host: "localhost", Port: 0}}, nil, nil)
+	if err == nil {
+		t.Error("expected error for TCP port 0")
+	}
+}
+
+// TestTCPPortNegative verifies that a negative TCP port is also rejected.
+func TestTCPPortNegative(t *testing.T) {
+	t.Parallel()
+	_, err := New("neg-port", Config{TCP: &TCP{Host: "localhost", Port: -1}}, nil, nil)
+	if err == nil {
+		t.Error("expected error for negative TCP port")
+	}
+}
+
+// TestTCPPortAboveMax verifies that port 65536 is rejected.
+func TestTCPPortAboveMax(t *testing.T) {
+	t.Parallel()
+	_, err := New("over-port", Config{TCP: &TCP{Host: "localhost", Port: 65536}}, nil, nil)
+	if err == nil {
+		t.Error("expected error for TCP port 65536")
+	}
+}

@@ -507,6 +507,14 @@ func (s *Service) Stop() {
 	s.stopped.Store(true)
 	_ = syscall.Kill(-int(s.Pid.Load()), s.stopSignal)
 	if s.killDelay > 0 {
+		// Cancel any previously scheduled SIGKILL before creating a new one.
+		// Without this, a second Stop() call (e.g. from a concurrent control
+		// socket client and a check-failure handler) would overwrite s.killTimer
+		// leaving the first timer unreachable and unable to be cancelled by
+		// MarkExited, risking a SIGKILL to a recycled PID.
+		if s.killTimer != nil {
+			s.killTimer.Stop()
+		}
 		pid := int(s.Pid.Load())
 		s.killTimer = time.AfterFunc(s.killDelay, func() {
 			_ = syscall.Kill(-pid, syscall.SIGKILL)

@@ -103,6 +103,12 @@ func resolveStopSignal(cfgSignal string) syscall.Signal {
 // started its shutdown sequence. Callers must not treat this as a fatal error.
 var errShuttingDown = fmt.Errorf("daemon is shutting down")
 
+// errServiceReplaced is returned by startService when the service being started
+// is no longer the current instance in d.services (replaced or removed by a
+// reload). The restart goroutine must silently skip this rather than treating
+// it as a fatal error that triggers shutdown.
+var errServiceReplaced = fmt.Errorf("service replaced or removed by reload")
+
 // daemon holds all mutable daemon state so reload can update it.
 type daemon struct {
 	cfg       *yml.Config
@@ -110,6 +116,11 @@ type daemon struct {
 	m         *metrics.Metrics
 	pidMap    map[int]*service.Service
 	restartCh chan restartReq
+
+	// shutdownCh is closed exactly once by initiateShutdown. Goroutines that
+	// need to wake early on shutdown (e.g. the restart backoff sleeper) select
+	// on this channel. A closed channel broadcasts to all receivers at once.
+	shutdownCh chan struct{}
 
 	configPath     string
 	shutdownMode   string // "reverse-dep" (default), "dep", "simultaneous"
@@ -154,6 +165,13 @@ func (d *daemon) startService(svc *service.Service) (int, error) {
 	if d.shuttingDown.Load() {
 		d.mu.Unlock()
 		return 0, errShuttingDown
+	}
+	// Reject stale restart requests: if a reload replaced or removed this
+	// service between the restart goroutine enqueuing the request and now,
+	// starting the old instance would briefly run two copies of the service.
+	if current, ok := d.services[svc.Name]; !ok || current != svc {
+		d.mu.Unlock()
+		return 0, errServiceReplaced
 	}
 	pid, err := svc.Start()
 	if err != nil {
@@ -269,6 +287,9 @@ func (d *daemon) initiateShutdown(code int) {
 	if !d.shuttingDown.CompareAndSwap(false, true) {
 		return
 	}
+	// Closing shutdownCh broadcasts to all select-waiting goroutines (e.g. the
+	// restart backoff sleeper) so they can exit without waiting out their delay.
+	close(d.shutdownCh)
 	d.exitCode.Store(int32(code))
 	d.mu.Lock()
 	d.stopAll()
