@@ -46,8 +46,10 @@ log-targets:
 		"run.sh": `#!/bin/sh
 # Start TCP syslog receiver before gopherd (NewTarget dials on init).
 while true; do nc -l -p 5514 >> /test/syslog.log 2>&1; done &
+NC_PID=$!
 sleep 0.3
-exec /usr/local/bin/gopherd
+/usr/local/bin/gopherd
+kill $NC_PID 2>/dev/null
 `,
 	}, 20*time.Second)
 
@@ -91,8 +93,10 @@ log-targets:
 `,
 		"run.sh": `#!/bin/sh
 while true; do nc -l -p 5514 >> /test/syslog.log 2>&1; done &
+NC_PID=$!
 sleep 0.3
-exec /usr/local/bin/gopherd
+/usr/local/bin/gopherd
+kill $NC_PID 2>/dev/null
 `,
 	}, 20*time.Second)
 
@@ -132,8 +136,10 @@ log-targets:
 `,
 		"run.sh": `#!/bin/sh
 while true; do nc -l -p 5514 >> /test/syslog.log 2>&1; done &
+NC_PID=$!
 sleep 0.3
-exec /usr/local/bin/gopherd
+/usr/local/bin/gopherd
+kill $NC_PID 2>/dev/null
 `,
 	}, 20*time.Second)
 

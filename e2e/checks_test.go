@@ -28,20 +28,21 @@ processes:
   - name: web
     command: /test/http-server.sh
     on-failure: shutdown
-    ready-check: web-http
-    ready-timeout: 10s
+    on-success: ignore
 
   - name: test-runner
     command: /bin/sh
     args: ["-c", "echo HTTP ready-check passed"]
     after: [web]
+    ready-check: web-http
+    ready-timeout: 10s
     on-success: success-shutdown
     on-failure: failure-shutdown
 
 checks:
   web-http:
     http:
-      url: http://localhost:8080/health
+      url: http://127.0.0.1:8080/health
     period: 1s
     timeout: 2s
     threshold: 1
@@ -71,20 +72,21 @@ processes:
     command: /bin/sh
     args: ["-c", "while true; do nc -l -p 5432 < /dev/null 2>/dev/null; done"]
     on-failure: shutdown
-    ready-check: tcp-check
-    ready-timeout: 10s
+    on-success: ignore
 
   - name: test-runner
     command: /bin/sh
     args: ["-c", "echo TCP ready-check passed"]
     after: [listener]
+    ready-check: tcp-check
+    ready-timeout: 10s
     on-success: success-shutdown
     on-failure: failure-shutdown
 
 checks:
   tcp-check:
     tcp:
-      host: localhost
+      host: 127.0.0.1
       port: 5432
     period: 1s
     timeout: 2s

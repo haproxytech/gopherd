@@ -363,19 +363,21 @@ func run(entrypointArgs []string) int {
 				})
 				continue
 
-			case service.ActionShutdown:
+			case service.ActionShutdown, service.ActionFailureShutdown:
 				d.mu.Unlock()
-				d.initiateShutdown(effectiveCode)
+				// Pre-store exit code so it is visible even if the reap loop
+				// breaks (ECHILD) before the goroutine runs.
+				d.exitCode.CompareAndSwap(0, int32(effectiveCode))
+				// Run in a goroutine so the reap loop remains free to call
+				// Wait4 and close done channels; a synchronous call would
+				// deadlock when stopAll waits on <-done for other services.
+				go d.initiateShutdown(effectiveCode)
 				continue
 
 			case service.ActionSuccessShutdown:
 				d.mu.Unlock()
-				d.initiateShutdown(0)
-				continue
-
-			case service.ActionFailureShutdown:
-				d.mu.Unlock()
-				d.initiateShutdown(effectiveCode)
+				// Exit code 0 is the default — no pre-store needed.
+				go d.initiateShutdown(0)
 				continue
 
 			case service.ActionIgnore:

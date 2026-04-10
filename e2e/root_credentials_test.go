@@ -297,20 +297,21 @@ processes:
   - name: web
     command: /test/http-server.sh
     on-failure: shutdown
-    ready-check: web-http
-    ready-timeout: 10s
+    on-success: ignore
 
   - name: test-runner
     command: /bin/sh
     args: ["-c", "echo PRIVILEGED_PORT_OK"]
     after: [web]
+    ready-check: web-http
+    ready-timeout: 10s
     on-success: success-shutdown
     on-failure: failure-shutdown
 
 checks:
   web-http:
     http:
-      url: http://localhost:80/health
+      url: http://127.0.0.1:80/health
     period: 1s
     timeout: 2s
     threshold: 1

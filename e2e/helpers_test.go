@@ -91,6 +91,21 @@ func writeFiles(t *testing.T, files map[string]string) string {
 	return dir
 }
 
+// fixTestFileOwnership chowns bind-mounted test files to root using a
+// throwaway container so gopherd's config ownership check passes regardless
+// of the host UID that created them. No-op when already running as root.
+func fixTestFileOwnership(t *testing.T, dir string) {
+	t.Helper()
+	if os.Getuid() == 0 {
+		return
+	}
+	cmd := exec.Command("docker", "run", "--rm", "-v", dir+":/test",
+		"--entrypoint", "chown", imageName, "-R", "0:0", "/test")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("fixTestFileOwnership: %v\n%s", err, out)
+	}
+}
+
 type containerOpts struct {
 	user      string // --user flag (e.g. "1234:1234" for non-root)
 	extraArgs []string
@@ -104,6 +119,8 @@ func runContainer(t *testing.T, files map[string]string, timeout time.Duration, 
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+
+	fixTestFileOwnership(t, dir)
 
 	args := []string{
 		"run", "--rm",
@@ -163,6 +180,8 @@ func runDetached(t *testing.T, files map[string]string, opts ...containerOpts) *
 	t.Helper()
 	dir := writeFiles(t, files)
 	name := fmt.Sprintf("gopherd-e2e-%s-%d", sanitize(t.Name()), time.Now().UnixNano()%100000)
+
+	fixTestFileOwnership(t, dir)
 
 	args := []string{
 		"run", "-d", "--name", name,
