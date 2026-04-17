@@ -662,19 +662,22 @@ func (s *Service) Stop() {
 			if kpid <= 0 {
 				return
 			}
-			// MarkExited calls killTimer.Stop() under s.mu, but Stop() returns
-			// false and does not wait if the callback is already running. That
-			// leaves a narrow window in which this callback races MarkExited:
-			// the service could have exited, been reaped, and had its PID
-			// reused by an unrelated process group by the time we signal.
+			// MarkExited calls killTimer.Stop() under s.mu, but Stop()
+			// returns false and does not wait if the callback is already
+			// running. Without a lock the callback could observe a
+			// still-running service, then race MarkExited and signal a
+			// PID that the kernel has since recycled.
 			//
-			// Close the window by re-taking s.mu and verifying under the lock
-			// that the service is still running with the original PID. If it
-			// is not, someone else now owns that PID and we must not touch it.
+			// Hold s.mu across the Kill so the callback is serialized
+			// with MarkExited: either MarkExited runs first (we see
+			// running=false and return) or the Kill completes before
+			// MarkExited can acquire the lock. The caller of MarkExited
+			// has already reaped the PID via Wait4 before taking s.mu,
+			// so the check-then-kill sequence inside the lock still
+			// cannot race with PID recycling for that service.
 			s.mu.Lock()
-			stillOurs := s.running.Load() && int(s.Pid.Load()) == kpid
-			s.mu.Unlock()
-			if !stillOurs {
+			defer s.mu.Unlock()
+			if !s.running.Load() || int(s.Pid.Load()) != kpid {
 				return
 			}
 			_ = syscall.Kill(-kpid, syscall.SIGKILL)
