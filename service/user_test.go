@@ -17,7 +17,9 @@ package service
 import (
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -147,14 +149,15 @@ func TestResolveCredentialGroupOnlyUID(t *testing.T) {
 	}
 }
 
-// TestResolveCredentialUserIDOnlyGID covers N1: when only numeric user-id is
-// specified (no group-id or group name), the GID must not be zero (root group).
-// It must be inherited from the current process GID, symmetric with the
-// group-only case which inherits the current process UID.
+// TestResolveCredentialUserIDOnlyGID covers N1 and finding #2: when only a
+// numeric user-id is specified (no group-id or group name), the GID must be
+// resolved from /etc/passwd — not from os.Getgid() which, when gopherd runs as
+// root PID 1, is 0 (the root group) and would leave the child with root-group
+// membership despite looking privilege-dropped in the config.
 func TestResolveCredentialUserIDOnlyGID(t *testing.T) {
 	t.Parallel()
 	if os.Getuid() == 0 {
-		// Re-run this test as non-root so os.Getgid() != 0.
+		// Re-run this test as non-root so we exercise the non-daemon case.
 		allowNonRootExec(t)
 		cmd := exec.Command(os.Args[0], "-test.run=^TestResolveCredentialUserIDOnlyGID$", "-test.v")
 		cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -168,6 +171,17 @@ func TestResolveCredentialUserIDOnlyGID(t *testing.T) {
 		return
 	}
 	uid := os.Getuid()
+	// The expected gid is the uid's primary gid in /etc/passwd, not the
+	// current process gid. Look it up the same way ResolveCredential does.
+	u, err := user.LookupId(strconv.Itoa(uid))
+	if err != nil {
+		t.Skipf("current uid %d has no /etc/passwd entry; cannot assert primary gid: %v", uid, err)
+	}
+	wantGid, err := strconv.ParseUint(u.Gid, 10, 32)
+	if err != nil {
+		t.Fatalf("parse gid %q from passwd: %v", u.Gid, err)
+	}
+
 	cred, err := ResolveCredential("", "", &uid, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -175,9 +189,31 @@ func TestResolveCredentialUserIDOnlyGID(t *testing.T) {
 	if cred == nil {
 		t.Fatal("expected non-nil credential")
 	}
-	want := uint32(os.Getgid())
-	if cred.Gid != want {
-		t.Errorf("gid=%d, want %d (current process gid); numeric user-id without group-id must not default to root group (0)", cred.Gid, want)
+	if cred.Gid != uint32(wantGid) {
+		t.Errorf("gid=%d, want %d (primary gid from /etc/passwd)", cred.Gid, wantGid)
+	}
+	if cred.Gid == 0 && uid != 0 {
+		t.Errorf("numeric user-id %d without group-id resolved to gid 0 (root group) — finding #2 regression", uid)
+	}
+}
+
+// TestResolveCredentialUserIDUnknownFails covers the strict-error branch of
+// finding #2: when the operator supplies only user-id and the uid has no
+// /etc/passwd entry, the call must fail rather than fall back to gopherd's
+// gid (which would be 0 when running as PID 1 root).
+func TestResolveCredentialUserIDUnknownFails(t *testing.T) {
+	t.Parallel()
+	// Pick a uid that is almost certainly not present in any passwd file.
+	uid := 2000000000
+	if _, err := user.LookupId(strconv.Itoa(uid)); err == nil {
+		t.Skipf("uid %d unexpectedly exists in passwd; skipping", uid)
+	}
+	cred, err := ResolveCredential("", "", &uid, nil)
+	if err == nil {
+		t.Fatalf("expected error for unknown uid, got cred=%+v", cred)
+	}
+	if !strings.Contains(err.Error(), "not found in /etc/passwd") {
+		t.Errorf("error %q does not mention passwd lookup failure", err.Error())
 	}
 }
 

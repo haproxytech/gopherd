@@ -24,10 +24,13 @@ import (
 
 // ResolveCredential resolves user/group names and IDs to a syscall.Credential.
 // Returns nil if no user or group information is specified.
-// Numeric IDs take precedence over names. If a user is specified without a group,
-// the user's primary group is used. If only a group is specified, the current
-// process UID is preserved. When resolving by username, supplementary groups
-// are populated automatically.
+// Numeric IDs take precedence over names. If a user is specified without a
+// group (by name or by id), the user's primary group from /etc/passwd is
+// used — the numeric-id form requires the uid to exist in passwd, otherwise
+// an error is returned and the operator must set group-id explicitly. If only
+// a group is specified, the current process UID is preserved. When resolving
+// by username or by numeric uid with a passwd entry, supplementary groups are
+// populated automatically.
 func ResolveCredential(userName, groupName string, userID, groupID *int) (*syscall.Credential, error) {
 	// Reject negative numeric IDs. A naive uint32(*userID) conversion on a
 	// negative value wraps to a large positive number; in particular -1 maps
@@ -48,6 +51,32 @@ func ResolveCredential(userName, groupName string, userID, groupID *int) (*sysca
 	if userID != nil {
 		uid = uint32(*userID)
 		hasUser = true
+		// Mirror the name-form branch below: if the operator supplied only
+		// user-id (no group-id, no group name), look up the uid in
+		// /etc/passwd to derive the primary gid and supplementary groups.
+		// Without this lookup we would fall through to os.Getgid() — which
+		// is gopherd's gid, typically 0 (root) for a PID 1 container — and
+		// silently leave the child in the root group.
+		if groupID == nil && groupName == "" {
+			u, err := user.LookupId(strconv.Itoa(*userID))
+			if err != nil {
+				return nil, fmt.Errorf("user-id %d not found in /etc/passwd; specify group-id explicitly: %w", *userID, err)
+			}
+			id, err := strconv.ParseUint(u.Gid, 10, 32)
+			if err != nil {
+				return nil, fmt.Errorf("parse gid for uid %d: %w", *userID, err)
+			}
+			gid = uint32(id)
+			hasGroup = true
+			if groupIDs, gerr := u.GroupIds(); gerr == nil {
+				for _, gidStr := range groupIDs {
+					g, perr := strconv.ParseUint(gidStr, 10, 32)
+					if perr == nil {
+						groups = append(groups, uint32(g))
+					}
+				}
+			}
+		}
 	} else if userName != "" {
 		u, err := user.Lookup(userName)
 		if err != nil {
@@ -106,13 +135,6 @@ func ResolveCredential(userName, groupName string, userID, groupID *int) (*sysca
 	if !hasUser && hasGroup {
 		uid = uint32(os.Getuid())
 		groups = []uint32{gid}
-	}
-
-	// If only a numeric user-id is specified without a group, preserve the
-	// current process GID instead of defaulting to zero (root group). This
-	// mirrors the group-only case above which preserves the current UID.
-	if hasUser && !hasGroup {
-		gid = uint32(os.Getgid())
 	}
 
 	return &syscall.Credential{Uid: uid, Gid: gid, Groups: groups}, nil
