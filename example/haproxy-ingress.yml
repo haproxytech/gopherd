@@ -10,7 +10,7 @@ processes:
 
   - name: haproxy
     command: /usr/local/sbin/haproxy
-    args: ["-W", "-db", "-f", "/etc/haproxy/haproxy.cfg", "-f", "/etc/haproxy/haproxy-aux.cfg"]
+    args: ["-W", "-db", "-f", "/etc/haproxy/haproxy.cfg", "-f", "/etc/haproxy/haproxy-aux.cfg", "-m", "{{mem 66%}}", "-n", "{{cpu}}"]
     after: [init-config]
     stop-signal: SIGUSR1
     kill-delay: 30s

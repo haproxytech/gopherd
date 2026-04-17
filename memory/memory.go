@@ -19,18 +19,17 @@ package memory
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/haproxytech/gopherd/cgroup"
 )
 
 // File paths are variables so tests can override them.
 var (
 	procMeminfo  = "/proc/meminfo"
-	procSelfCg   = "/proc/self/cgroup"
 	cgroupV2Root = "/sys/fs/cgroup"
 	cgroupV1Root = "/sys/fs/cgroup/memory"
 )
@@ -135,7 +134,7 @@ func cgroupMemMiB() int64 {
 // File access uses os.OpenRoot to confine reads to the cgroup filesystem,
 // preventing path traversal even if /proc/self/cgroup contains malicious paths.
 func cgroupV2MemMiB() int64 {
-	cgPath := selfCgroupPath("0::")
+	cgPath := cgroup.SelfPath("0::")
 	if cgPath == "" {
 		cgPath = "/"
 	}
@@ -146,28 +145,14 @@ func cgroupV2MemMiB() int64 {
 	}
 	defer root.Close()
 
-	// Walk up from the leaf cgroup to root, checking for memory.max at each
-	// level. In K8s with cgroup namespaces, the limit is typically at "/".
-	// Without namespaces, it's at the pod or container level.
-	rel := cgPath
-	for {
-		limit := readV2LimitFrom(root, filepath.Join(rel, "memory.max"))
-		if limit > 0 {
-			return limit
-		}
-		if rel == "/" || rel == "." || rel == "" {
-			break
-		}
-		rel = filepath.Dir(rel)
-	}
-	return 0
+	return cgroup.WalkUpLimit(root, cgPath, "memory.max", parseV2Limit)
 }
 
 // cgroupV1MemMiB reads the memory limit from cgroup v1.
 // In v1, the memory controller has its own hierarchy. The container's
 // cgroup path is the entry with controller "memory" in /proc/self/cgroup.
 func cgroupV1MemMiB() int64 {
-	cgPath := selfCgroupPath("memory")
+	cgPath := cgroup.SelfPath("memory")
 	if cgPath == "" {
 		cgPath = "/"
 	}
@@ -178,87 +163,12 @@ func cgroupV1MemMiB() int64 {
 	}
 	defer root.Close()
 
-	rel := cgPath
-	for {
-		limit := readV1LimitFrom(root, filepath.Join(rel, "memory.limit_in_bytes"))
-		if limit > 0 {
-			return limit
-		}
-		if rel == "/" || rel == "." || rel == "" {
-			break
-		}
-		rel = filepath.Dir(rel)
-	}
-	return 0
+	return cgroup.WalkUpLimit(root, cgPath, "memory.limit_in_bytes", parseV1Limit)
 }
 
-// selfCgroupPath reads /proc/self/cgroup and returns the path for the
-// given prefix. For v2, prefix is "0::". For v1, prefix is a controller
-// name (e.g., "memory").
-//
-// /proc/self/cgroup format:
-//
-//	v2: "0::/kubepods/pod-abc/container-xyz"
-//	v1: "6:memory:/kubepods/pod-abc/container-xyz"
-//
-// The returned path is used with os.Root, which provides kernel-level
-// protection against path traversal (symlinks, ".." sequences).
-func selfCgroupPath(prefix string) string {
-	data, err := os.ReadFile(procSelfCg)
-	if err != nil {
-		return ""
-	}
-	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
-		if prefix == "0::" {
-			// Cgroup v2: line starts with "0::".
-			if path, ok := strings.CutPrefix(line, "0::"); ok {
-				return path
-			}
-			continue
-		}
-		// Cgroup v1: format is "N:controller[,controller]:path".
-		parts := strings.SplitN(line, ":", 3)
-		if len(parts) != 3 {
-			continue
-		}
-		for ctrl := range strings.SplitSeq(parts[1], ",") {
-			if ctrl == prefix {
-				return parts[2]
-			}
-		}
-	}
-	return ""
-}
-
-// readRootFile reads a file relative to an os.Root handle.
-// Returns nil on any error (file not found, permission denied, traversal blocked).
-func readRootFile(root *os.Root, name string) []byte {
-	// Strip leading slash — os.Root paths are relative to the root.
-	name = strings.TrimPrefix(name, "/")
-	if name == "" {
-		return nil
-	}
-	f, err := root.Open(name)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return nil
-	}
-	return data
-}
-
-// readV2LimitFrom reads a cgroup v2 memory.max file via an os.Root handle.
-// Returns 0 (meaning no limit found) for "max", non-numeric content, or
-// unreadable files. Callers treat 0 as "no cgroup constraint" and fall
-// back to system memory.
-func readV2LimitFrom(root *os.Root, name string) int64 {
-	data := readRootFile(root, name)
-	if data == nil {
-		return 0
-	}
+// parseV2Limit parses the contents of a cgroup v2 memory.max file.
+// Returns 0 for "max" (unlimited), non-numeric content, or empty data.
+func parseV2Limit(data []byte) int64 {
 	s := strings.TrimSpace(string(data))
 	if s == "max" || s == "" {
 		return 0
@@ -270,15 +180,9 @@ func readV2LimitFrom(root *os.Root, name string) int64 {
 	return bytes / (1024 * 1024)
 }
 
-// readV1LimitFrom reads a cgroup v1 memory.limit_in_bytes file via an os.Root handle.
-// Returns 0 (meaning no limit found) for the "no limit" sentinel value,
-// non-numeric content, or unreadable files. Callers treat 0 as "no cgroup
-// constraint" and fall back to system memory.
-func readV1LimitFrom(root *os.Root, name string) int64 {
-	data := readRootFile(root, name)
-	if data == nil {
-		return 0
-	}
+// parseV1Limit parses the contents of a cgroup v1 memory.limit_in_bytes file.
+// Returns 0 for the "no limit" sentinel value, non-numeric content, or empty data.
+func parseV1Limit(data []byte) int64 {
 	s := strings.TrimSpace(string(data))
 	bytes, err := strconv.ParseInt(s, 10, 64)
 	if err != nil || bytes <= 0 {

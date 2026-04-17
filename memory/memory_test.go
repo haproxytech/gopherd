@@ -18,6 +18,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/haproxytech/gopherd/cgroup"
 )
 
 func setupFakeFS(t *testing.T) string {
@@ -26,7 +28,7 @@ func setupFakeFS(t *testing.T) string {
 	resetCache()
 	t.Cleanup(func() {
 		procMeminfo = "/proc/meminfo"
-		procSelfCg = "/proc/self/cgroup"
+		cgroup.ProcSelfCgroup = "/proc/self/cgroup"
 		cgroupV2Root = "/sys/fs/cgroup"
 		cgroupV1Root = "/sys/fs/cgroup/memory"
 		resetCache()
@@ -76,7 +78,7 @@ func TestCgroupV2_WithNamespace(t *testing.T) {
 	// /proc/self/cgroup says "0::/"
 	selfCg := filepath.Join(dir, "self_cgroup")
 	os.WriteFile(selfCg, []byte("0::/\n"), 0o644)
-	procSelfCg = selfCg
+	cgroup.ProcSelfCgroup = selfCg
 
 	// memory.max at root of cgroup fs
 	cgRoot := filepath.Join(dir, "cg2")
@@ -97,7 +99,7 @@ func TestCgroupV2_WithoutNamespace(t *testing.T) {
 
 	selfCg := filepath.Join(dir, "self_cgroup")
 	os.WriteFile(selfCg, []byte("0::/kubepods/besteffort/pod-abc/container-xyz\n"), 0o644)
-	procSelfCg = selfCg
+	cgroup.ProcSelfCgroup = selfCg
 
 	cgRoot := filepath.Join(dir, "cg2")
 	// Root has no limit.
@@ -125,7 +127,7 @@ func TestCgroupV2_Max(t *testing.T) {
 
 	selfCg := filepath.Join(dir, "self_cgroup")
 	os.WriteFile(selfCg, []byte("0::/\n"), 0o644)
-	procSelfCg = selfCg
+	cgroup.ProcSelfCgroup = selfCg
 
 	cgRoot := filepath.Join(dir, "cg2")
 	os.MkdirAll(cgRoot, 0o755)
@@ -143,7 +145,7 @@ func TestCgroupV1(t *testing.T) {
 
 	selfCg := filepath.Join(dir, "self_cgroup")
 	os.WriteFile(selfCg, []byte("6:memory:/kubepods/pod-abc\n"), 0o644)
-	procSelfCg = selfCg
+	cgroup.ProcSelfCgroup = selfCg
 
 	// Disable v2 by pointing to nonexistent dir.
 	cgroupV2Root = filepath.Join(dir, "nonexistent")
@@ -167,7 +169,7 @@ func TestCgroupV1_NoLimit(t *testing.T) {
 
 	selfCg := filepath.Join(dir, "self_cgroup")
 	os.WriteFile(selfCg, []byte("6:memory:/\n"), 0o644)
-	procSelfCg = selfCg
+	cgroup.ProcSelfCgroup = selfCg
 
 	cgroupV2Root = filepath.Join(dir, "nonexistent")
 
@@ -193,7 +195,7 @@ func TestAvailable_CgroupLowerThanSystem(t *testing.T) {
 	// Cgroup: 2 GiB
 	selfCg := filepath.Join(dir, "self_cgroup")
 	os.WriteFile(selfCg, []byte("0::/\n"), 0o644)
-	procSelfCg = selfCg
+	cgroup.ProcSelfCgroup = selfCg
 
 	cgRoot := filepath.Join(dir, "cg2")
 	os.MkdirAll(cgRoot, 0o755)
@@ -211,35 +213,6 @@ func TestAvailable_CgroupLowerThanSystem(t *testing.T) {
 	}
 }
 
-func TestSelfCgroupPath(t *testing.T) {
-	dir := setupFakeFS(t)
-
-	selfCg := filepath.Join(dir, "self_cgroup")
-	os.WriteFile(selfCg, []byte(
-		"12:cpuset:/kubepods/pod-abc\n"+
-			"6:memory,hugetlb:/kubepods/pod-abc/container-xyz\n"+
-			"0::/kubepods/pod-def\n",
-	), 0o644)
-	procSelfCg = selfCg
-
-	// v2 path
-	if got := selfCgroupPath("0::"); got != "/kubepods/pod-def" {
-		t.Errorf("selfCgroupPath(v2) = %q, want /kubepods/pod-def", got)
-	}
-	// v1 memory controller
-	if got := selfCgroupPath("memory"); got != "/kubepods/pod-abc/container-xyz" {
-		t.Errorf("selfCgroupPath(memory) = %q, want /kubepods/pod-abc/container-xyz", got)
-	}
-	// v1 hugetlb (shares line with memory)
-	if got := selfCgroupPath("hugetlb"); got != "/kubepods/pod-abc/container-xyz" {
-		t.Errorf("selfCgroupPath(hugetlb) = %q, want /kubepods/pod-abc/container-xyz", got)
-	}
-	// missing controller
-	if got := selfCgroupPath("blkio"); got != "" {
-		t.Errorf("selfCgroupPath(blkio) = %q, want empty", got)
-	}
-}
-
 // TestCgroupV2PrecedesV1 covers M-11: cgroupMemMiB must try v2 before v1.
 // If the order were reversed a container that only has a v2 limit would get
 // the v1 path (returning 0) and fall back to system RAM.
@@ -249,7 +222,7 @@ func TestCgroupV2PrecedesV1(t *testing.T) {
 	// /proc/self/cgroup: both v2 and v1 entries present.
 	selfCg := filepath.Join(dir, "self_cgroup")
 	os.WriteFile(selfCg, []byte("0::/\n6:memory:/\n"), 0o644)
-	procSelfCg = selfCg
+	cgroup.ProcSelfCgroup = selfCg
 
 	// v2 root: limit 512 MiB.
 	cgRoot := filepath.Join(dir, "cg2")
@@ -277,7 +250,7 @@ func TestCgroupV2_PathTraversalBlocked(t *testing.T) {
 
 	selfCg := filepath.Join(dir, "self_cgroup")
 	os.WriteFile(selfCg, []byte("0::/../../../etc\n"), 0o644)
-	procSelfCg = selfCg
+	cgroup.ProcSelfCgroup = selfCg
 
 	// Create a cgroup root with a valid memory.max at the root level.
 	cgRoot := filepath.Join(dir, "cg2")

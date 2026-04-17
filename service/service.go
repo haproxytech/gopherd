@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/haproxytech/gopherd/backoff"
+	"github.com/haproxytech/gopherd/cpu"
 	"github.com/haproxytech/gopherd/logger"
 	"github.com/haproxytech/gopherd/memory"
 )
@@ -426,18 +427,23 @@ var templateRe = regexp.MustCompile(`\{\{\s*\.(\w+)\s*\}\}`)
 // memRe matches {{mem EXPR}} placeholders for memory expressions.
 var memRe = regexp.MustCompile(`\{\{\s*mem\s+(.+?)\s*\}\}`)
 
-// expandTemplates resolves {{.VAR}} and {{mem EXPR}} placeholders in a string
-// slice. Environment lookups use env; memory expressions use totalMiB.
-// Missing env keys expand to empty string and emit a warning — a silent empty
-// substitution of e.g. a password template has historically caused outages.
+// cpuRe matches {{cpu}} and {{cpu EXPR}} placeholders for CPU expressions.
+// Bare {{cpu}} (no expression) expands to the available CPU count directly.
+var cpuRe = regexp.MustCompile(`\{\{\s*cpu\s*(.*?)\s*\}\}`)
+
+// expandTemplates resolves {{.VAR}}, {{mem EXPR}}, and {{cpu EXPR}} placeholders
+// in a string slice. Environment lookups use env; memory expressions use totalMiB;
+// CPU expressions use totalCPUs. Missing env keys expand to empty string and
+// emit a warning — a silent empty substitution of e.g. a password template
+// has historically caused outages.
 //
-// Expansion is single-pass: if a variable's value itself contains {{.VAR}} or
-// {{mem EXPR}} placeholders they are not re-expanded. Variables defined in the
-// environment: block therefore cannot reference each other.
+// Expansion is single-pass: if a variable's value itself contains placeholders
+// they are not re-expanded. Variables defined in the environment: block therefore
+// cannot reference each other.
 //
 // Uses FindAllStringSubmatchIndex for a single-pass replacement, avoiding the
 // double-regex overhead of ReplaceAllStringFunc + FindStringSubmatch.
-func expandTemplates(values []string, env map[string]string, totalMiB int64) ([]string, error) {
+func expandTemplates(values []string, env map[string]string, totalMiB int64, totalCPUs int) ([]string, error) {
 	out := make([]string, len(values))
 	// warned tracks keys that already produced a "not set" warning during this
 	// expansion call, so a restart loop with the same misconfigured argv does
@@ -459,6 +465,22 @@ func expandTemplates(values []string, env map[string]string, totalMiB int64) ([]
 					return nil, err
 				}
 				b.WriteString(strconv.FormatInt(mib, 10))
+				prev = loc[1]
+			}
+			b.WriteString(s[prev:])
+			s = b.String()
+		}
+		// Expand {{cpu EXPR}} placeholders.
+		if locs := cpuRe.FindAllStringSubmatchIndex(s, -1); locs != nil {
+			var b strings.Builder
+			prev := 0
+			for _, loc := range locs {
+				b.WriteString(s[prev:loc[0]])
+				cpus, err := cpu.Eval(s[loc[2]:loc[3]], totalCPUs)
+				if err != nil {
+					return nil, err
+				}
+				b.WriteString(strconv.Itoa(cpus))
 				prev = loc[1]
 			}
 			b.WriteString(s[prev:])
@@ -504,8 +526,9 @@ func (s *Service) Start() (int, error) {
 	}
 
 	totalMiB, _ := memory.Available()
+	totalCPUs := cpu.Available()
 
-	args, err := expandTemplates(s.Proc.Args, env, totalMiB)
+	args, err := expandTemplates(s.Proc.Args, env, totalMiB, totalCPUs)
 	if err != nil {
 		return 0, err
 	}
@@ -529,7 +552,7 @@ func (s *Service) Start() (int, error) {
 			envKeys = append(envKeys, k)
 			envVals = append(envVals, v)
 		}
-		envVals, err = expandTemplates(envVals, env, totalMiB)
+		envVals, err = expandTemplates(envVals, env, totalMiB, totalCPUs)
 		if err != nil {
 			return 0, err
 		}

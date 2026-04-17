@@ -41,7 +41,7 @@ processes:
   # Main application with all options.
   - name: app
     command: /usr/local/bin/myapp
-    args: ["--config", "/etc/app.conf", "--verbose", "-m", "{{.MEMLIMIT}}"]
+    args: ["--config", "/etc/app.conf", "--verbose", "-m", "{{.MEMLIMIT}}", "--threads", "{{cpu}}"]
     dotenv: /etc/app.env                 # load KEY=value env vars from file
     working-dir: /app
     user: app
@@ -67,6 +67,7 @@ processes:
       DB_PORT: "5432"
       LOG_LEVEL: info
       LD_PRELOAD: /usr/local/lib/libwrapper.so
+      GOMAXPROCS: "{{cpu}}"
     on-check-failure:
       app-http: restart                  # action when named check breaches threshold
       db-tcp: shutdown

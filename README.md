@@ -17,6 +17,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Environment & working directory** — per-process environment variables, dotenv file loading, and working directory
 - **Template args** — `{{.VAR}}` placeholders in args and environment values, resolved from env vars and dotenv files
 - **Memory-aware templates** — `{{mem EXPR}}` expands to available memory in MiB (auto-detects system RAM and cgroup limits)
+- **CPU-aware templates** — `{{cpu EXPR}}` expands to available CPUs (auto-detects cgroup CFS quota and cpuset pinning)
 - **Restart policies** — configurable `on-success` / `on-failure` actions: `restart`, `shutdown`, `ignore`
 - **Exponential backoff** — configurable delay, factor, and limit for restart attempts
 - **Service dependencies** — `after`, `before`, `requires` with topological sort
@@ -145,6 +146,41 @@ processes:
 
 On a container with a 3 GiB cgroup limit, this resolves to `-m 2048` and `GOMEMLIMIT=1024MiB`.
 
+#### CPU-aware templates
+
+The `{{cpu EXPR}}` syntax expands to an integer CPU count based on available CPUs. Available CPUs are the minimum of system online CPUs (`runtime.NumCPU()`), CFS bandwidth quota (`--cpus`), and cpuset pinning (`--cpuset-cpus`). Both cgroup v1 and v2 are supported.
+
+Supported expressions:
+
+| Expression | Description |
+|:-----------|:------------|
+| `{{cpu}}` | Available CPU count |
+| `{{cpu 50%}}` | 50% of available CPUs (rounded up, minimum 1) |
+| `{{cpu 100% - 1}}` | All CPUs minus 1 (minimum 1) |
+| `{{cpu 50% - 1}}` | 50% minus 1 (minimum 1) |
+
+The result is always an integer >= 1.
+
+Templates work in both `args` and `environment` values:
+
+```yaml
+processes:
+  - name: haproxy
+    command: /usr/local/sbin/haproxy
+    args: ["-W", "-db", "-m", "{{mem 66%}}", "-n", "{{cpu}}"]
+
+  - name: app
+    command: /usr/local/bin/app
+    environment:
+      GOMAXPROCS: "{{cpu}}"
+
+  - name: worker
+    command: /usr/local/bin/worker
+    args: ["--threads", "{{cpu 50%}}"]
+```
+
+On a container with `--cpus=4`, this resolves to `-n 4`, `GOMAXPROCS=4`, and `--threads 2`.
+
 #### Docker
 
 ```dockerfile
@@ -209,7 +245,7 @@ processes:
 
   - name: app
     command: /usr/local/bin/myapp
-    args: ["--config", "/etc/app.conf", "-m", "{{.MEMLIMIT}}"]
+    args: ["--config", "/etc/app.conf", "-m", "{{.MEMLIMIT}}", "--threads", "{{cpu}}"]
     dotenv: /etc/app.env             # load KEY=value env vars from file
     working-dir: /app
     user: appuser                    # run as user (name or user-id)
@@ -307,7 +343,7 @@ log-targets:
 |:------|:-----|:--------|:------------|
 | `name` | string | command path | Service name for logging and control |
 | `command` | string | *required* | Executable path |
-| `args` | string[] | `[]` | Command arguments (supports `{{.VAR}}` and `{{mem EXPR}}` templates) |
+| `args` | string[] | `[]` | Command arguments (supports `{{.VAR}}`, `{{mem EXPR}}`, and `{{cpu EXPR}}` templates) |
 | `dotenv` | string | | Path to env file (`KEY=value` per line), loaded into templates and child env |
 | `working-dir` | string | inherited | Working directory |
 | `user` | string | inherited | Run as user (name) |
@@ -360,8 +396,10 @@ log-targets:
 | `yml/` | Built-in YAML parser and config loader (no external deps) |
 | `service/` | Service lifecycle, signal parsing, user/group resolution |
 | `backoff/` | Exponential backoff with jitter for restarts |
+| `cgroup/` | Shared cgroup v1/v2 helpers (path discovery, safe file reads, walk-up) |
 | `check/` | Health checks (HTTP, TCP, exec), unix socket transport, readiness gates |
 | `control/` | Unix socket control server + CLI client |
+| `cpu/` | System and cgroup CPU detection, CPU expression parser |
 | `logger/` | Line-buffered prefix writer, syslog and file log target forwarding |
 | `memory/` | System and cgroup memory detection, memory expression parser |
 | `metrics/` | In-memory service and check statistics |
@@ -405,6 +443,8 @@ gopherd is designed for Linux containers. It also compiles and runs on macOS and
 | Health checks (HTTP, TCP, exec) | Full | Full |
 | `{{mem EXPR}}` — system RAM detection | Full | Full |
 | `{{mem EXPR}}` — cgroup limit detection | Full | Not available (no cgroups) |
+| `{{cpu EXPR}}` — system CPU detection | Full | Full |
+| `{{cpu EXPR}}` — cgroup limit detection | Full | Not available (no cgroups) |
 | Control socket audit logging (peer UID) | Full (`SO_PEERCRED`) | Not available (uid=-1) |
 | Config file permission/ownership checks | Full | Partial (no root ownership convention) |
 
