@@ -408,7 +408,7 @@ func TestDotEnvProcEnvOverrides(t *testing.T) {
 	}
 }
 
-// TestDoneNeverStarted covers M-31: Done() on a service that was never started
+// TestDoneNeverStarted verifies that Done() on a service that was never started
 // must return an already-closed channel so callers unblock immediately.
 func TestDoneNeverStarted(t *testing.T) {
 	t.Parallel()
@@ -422,7 +422,7 @@ func TestDoneNeverStarted(t *testing.T) {
 	}
 }
 
-// TestDotEnvHashInValueNoSpace covers M-35: a '#' in a dotenv value that is NOT
+// TestDotEnvHashInValueNoSpace verifies that a '#' in a dotenv value that is NOT
 // preceded by a space must be kept as a literal character, not treated as a comment.
 func TestDotEnvHashInValueNoSpace(t *testing.T) {
 	t.Parallel()

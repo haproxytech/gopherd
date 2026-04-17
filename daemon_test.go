@@ -435,7 +435,7 @@ func TestStopChecksEmpty(t *testing.T) {
 	}
 }
 
-// TestProcessConfigChangedCommand covers M-40: changing a service's command
+// TestProcessConfigChangedCommand verifies that changing a service's command
 // must be detected as a configuration change requiring a restart.
 func TestProcessConfigChangedCommand(t *testing.T) {
 	t.Parallel()
@@ -446,7 +446,7 @@ func TestProcessConfigChangedCommand(t *testing.T) {
 	}
 }
 
-// TestProcessConfigChangedArgs covers M-39: changing a service's arguments
+// TestProcessConfigChangedArgs verifies that changing a service's arguments
 // must be detected as a configuration change requiring a restart.
 func TestProcessConfigChangedArgs(t *testing.T) {
 	t.Parallel()
@@ -466,7 +466,7 @@ func TestProcessConfigChangedNoOp(t *testing.T) {
 	}
 }
 
-// TestIntPtrDiffers covers M-42: a nil-vs-non-nil difference must be detected
+// TestIntPtrDiffers verifies that a nil-vs-non-nil difference is detected
 // even when the non-nil pointer points to the zero value.
 func TestIntPtrDiffers(t *testing.T) {
 	t.Parallel()
@@ -651,7 +651,7 @@ func TestResolveStopSignalRejectsSIGSTOP(t *testing.T) {
 	}
 }
 
-// TestReloadRejectsMultipleEntrypointArgs covers N2: reload() must reject a
+// TestReloadRejectsMultipleEntrypointArgs verifies that reload() rejects a
 // config where more than one process has use-entrypoint-args: true, matching
 // the same check that run() performs at startup. Without this, a hot-reload
 // could silently install an invalid config.

@@ -298,7 +298,7 @@ func dotenvUnescapeDouble(s string) string {
 
 // isValidEnvKey reports whether k is a valid POSIX environment variable
 // name: [A-Za-z_][A-Za-z0-9_]*. Rejecting malformed keys in dotenv files
-// prevents shell-unsafe values from leaking into cmd.Env (M6).
+// prevents shell-unsafe values from leaking into cmd.Env.
 func isValidEnvKey(k string) bool {
 	if k == "" {
 		return false
@@ -358,7 +358,7 @@ func parseDotEnv(path string) (map[string]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dotenv %s: %w", path, err)
 	}
-	// Strip UTF-8 BOM if present so the first key is not prefixed with it (M6).
+	// Strip UTF-8 BOM if present so the first key is not prefixed with it.
 	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
 	env := make(map[string]string)
 	for line := range strings.SplitSeq(string(data), "\n") {

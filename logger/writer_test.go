@@ -187,7 +187,7 @@ func TestRecentRingOverflow(t *testing.T) {
 	}
 }
 
-// TestRecentRingOverflowPreservesOrder covers M-46: when the ring has wrapped,
+// TestRecentRingOverflowPreservesOrder verifies that when the ring has wrapped,
 // Recent() must return lines in chronological order (oldest→newest), not reversed.
 func TestRecentRingOverflowPreservesOrder(t *testing.T) {
 	t.Parallel()
@@ -221,7 +221,7 @@ func TestRecentRingOverflowPreservesOrder(t *testing.T) {
 	}
 }
 
-// TestFlushIdempotent covers M-49: after Flush(), the internal buffer must be
+// TestFlushIdempotent verifies that after Flush(), the internal buffer is
 // cleared so a second Flush() does not duplicate the partial line.
 func TestFlushIdempotent(t *testing.T) {
 	t.Parallel()

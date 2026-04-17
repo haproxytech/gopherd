@@ -52,7 +52,7 @@ func TestSystemMemMiB(t *testing.T) {
 	}
 }
 
-// TestSystemMemMiBRounding covers N7: systemMemMiB must round to nearest MiB
+// TestSystemMemMiBRounding verifies that systemMemMiB rounds to nearest MiB
 // rather than truncate. 1536 kB = 1.5 MiB; truncation gives 1, rounding gives 2.
 func TestSystemMemMiBRounding(t *testing.T) {
 	dir := setupFakeFS(t)
@@ -213,7 +213,7 @@ func TestAvailable_CgroupLowerThanSystem(t *testing.T) {
 	}
 }
 
-// TestCgroupV2PrecedesV1 covers M-11: cgroupMemMiB must try v2 before v1.
+// TestCgroupV2PrecedesV1 verifies that cgroupMemMiB tries v2 before v1.
 // If the order were reversed a container that only has a v2 limit would get
 // the v1 path (returning 0) and fall back to system RAM.
 func TestCgroupV2PrecedesV1(t *testing.T) {

@@ -65,7 +65,7 @@ func TestReset(t *testing.T) {
 	}
 }
 
-// TestResetGivesInitialDelay covers M-07: Reset() must set attempt to 0, not 1.
+// TestResetGivesInitialDelay verifies that Reset() sets attempt to 0, not 1.
 // With attempt=1 the first Next() after Reset() returns delay*factor^1 (200ms)
 // instead of delay*factor^0 (100ms). We allow a 20% window to absorb jitter
 // while still clearly distinguishing the two levels.
@@ -87,7 +87,7 @@ func TestResetGivesInitialDelay(t *testing.T) {
 	}
 }
 
-// TestJitterBidirectional covers M-06: jitter must be ±10%, not 0–10%.
+// TestJitterBidirectional verifies that jitter is ±10%, not 0–10%.
 // With one-sided jitter Next() can never return less than the base delay.
 // Over many samples at least one must fall below the base value.
 func TestJitterBidirectional(t *testing.T) {

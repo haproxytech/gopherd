@@ -92,7 +92,7 @@ func Unmarshal(data []byte) (*Config, error) {
 	}
 	if n := root.Get("stop-signal"); n != nil {
 		cfg.StopSignal = n.String()
-		// Surface unknown signal names at config load rather than at shutdown (L4).
+		// Surface unknown signal names at config load rather than at shutdown.
 		if cfg.StopSignal != "" {
 			if _, err := service.ParseSignal(cfg.StopSignal); err != nil {
 				return nil, fmt.Errorf("invalid stop-signal %q: %w", cfg.StopSignal, err)
@@ -232,7 +232,7 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		UserID:            n.Get("user-id").IntPtr(),
 		GroupID:           n.Get("group-id").IntPtr(),
 	}
-	// Surface unparseable numeric fields rather than silently defaulting (M4).
+	// Surface unparseable numeric fields rather than silently defaulting.
 	if raw := n.Get("backoff-factor").String(); raw != "" {
 		v, err := strconv.ParseFloat(raw, 64)
 		if err != nil {

@@ -16,8 +16,10 @@ package logger
 
 import (
 	"errors"
+	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -28,7 +30,7 @@ type errSyslogInfoer struct{ err error }
 func (e *errSyslogInfoer) Info(_ string) error { return e.err }
 func (e *errSyslogInfoer) Close() error        { return nil }
 
-// TestSyslogWriterIOContractOnError covers N4: syslogWriter.Write must return
+// TestSyslogWriterIOContractOnError verifies that syslogWriter.Write returns
 // n=0 (not n=len(p)) when Info returns an error. Returning n>0 with a non-nil
 // error violates the io.Writer contract and confuses callers that inspect n.
 func TestSyslogWriterIOContractOnError(t *testing.T) {
@@ -93,7 +95,7 @@ func TestNewTargetSyslogEmptyLocation(t *testing.T) {
 	}
 }
 
-// TestSanitizePreservesNewlines covers M-51: the sanitize slow path (triggered by
+// TestSanitizePreservesNewlines verifies that the sanitize slow path (triggered by
 // a control character < 0x20) must preserve '\n' bytes in the output. Without the
 // '\n' exception, multi-line log entries forwarded to syslog/file targets would
 // have their newlines stripped, merging separate lines into one long line.
@@ -133,5 +135,59 @@ func TestTargetCloseLogsError(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "disk full") {
 		t.Errorf("Close() should log writer errors; got log: %q", buf.String())
+	}
+}
+
+// TestOpenFileRejectsSymlinkedAncestor verifies that openFile refuses a log
+// path whose intermediate directory is a symlink, not just the leaf. Lstat
+// on the immediate parent and O_NOFOLLOW on the final open only cover the
+// leaf, so a symlink higher up in the path would otherwise be traversed.
+func TestOpenFileRejectsSymlinkedAncestor(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	// real/                   — the real data directory
+	// link -> real            — symlink at an intermediate level
+	// link/sub/out.log        — path whose ancestor "link" is a symlink
+	realDir := filepath.Join(base, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir real: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(realDir, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir real/sub: %v", err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	target := filepath.Join(link, "sub", "out.log")
+	w, err := openFile("file://" + target)
+	if err == nil {
+		if c, ok := w.(io.Closer); ok {
+			_ = c.Close()
+		}
+		t.Fatalf("expected error for symlinked ancestor, got nil; file created at %s", target)
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error %q does not mention symlink", err.Error())
+	}
+}
+
+// TestOpenFileAcceptsRealAncestors ensures the ancestor check does not
+// reject legitimate paths with only real directories.
+func TestOpenFileAcceptsRealAncestors(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	sub := filepath.Join(base, "a", "b")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdirall: %v", err)
+	}
+	target := filepath.Join(sub, "out.log")
+	w, err := openFile("file://" + target)
+	if err != nil {
+		t.Fatalf("unexpected error on real-ancestor path: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Errorf("close: %v", err)
 	}
 }

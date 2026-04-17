@@ -181,7 +181,7 @@ func (pw *PrefixWriter) Recent() [][]byte {
 // that never grow pw.buf beyond the cap, and a synthetic newline is injected
 // whenever the cap is reached with no natural newline in sight. Without this,
 // a service that emitted a single multi-megabyte newline-free chunk would
-// allocate len(p) bytes in pw.buf before the size check fires (M7).
+// allocate len(p) bytes in pw.buf before the size check fires.
 func (pw *PrefixWriter) Write(p []byte) (int, error) {
 	pw.mu.Lock()
 	defer pw.mu.Unlock()

@@ -188,12 +188,19 @@ func (fw *fileWriter) Close() error {
 }
 
 // openFile opens a log file for append-only writing. The path must be
-// absolute to prevent relative path confusion. The parent directory must
-// already exist and must be a real directory — not a symlink — so gopherd
-// running as root does not silently materialise directories with broad
-// permissions (0o755 traversable) on operator-unexpected paths (M5).
-// O_NOFOLLOW prevents the kernel from following symlinks at the final path
-// component, closing the TOCTOU gap between Lstat and OpenFile.
+// absolute to prevent relative path confusion. Every ancestor from "/" down
+// to the parent directory must be a real directory — not a symlink — so
+// gopherd running as root does not silently redirect writes through an
+// operator-unexpected path. O_NOFOLLOW on the final open prevents the
+// kernel from following a symlink at the leaf.
+//
+// A TOCTOU window exists between the ancestor walk and the final OpenFile:
+// an attacker who can swap a directory for a symlink in that window could
+// still redirect the write. Closing that window requires openat2(2) with
+// RESOLVE_NO_SYMLINKS, which is not in stdlib syscall and the project has
+// a zero-external-dependency policy. The remaining window requires write
+// access to a root-owned directory, which is a higher-privilege primitive
+// than this check already defends against.
 func openFile(location string) (io.WriteCloser, error) {
 	path := strings.TrimPrefix(location, "file://")
 	if path == "" {
@@ -202,18 +209,10 @@ func openFile(location string) (io.WriteCloser, error) {
 	if !filepath.IsAbs(path) {
 		return nil, fmt.Errorf("file log target path must be absolute: %s", path)
 	}
+	path = filepath.Clean(path)
 
-	dir := filepath.Dir(path)
-	// Lstat, not Stat, so a symlinked parent is rejected rather than followed.
-	info, err := os.Lstat(dir)
-	if err != nil {
-		return nil, fmt.Errorf("log directory %s: %w", dir, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("log directory %s is a symlink", dir)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("log directory %s is not a directory", dir)
+	if err := checkAncestorsNotSymlinked(path); err != nil {
+		return nil, err
 	}
 
 	// O_NOFOLLOW causes the open to fail if the final path component is a
@@ -223,4 +222,33 @@ func openFile(location string) (io.WriteCloser, error) {
 		return nil, fmt.Errorf("open log file %s: %w", path, err)
 	}
 	return &fileWriter{f: f}, nil
+}
+
+// checkAncestorsNotSymlinked walks every ancestor of path from "/" down to
+// the immediate parent and rejects any that is a symlink or not a directory.
+// path must be absolute and already filepath.Clean'd.
+func checkAncestorsNotSymlinked(path string) error {
+	parent := filepath.Dir(path)
+	// Walk from "/" to parent inclusive. filepath.Clean guarantees no
+	// trailing separator and no "." / ".." segments to worry about.
+	cur := "/"
+	rel := strings.TrimPrefix(parent, "/")
+	if rel == "" {
+		// path is directly under "/", e.g. "/out.log" — nothing to walk.
+		return nil
+	}
+	for comp := range strings.SplitSeq(rel, "/") {
+		cur = filepath.Join(cur, comp)
+		info, err := os.Lstat(cur)
+		if err != nil {
+			return fmt.Errorf("log path ancestor %s: %w", cur, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("log path ancestor %s is a symlink", cur)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("log path ancestor %s is not a directory", cur)
+		}
+	}
+	return nil
 }

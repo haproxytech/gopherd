@@ -322,7 +322,7 @@ func TestInitialDelayInvalid(t *testing.T) {
 	}
 }
 
-// TestInitialHealthyState covers M-26: a newly created Checker must start
+// TestInitialHealthyState verifies that a newly created Checker starts
 // in a healthy=true state so the first callback only fires after threshold
 // consecutive failures, not immediately on the first failure.
 func TestInitialHealthyState(t *testing.T) {
@@ -336,7 +336,7 @@ func TestInitialHealthyState(t *testing.T) {
 	}
 }
 
-// TestThresholdFiredAtExactCount covers M-23: the failure callback must fire
+// TestThresholdFiredAtExactCount verifies that the failure callback fires
 // after exactly Threshold failures, not Threshold+1.
 // With InitialDelay="0s" the first check runs immediately; with threshold=1 the
 // callback fires before the first period elapses. The mutation (>threshold) needs
@@ -377,7 +377,7 @@ func TestThresholdFiredAtExactCount(t *testing.T) {
 	}
 }
 
-// TestHTTP300IsFail covers M-24: HTTP status 300 is not a 2xx success and must
+// TestHTTP300IsFail verifies that HTTP status 300 is not a 2xx success and must
 // be treated as a health-check failure.
 func TestHTTP300IsFail(t *testing.T) {
 	t.Parallel()
@@ -392,7 +392,7 @@ func TestHTTP300IsFail(t *testing.T) {
 	}
 }
 
-// TestFailureCounterResetOnSuccess covers M-25: a successful check must reset
+// TestFailureCounterResetOnSuccess verifies that a successful check resets
 // the failure counter to 0, not merely decrement it.
 //
 // Sequence (threshold=2, period=20ms):
@@ -444,7 +444,7 @@ func TestFailureCounterResetOnSuccess(t *testing.T) {
 	}
 }
 
-// TestWaitReadyImmediateCheck covers M-28: WaitReady must execute the check
+// TestWaitReadyImmediateCheck verifies that WaitReady executes the check
 // immediately before waiting for the first ticker tick. If the initial Execute()
 // call is removed, a check with a long period stalls for one full period.
 func TestWaitReadyImmediateCheck(t *testing.T) {
@@ -463,7 +463,7 @@ func TestWaitReadyImmediateCheck(t *testing.T) {
 	}
 }
 
-// TestWaitReadyLargePeriodCapped covers M-27: WaitReady must cap its retry
+// TestWaitReadyLargePeriodCapped verifies that WaitReady caps its retry
 // interval at 1 second regardless of the configured check period. Without the
 // cap a service with period=2s would stall startup for 2s between retries.
 func TestWaitReadyLargePeriodCapped(t *testing.T) {

@@ -26,7 +26,7 @@ import (
 
 // maxParseDepth caps how deeply parseBlock may recurse. Guards against a
 // malformed or adversarial config exhausting the stack of the PID 1 process
-// via pathologically nested structures (M9).
+// via pathologically nested structures.
 const maxParseDepth = 64
 
 // Node represents a parsed YAML value.
@@ -54,10 +54,10 @@ const (
 // Parse parses YAML text into a node tree.
 func Parse(data []byte) (*Node, error) {
 	// Strip UTF-8 BOM so the first key does not parse with a \ufeff prefix
-	// when configs are saved by Windows editors (M10).
+	// when configs are saved by Windows editors.
 	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
 	// Normalize bare-\r line endings (classic Mac) to \n so they split correctly;
-	// \r\n is already handled by the TrimRight inside splitLines (L5). Single
+	// \r\n is already handled by the TrimRight inside splitLines. Single
 	// pass: on a CRLF file the previous two-pass approach re-allocated the whole
 	// buffer twice.
 	if bytes.IndexByte(data, '\r') >= 0 {
@@ -103,7 +103,7 @@ func splitLines(data []byte) ([]rawLine, error) {
 		// Tab-indented lines are rejected rather than silently flattened:
 		// indent is counted in spaces only, so a leading \t would parse as
 		// indent=0 and attach the line at the wrong depth. YAML 1.2 forbids
-		// tabs for indentation (M8).
+		// tabs for indentation.
 		if len(raw) > 0 && raw[0] == '\t' {
 			return nil, fmt.Errorf("line %d: tab character used for indentation; YAML requires spaces", i)
 		}
@@ -176,7 +176,7 @@ func parseMapping(lines []rawLine, pos, minIndent, depth int) (*Node, int, error
 	m := &Node{kind: kindMapping}
 	// seenKeys detects duplicate mapping keys at the same level so an
 	// ambiguous config fails loudly rather than silently keeping first-wins
-	// semantics that differ from YAML 1.2 (M11).
+	// semantics that differ from YAML 1.2.
 	seenKeys := make(map[string]int)
 	baseIndent := -1 // indent of the first key; all siblings must match
 

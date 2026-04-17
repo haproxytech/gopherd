@@ -117,7 +117,7 @@ func TestResolveCredentialGroupOnly(t *testing.T) {
 	}
 }
 
-// TestResolveCredentialGroupOnlyUID covers M-37: when only a group is specified
+// TestResolveCredentialGroupOnlyUID verifies that when only a group is specified
 // the UID must be inherited from the current process, not left at 0 (root).
 func TestResolveCredentialGroupOnlyUID(t *testing.T) {
 	t.Parallel()
@@ -149,10 +149,10 @@ func TestResolveCredentialGroupOnlyUID(t *testing.T) {
 	}
 }
 
-// TestResolveCredentialUserIDOnlyGID covers N1 and finding #2: when only a
-// numeric user-id is specified (no group-id or group name), the GID must be
-// resolved from /etc/passwd — not from os.Getgid() which, when gopherd runs as
-// root PID 1, is 0 (the root group) and would leave the child with root-group
+// TestResolveCredentialUserIDOnlyGID verifies that when only a numeric
+// user-id is specified (no group-id or group name), the GID is resolved
+// from /etc/passwd — not from os.Getgid(), which when gopherd runs as root
+// PID 1 is 0 (the root group) and would leave the child with root-group
 // membership despite looking privilege-dropped in the config.
 func TestResolveCredentialUserIDOnlyGID(t *testing.T) {
 	t.Parallel()
@@ -193,14 +193,14 @@ func TestResolveCredentialUserIDOnlyGID(t *testing.T) {
 		t.Errorf("gid=%d, want %d (primary gid from /etc/passwd)", cred.Gid, wantGid)
 	}
 	if cred.Gid == 0 && uid != 0 {
-		t.Errorf("numeric user-id %d without group-id resolved to gid 0 (root group) — finding #2 regression", uid)
+		t.Errorf("numeric user-id %d without group-id resolved to gid 0 (root group); must derive gid from /etc/passwd", uid)
 	}
 }
 
-// TestResolveCredentialUserIDUnknownFails covers the strict-error branch of
-// finding #2: when the operator supplies only user-id and the uid has no
-// /etc/passwd entry, the call must fail rather than fall back to gopherd's
-// gid (which would be 0 when running as PID 1 root).
+// TestResolveCredentialUserIDUnknownFails verifies that when the operator
+// supplies only user-id and the uid has no /etc/passwd entry, the call
+// fails rather than falling back to gopherd's gid (which would be 0 when
+// running as PID 1 root).
 func TestResolveCredentialUserIDUnknownFails(t *testing.T) {
 	t.Parallel()
 	// Pick a uid that is almost certainly not present in any passwd file.
@@ -217,7 +217,7 @@ func TestResolveCredentialUserIDUnknownFails(t *testing.T) {
 	}
 }
 
-// TestResolveCredentialGroupOnlySupplementaryGroups covers M-36: when only a
+// TestResolveCredentialGroupOnlySupplementaryGroups verifies that when only a
 // group is specified the supplementary groups must be restricted to just that
 // GID, not nil (which would inherit the parent's full supplementary group list).
 func TestResolveCredentialGroupOnlySupplementaryGroups(t *testing.T) {

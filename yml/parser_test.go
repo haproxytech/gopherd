@@ -277,7 +277,7 @@ func TestParseNilNode(t *testing.T) {
 	}
 }
 
-// TestParseBoolYes covers M-19: Bool() must recognise "yes" as true, not only "true".
+// TestParseBoolYes verifies that Bool() recognises "yes" as true, not only "true".
 func TestParseBoolYes(t *testing.T) {
 	t.Parallel()
 	n, err := Parse([]byte(`enabled: yes`))
@@ -289,7 +289,7 @@ func TestParseBoolYes(t *testing.T) {
 	}
 }
 
-// TestHashInValueWithoutSpace covers M-20: a '#' not preceded by a space must
+// TestHashInValueWithoutSpace verifies that a '#' not preceded by a space must
 // not be treated as an inline comment (e.g. URL fragments, colour codes).
 func TestHashInValueWithoutSpace(t *testing.T) {
 	t.Parallel()
@@ -313,7 +313,7 @@ func TestHashInValueWithoutSpace(t *testing.T) {
 	}
 }
 
-// TestUnquoteSingleChar covers M-22: unquote must not strip a single-character
+// TestUnquoteSingleChar verifies that unquote does not strip a single-character
 // scalar whose sole byte happens to equal a quote character.
 func TestUnquoteSingleChar(t *testing.T) {
 	t.Parallel()

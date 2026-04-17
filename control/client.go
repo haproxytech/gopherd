@@ -69,12 +69,12 @@ const clientDialTimeout = 5 * time.Second
 // clientReadIdleTimeout bounds how long the client will wait for the next
 // response line from the server. Generous enough that `logs -f` does not
 // time out during legitimate quiet periods, short enough that a dead/hung
-// daemon eventually unblocks the CLI (L2).
+// daemon eventually unblocks the CLI.
 const clientReadIdleTimeout = 10 * time.Minute
 
 // clientMaxLine caps how large a single response line may be before the
 // scanner reports an error. Raised above bufio's 64 KiB default so log lines
-// with a long stack trace or compact JSON still fit (L3).
+// with a long stack trace or compact JSON still fit.
 const clientMaxLine = 1 << 20
 
 // IsAlive checks whether a gopherd daemon is reachable on the given socket path.
@@ -146,12 +146,12 @@ func RunClient(args []string) {
 
 	scanner := bufio.NewScanner(conn)
 	// Grow the scanner buffer so long log lines (stack traces, dense JSON)
-	// stream through without bufio.ErrTooLong (L3).
+	// stream through without bufio.ErrTooLong.
 	scanner.Buffer(make([]byte, 64*1024), clientMaxLine)
 	hasError := false
 	for {
 		// Refresh the read deadline before each line so that a hung daemon
-		// unblocks the CLI after clientReadIdleTimeout instead of forever (L2).
+		// unblocks the CLI after clientReadIdleTimeout instead of forever.
 		conn.SetReadDeadline(time.Now().Add(clientReadIdleTimeout))
 		if !scanner.Scan() {
 			break

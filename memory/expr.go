@@ -58,7 +58,7 @@ func Eval(expr string, totalMiB int64) (int64, error) {
 		return 0, fmt.Errorf("invalid memory expression: %q", expr)
 	}
 	// Guard against the final float→int64 conversion overflowing on
-	// pathologically large totals or percentages (L6). math.MaxInt64 as a
+	// pathologically large totals or percentages. math.MaxInt64 as a
 	// float64 loses precision; anything above that saturates to int64 min
 	// on conversion, which would produce a negative "valid" result below.
 	resF := float64(totalMiB) * pct / 100

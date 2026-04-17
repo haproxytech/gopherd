@@ -127,7 +127,7 @@ func TestComplex(t *testing.T) {
 	}
 }
 
-// TestAfterRequiresSameDepDeduplication covers M-02: when a service lists the
+// TestAfterRequiresSameDepDeduplication verifies that when a service lists the
 // same dependency in both After and Requires, addEdge must deduplicate so that
 // inDegree is only incremented once. Without deduplication the node appears to
 // have an extra incoming edge and Kahn's algorithm falsely reports a cycle.

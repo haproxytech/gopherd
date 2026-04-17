@@ -151,7 +151,7 @@ type daemon struct {
 	// must take it BEFORE mu. All other code paths (control-socket handlers,
 	// signal handlers, reap loop) take only mu. This one-way ordering makes
 	// deadlock impossible: no caller ever needs to acquire reloadMu while
-	// holding mu (L7).
+	// holding mu.
 	reloadMu sync.Mutex
 
 	// exitCode and shuttingDown are accessed from multiple goroutines.

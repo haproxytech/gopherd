@@ -111,7 +111,7 @@ func (cs *Server) Start() error {
 	// directory could have planted a symlink between our Remove and Listen,
 	// causing bind(2) to materialise the socket at the symlink target. Confirm
 	// that the path we just bound is a real socket file, not a symlink or
-	// regular file. Fail closed if hijacked (M12).
+	// regular file. Fail closed if hijacked.
 	postInfo, err := os.Lstat(cs.SocketPath)
 	if err != nil {
 		ln.Close()
@@ -180,7 +180,7 @@ const connWriteTimeout = 10 * time.Second
 func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 	// Centralise semaphore release and panic recovery so that no path leaks
 	// a cmdSem slot — including panics between accept and the first early
-	// return, or inside a callback (L1).
+	// return, or inside a callback.
 	cmdReleased := false
 	releaseCmd := func() {
 		if !cmdReleased {
