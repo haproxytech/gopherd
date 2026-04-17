@@ -22,6 +22,14 @@ import "strings"
 // var is unset or empty, the form without a default expands to "" and the
 // form with a default expands to the literal default text.
 //
+// Unlike expandTemplates, this function does NOT warn on missing variables.
+// Silent empty expansion of a bare {{.VAR}} is historically a footgun
+// (a missing value silently corrupts the field), so callers MUST treat the
+// empty-expanded case explicitly rather than letting "" flow through as the
+// effective config value. The one current caller (yml.parseProcess) remaps
+// an empty expansion of the Startup field to "disabled", which is the
+// documented gate-on-env-var behavior.
+//
 // Only env-var placeholders are recognized here; {{mem}} / {{cpu}} forms are
 // left untouched so they can still be expanded later during Start().
 func ExpandEnvRefs(s string, env map[string]string) string {

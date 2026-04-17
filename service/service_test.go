@@ -608,3 +608,36 @@ func TestDoubleStopCancelsFirstTimer(t *testing.T) {
 		t.Error("expected killTimer to be nil after MarkExited()")
 	}
 }
+
+// TestExpandCPUTemplates verifies that the {{cpu}} regex matches bare
+// {{cpu}} and {{cpu EXPR}} but leaves identifiers like "cpus" or "cpu_x"
+// as literal text (so a user typo does not produce a confusing
+// "invalid cpu expression" error at service start).
+func TestExpandCPUTemplates(t *testing.T) {
+	t.Parallel()
+	env := map[string]string{}
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"--threads={{cpu}}", "--threads=8"},
+		{"--threads={{cpu 50%}}", "--threads=4"},
+		{"--threads={{cpu 50% - 1}}", "--threads=3"},
+		// `{{cpus 50%}}` must NOT match cpuRe: the token after `cpu` is
+		// part of an identifier, not whitespace. Left verbatim.
+		{"--note={{cpus 50%}}", "--note={{cpus 50%}}"},
+		{"--note={{cpu_x}}", "--note={{cpu_x}}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			t.Parallel()
+			got, err := expandTemplates([]string{tt.in}, env, 1024, 8)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got[0] != tt.want {
+				t.Errorf("expand(%q) = %q, want %q", tt.in, got[0], tt.want)
+			}
+		})
+	}
+}

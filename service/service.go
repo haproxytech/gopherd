@@ -443,7 +443,10 @@ var memRe = regexp.MustCompile(`\{\{\s*mem\s+(.+?)\s*\}\}`)
 
 // cpuRe matches {{cpu}} and {{cpu EXPR}} placeholders for CPU expressions.
 // Bare {{cpu}} (no expression) expands to the available CPU count directly.
-var cpuRe = regexp.MustCompile(`\{\{\s*cpu\s*(.*?)\s*\}\}`)
+// The `cpu` token must be followed by whitespace or `}}` so identifiers like
+// `{{cpus 50%}}` or `{{cpu_x}}` do not match and are left as literal text
+// instead of producing a confusing "invalid cpu expression" error.
+var cpuRe = regexp.MustCompile(`\{\{\s*cpu(?:\s+(.+?))?\s*\}\}`)
 
 // expandTemplates resolves {{.VAR}}, {{.VAR:-default}}, {{mem EXPR}}, and
 // {{cpu EXPR}} placeholders in a string slice. Environment lookups use env;
@@ -491,7 +494,12 @@ func expandTemplates(values []string, env map[string]string, totalMiB int64, tot
 			prev := 0
 			for _, loc := range locs {
 				b.WriteString(s[prev:loc[0]])
-				cpus, err := cpu.Eval(s[loc[2]:loc[3]], totalCPUs)
+				// Optional capture: bare {{cpu}} has loc[2] == -1.
+				expr := ""
+				if loc[2] >= 0 {
+					expr = s[loc[2]:loc[3]]
+				}
+				cpus, err := cpu.Eval(expr, totalCPUs)
 				if err != nil {
 					return nil, err
 				}

@@ -57,10 +57,18 @@ func Eval(expr string, totalMiB int64) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid memory expression: %q", expr)
 	}
-	// Guard against the final float→int64 conversion overflowing on
-	// pathologically large totals or percentages. math.MaxInt64 as a
-	// float64 loses precision; anything above that saturates to int64 min
-	// on conversion, which would produce a negative "valid" result below.
+	// Reject percentages outside (0, 100]. A service cannot use more memory
+	// than exists; values above 100% are a configuration error. This also
+	// bounds the float arithmetic below so the defence-in-depth overflow
+	// check becomes unreachable in practice.
+	if pct <= 0 || pct > 100 {
+		return 0, fmt.Errorf("memory percentage must be in (0, 100], got %g: %q", pct, expr)
+	}
+	// Defence-in-depth: even bounded percentages can overflow int64 if
+	// totalMiB is pathologically large (e.g. a corrupted cgroup read).
+	// math.MaxInt64 as a float64 loses precision; anything above that
+	// saturates to int64 min on conversion, which would produce a
+	// negative "valid" result below.
 	resF := float64(totalMiB) * pct / 100
 	if resF > float64(math.MaxInt64) || math.IsInf(resF, 0) || math.IsNaN(resF) {
 		return 0, fmt.Errorf("memory expression overflows int64: %q (total: %d MiB)", expr, totalMiB)

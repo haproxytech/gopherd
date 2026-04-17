@@ -51,6 +51,14 @@ func Eval(expr string, totalCPUs int) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid cpu expression: %q", expr)
 	}
+	// Reject percentages outside (0, 100]. Values above 100% are nonsensical
+	// (a service cannot use more CPUs than exist) and, without this check,
+	// pathological inputs like "1e20%" would overflow the float→int
+	// conversion below, leaving the program to rely on the final clamp as
+	// a safety net.
+	if pct <= 0 || pct > 100 {
+		return 0, fmt.Errorf("cpu percentage must be in (0, 100], got %g: %q", pct, expr)
+	}
 
 	result := int(math.Ceil(float64(totalCPUs) * pct / 100))
 

@@ -49,6 +49,12 @@ func TestEval(t *testing.T) {
 		{"abc", 8, 0, true},
 		{"50", 8, 0, true},   // missing %
 		{"-50%", 8, 0, true}, // negative
+		// Percentages must be in (0, 100]: zero is meaningless, above 100
+		// is nonsensical, and huge values would otherwise overflow the
+		// float→int conversion and rely on the clamp as a safety net.
+		{"0%", 8, 0, true},
+		{"101%", 8, 0, true},
+		{"1e20%", 8, 0, true},
 	}
 
 	for _, tt := range tests {
