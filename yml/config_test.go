@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -565,5 +566,34 @@ processes:
 `))
 	if err == nil {
 		t.Error("expected error for typo in startup field")
+	}
+	// A plain literal typo may legitimately appear in the error message —
+	// there is no secret to protect.
+	if !strings.Contains(err.Error(), `"enable"`) {
+		t.Errorf("literal typo error should name the offending value; got: %v", err)
+	}
+}
+
+// TestStartupEnvGarbageRedactsSecret verifies that when a template expansion
+// produces a disallowed value, the error message references the template text
+// (which is visible in the config file) rather than the expanded value
+// (which may be a secret pulled from the environment).
+func TestStartupEnvGarbageRedactsSecret(t *testing.T) {
+	const secret = "s3cret-value-from-env"
+	withEnv(t, map[string]string{"DB_PASS": secret})
+	_, err := Unmarshal([]byte(`
+processes:
+  - name: svc
+    command: /bin/svc
+    startup: "{{.DB_PASS}}"
+`))
+	if err == nil {
+		t.Fatal("expected error for invalid startup expanded from template")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("error leaked expanded secret into log: %v", err)
+	}
+	if !strings.Contains(err.Error(), "{{.DB_PASS}}") {
+		t.Errorf("error should cite the raw template text; got: %v", err)
 	}
 }

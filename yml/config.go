@@ -166,12 +166,6 @@ func Unmarshal(data []byte) (*Config, error) {
 			}
 			return nil, fmt.Errorf("process %q: command is required", name)
 		}
-		switch p.Startup {
-		case "", "enabled", "disabled", "oneshot":
-			// valid
-		default:
-			return nil, fmt.Errorf("process %q: invalid startup %q (valid: enabled, disabled, oneshot)", name, p.Startup)
-		}
 		if err := service.ValidateExitAction(p.OnSuccess); err != nil {
 			return nil, fmt.Errorf("process %q on-success: %w", name, err)
 		}
@@ -202,6 +196,25 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 	// behavior of falling through to the default "enabled" branch.
 	if startup == "" && strings.Contains(rawStartup, "{{") {
 		startup = "disabled"
+	}
+	// Validate here rather than in Unmarshal so we can redact the expanded
+	// value when it came from a template — a misconfigured `startup:
+	// "{{.DB_PASS}}"` would otherwise echo the secret into the daemon log.
+	switch startup {
+	case "", "enabled", "disabled", "oneshot":
+		// valid
+	default:
+		name := n.Get("name").String()
+		if name == "" {
+			name = n.Get("command").String()
+		}
+		if name == "" {
+			name = "(unnamed)"
+		}
+		if rawStartup != startup {
+			return service.Process{}, fmt.Errorf("process %q: startup template %q expanded to a disallowed value (valid: enabled, disabled, oneshot)", name, rawStartup)
+		}
+		return service.Process{}, fmt.Errorf("process %q: invalid startup %q (valid: enabled, disabled, oneshot)", name, startup)
 	}
 
 	p := service.Process{
