@@ -39,7 +39,12 @@ var ProcSelfCgroup = "/proc/self/cgroup"
 // The returned path is used with os.Root, which provides kernel-level
 // protection against path traversal (symlinks, ".." sequences).
 func SelfPath(prefix string) string {
-	data, err := os.ReadFile(ProcSelfCgroup)
+	f, err := os.Open(ProcSelfCgroup)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxCgroupFileSize))
 	if err != nil {
 		return ""
 	}
@@ -65,8 +70,16 @@ func SelfPath(prefix string) string {
 	return ""
 }
 
-// ReadRootFile reads a file relative to an os.Root handle.
-// Returns nil on any error (file not found, permission denied, traversal blocked).
+// maxCgroupFileSize caps how many bytes ReadRootFile will consume from a
+// single cgroup file. Real cgroup and cpuset files are tens of bytes; 64 KiB
+// leaves plenty of headroom for pathological cpuset.cpus lists while
+// preventing a hostile or mis-bind-mounted file from driving PID 1 into an
+// unbounded allocation.
+const maxCgroupFileSize = 64 << 10
+
+// ReadRootFile reads a file relative to an os.Root handle, capped at
+// maxCgroupFileSize bytes. Returns nil on any error (file not found,
+// permission denied, traversal blocked).
 func ReadRootFile(root *os.Root, name string) []byte {
 	// Strip leading slash — os.Root paths are relative to the root.
 	name = strings.TrimPrefix(name, "/")
@@ -78,7 +91,7 @@ func ReadRootFile(root *os.Root, name string) []byte {
 		return nil
 	}
 	defer f.Close()
-	data, err := io.ReadAll(f)
+	data, err := io.ReadAll(io.LimitReader(f, maxCgroupFileSize))
 	if err != nil {
 		return nil
 	}

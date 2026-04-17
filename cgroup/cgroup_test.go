@@ -114,3 +114,26 @@ func TestReadRootFile(t *testing.T) {
 		t.Errorf("ReadRootFile('') = %v, want nil", got)
 	}
 }
+
+// TestReadRootFileCappedAtMaxSize verifies that ReadRootFile will not consume
+// more than maxCgroupFileSize bytes, so a hostile bind-mount at a cgroup path
+// cannot drive PID 1 into an unbounded allocation.
+func TestReadRootFileCappedAtMaxSize(t *testing.T) {
+	dir := t.TempDir()
+	huge := make([]byte, maxCgroupFileSize*4)
+	for i := range huge {
+		huge[i] = 'a'
+	}
+	os.WriteFile(filepath.Join(dir, "big"), huge, 0o644)
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	got := ReadRootFile(root, "big")
+	if len(got) != maxCgroupFileSize {
+		t.Errorf("ReadRootFile returned %d bytes, want %d (the cap)", len(got), maxCgroupFileSize)
+	}
+}
