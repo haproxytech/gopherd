@@ -204,7 +204,6 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		startup = "disabled"
 	}
 
-
 	p := service.Process{
 		Name:              n.Get("name").String(),
 		Command:           n.Get("command").String(),

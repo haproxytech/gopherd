@@ -346,7 +346,7 @@ func TestExpandEnvTemplates(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			env, err := buildEnvMap(tt.dotenv, tt.procEnv, false)
+			env, _, err := buildEnvMap(tt.dotenv, tt.procEnv, false)
 			if err != nil {
 				t.Fatalf("buildEnvMap: %v", err)
 			}
@@ -372,7 +372,7 @@ func TestDotEnv(t *testing.T) {
 	envFile := dir + "/app.env"
 	os.WriteFile(envFile, []byte("MEMLIMIT=1024\nHOST=example.com\n# comment\n\nEMPTY=\n"), 0o644)
 
-	env, err := buildEnvMap(envFile, nil, false)
+	env, _, err := buildEnvMap(envFile, nil, false)
 	if err != nil {
 		t.Fatalf("buildEnvMap: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestDotEnvProcEnvOverrides(t *testing.T) {
 	envFile := dir + "/app.env"
 	os.WriteFile(envFile, []byte("MEMLIMIT=1024\n"), 0o644)
 
-	env, err := buildEnvMap(envFile, map[string]string{"MEMLIMIT": "2048"}, false)
+	env, _, err := buildEnvMap(envFile, map[string]string{"MEMLIMIT": "2048"}, false)
 	if err != nil {
 		t.Fatalf("buildEnvMap: %v", err)
 	}
@@ -434,7 +434,7 @@ func TestDotEnvHashInValueNoSpace(t *testing.T) {
 			"SPACED=value # trailing\n", // space before # → strip
 	), 0o644)
 
-	env, err := buildEnvMap(envFile, nil, false)
+	env, _, err := buildEnvMap(envFile, nil, false)
 	if err != nil {
 		t.Fatalf("buildEnvMap: %v", err)
 	}
@@ -548,7 +548,7 @@ func TestDotEnvEmptyKeySkipped(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	env, err := buildEnvMap(envFile, nil, false)
+	env, _, err := buildEnvMap(envFile, nil, false)
 	if err != nil {
 		t.Fatalf("buildEnvMap: %v", err)
 	}

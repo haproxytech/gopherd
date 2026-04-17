@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"maps"
 	"os"
 	"os/exec"
 	"regexp"
@@ -401,7 +400,11 @@ func parseDotEnv(path string) (map[string]string, error) {
 // Priority (highest last): OS env < dotenv < per-process environment.
 // If cleanEnv is true, the parent's environment is not inherited — only dotenv
 // and per-process vars are used. This prevents secrets from leaking to children.
-func buildEnvMap(dotenvPath string, procEnv map[string]string, cleanEnv bool) (map[string]string, error) {
+// The returned userKeys set identifies keys set by dotenv or procEnv; only
+// values at those keys are eligible for {{...}} template expansion, so
+// inherited OS env values that happen to contain "{{" are passed through
+// verbatim.
+func buildEnvMap(dotenvPath string, procEnv map[string]string, cleanEnv bool) (map[string]string, map[string]bool, error) {
 	env := make(map[string]string)
 	if !cleanEnv {
 		for _, e := range os.Environ() {
@@ -410,15 +413,22 @@ func buildEnvMap(dotenvPath string, procEnv map[string]string, cleanEnv bool) (m
 			}
 		}
 	}
+	userKeys := make(map[string]bool)
 	if dotenvPath != "" {
 		dotenv, err := parseDotEnv(dotenvPath)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		maps.Copy(env, dotenv)
+		for k, v := range dotenv {
+			env[k] = v
+			userKeys[k] = true
+		}
 	}
-	maps.Copy(env, procEnv)
-	return env, nil
+	for k, v := range procEnv {
+		env[k] = v
+		userKeys[k] = true
+	}
+	return env, userKeys, nil
 }
 
 // templateRe matches {{.VAR_NAME}} and {{.VAR_NAME:-default}} placeholders.
@@ -528,7 +538,7 @@ func (s *Service) Start() (int, error) {
 	// Build environment, resolve credentials, and expand templates before
 	// acquiring the lock to minimize time spent in the critical section.
 	cleanEnv := s.Proc.CleanEnv != nil && *s.Proc.CleanEnv
-	env, err := buildEnvMap(s.Proc.DotEnv, s.Proc.Environment, cleanEnv)
+	env, userKeys, err := buildEnvMap(s.Proc.DotEnv, s.Proc.Environment, cleanEnv)
 	if err != nil {
 		return 0, err
 	}
@@ -553,16 +563,29 @@ func (s *Service) Start() (int, error) {
 	// Set the child's environment explicitly when dotenv, per-process vars,
 	// or clean-env is used. When cmd.Env is nil, Go inherits the parent env.
 	if cleanEnv || s.Proc.DotEnv != "" || len(s.Proc.Environment) > 0 {
-		// Expand {{mem}} and {{.VAR}} in environment values too.
+		// Expand {{mem}}, {{cpu}}, and {{.VAR}} only in user-defined env
+		// values (dotenv + procEnv). Inherited OS env values are passed
+		// through verbatim so that incidental "{{" sequences (e.g. a CI
+		// variable containing template-like text from a commit message)
+		// do not trigger expansion failures.
 		envVals := make([]string, 0, len(env))
 		envKeys := make([]string, 0, len(env))
+		userVals := make([]string, 0, len(userKeys))
+		userIdx := make([]int, 0, len(userKeys))
 		for k, v := range env {
+			if userKeys[k] && strings.Contains(v, "{{") {
+				userIdx = append(userIdx, len(envKeys))
+				userVals = append(userVals, v)
+			}
 			envKeys = append(envKeys, k)
 			envVals = append(envVals, v)
 		}
-		envVals, err = expandTemplates(envVals, env, totalMiB, totalCPUs)
+		expanded, err := expandTemplates(userVals, env, totalMiB, totalCPUs)
 		if err != nil {
 			return 0, err
+		}
+		for i, idx := range userIdx {
+			envVals[idx] = expanded[i]
 		}
 		// Build "key=value" strings reusing a scratch buffer to avoid one
 		// make-per-entry. kvBuf is reallocated only when the next entry does
