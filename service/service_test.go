@@ -17,6 +17,7 @@ package service
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -557,6 +558,32 @@ func TestDotEnvEmptyKeySkipped(t *testing.T) {
 	}
 	if env["VALID"] != "yes" {
 		t.Errorf("VALID = %q, want yes", env["VALID"])
+	}
+}
+
+// TestParseDotEnvRejectsSymlinkedAncestor verifies that parseDotEnv refuses a
+// dotenv path whose intermediate directory is a symlink, not just the leaf.
+// O_NOFOLLOW alone only guards the final component; a symlink higher up would
+// otherwise be traversed when the open walks the path.
+func TestParseDotEnvRejectsSymlinkedAncestor(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir real: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "app.env"), []byte("K=v\n"), 0o644); err != nil {
+		t.Fatalf("write dotenv: %v", err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if _, err := parseDotEnv(filepath.Join(link, "app.env")); err == nil {
+		t.Fatal("expected error for symlinked ancestor, got nil")
+	} else if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error %q does not mention symlink", err.Error())
 	}
 }
 

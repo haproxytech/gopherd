@@ -22,6 +22,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -318,12 +319,52 @@ func isValidEnvKey(k string) bool {
 	return true
 }
 
+// checkAncestorsNotSymlinked walks every ancestor of path from "/" down to
+// the immediate parent and rejects any that is a symlink or not a directory.
+// path must be absolute and already filepath.Clean'd. Duplicated deliberately
+// from logger/ so each package stays self-contained.
+func checkAncestorsNotSymlinked(path string) error {
+	parent := filepath.Dir(path)
+	cur := "/"
+	rel := strings.TrimPrefix(parent, "/")
+	if rel == "" {
+		return nil
+	}
+	for comp := range strings.SplitSeq(rel, "/") {
+		cur = filepath.Join(cur, comp)
+		info, err := os.Lstat(cur)
+		if err != nil {
+			return fmt.Errorf("ancestor %s: %w", cur, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("ancestor %s is a symlink", cur)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("ancestor %s is not a directory", cur)
+		}
+	}
+	return nil
+}
+
 // parseDotEnv reads a dotenv file and returns key-value pairs.
 // Lines are in the format KEY=value. Empty lines and lines starting with # are skipped.
-// Uses O_NOFOLLOW to reject symlinks atomically, matching the protection applied to
-// the main config file.
+// Uses O_NOFOLLOW to reject symlinks atomically on the leaf and walks the
+// ancestor directories with Lstat to reject any symlink above the leaf. Without
+// the ancestor walk, an attacker with write access to a directory on the
+// dotenv path could swap an intermediate component for a symlink and redirect
+// the open to a file of their choice; O_NOFOLLOW only guards the final component.
 func parseDotEnv(path string) (map[string]string, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	// Resolve to an absolute path so the walker has a stable starting point
+	// even when the operator configured a relative dotenv path.
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("dotenv %s: %w", path, err)
+	}
+	abs = filepath.Clean(abs)
+	if err := checkAncestorsNotSymlinked(abs); err != nil {
+		return nil, fmt.Errorf("dotenv %s: %w", path, err)
+	}
+	fd, err := syscall.Open(abs, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		if err == syscall.ELOOP {
 			return nil, fmt.Errorf("dotenv %s is a symlink; refusing to open", path)
