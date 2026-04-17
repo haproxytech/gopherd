@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -62,6 +63,40 @@ func TestResolveCredentialByID(t *testing.T) {
 	}
 	if cred.Uid != 1000 || cred.Gid != 1000 {
 		t.Errorf("uid=%d gid=%d, want 1000/1000", cred.Uid, cred.Gid)
+	}
+}
+
+func TestResolveCredentialRejectsNegativeIDs(t *testing.T) {
+	t.Parallel()
+	validID := 1000
+	negID := -1
+	negUID := -42
+	negGID := -7
+
+	tests := []struct {
+		userID  *int
+		groupID *int
+		name    string
+		wantSub string
+	}{
+		{&negID, &validID, "negative user-id", "user-id must be >= 0"},
+		{&validID, &negID, "negative group-id", "group-id must be >= 0"},
+		{&negUID, &negGID, "negative both", "user-id must be >= 0"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cred, err := ResolveCredential("", "", tc.userID, tc.groupID)
+			if err == nil {
+				t.Fatalf("expected error for negative id, got cred=%+v", cred)
+			}
+			if cred != nil {
+				t.Errorf("expected nil credential on error, got %+v", cred)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.wantSub)
+			}
+		})
 	}
 }
 

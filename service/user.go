@@ -29,6 +29,18 @@ import (
 // process UID is preserved. When resolving by username, supplementary groups
 // are populated automatically.
 func ResolveCredential(userName, groupName string, userID, groupID *int) (*syscall.Credential, error) {
+	// Reject negative numeric IDs. A naive uint32(*userID) conversion on a
+	// negative value wraps to a large positive number; in particular -1 maps
+	// to (uid_t)-1, which setresuid(2) treats as "do not change this id".
+	// The operator would then see a config that looks like it drops
+	// privileges while the child silently keeps gopherd's UID.
+	if userID != nil && *userID < 0 {
+		return nil, fmt.Errorf("user-id must be >= 0, got %d", *userID)
+	}
+	if groupID != nil && *groupID < 0 {
+		return nil, fmt.Errorf("group-id must be >= 0, got %d", *groupID)
+	}
+
 	var uid, gid uint32
 	var groups []uint32
 	var hasUser, hasGroup bool
