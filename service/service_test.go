@@ -347,7 +347,9 @@ func TestExpandEnvTemplates(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			env, _, err := buildEnvMap(tt.dotenv, tt.procEnv, false)
+			// This test relies on OS env (t.Setenv MEMLIMIT / HOST), so
+			// opt in to pass-env.
+			env, _, err := buildEnvMap(tt.dotenv, tt.procEnv, true)
 			if err != nil {
 				t.Fatalf("buildEnvMap: %v", err)
 			}
@@ -558,6 +560,78 @@ func TestDotEnvEmptyKeySkipped(t *testing.T) {
 	}
 	if env["VALID"] != "yes" {
 		t.Errorf("VALID = %q, want yes", env["VALID"])
+	}
+}
+
+// TestBuildEnvMapDefaultPassEnv verifies the security-hardened default:
+// when PassEnv is false (the default), gopherd's OS environment is NOT
+// forwarded to the child. Operators who need inheritance must opt in with
+// pass-env: true.
+func TestBuildEnvMapDefaultPassEnv(t *testing.T) {
+	t.Setenv("GOPHERD_TEST_ONLY_IN_OS", "leakme")
+	// passEnv=false (default) → OS env is dropped
+	env, _, err := buildEnvMap("", nil, false)
+	if err != nil {
+		t.Fatalf("buildEnvMap: %v", err)
+	}
+	if _, ok := env["GOPHERD_TEST_ONLY_IN_OS"]; ok {
+		t.Error("OS env leaked into child env despite default pass-env:false")
+	}
+	// Explicit opt-in: pass-env:true forwards OS env
+	env, _, err = buildEnvMap("", nil, true)
+	if err != nil {
+		t.Fatalf("buildEnvMap: %v", err)
+	}
+	if env["GOPHERD_TEST_ONLY_IN_OS"] != "leakme" {
+		t.Error("explicit pass-env:true should forward OS env")
+	}
+}
+
+// TestStartDefaultsToNoPassEnv verifies that a Process with PassEnv==nil
+// does not forward gopherd's OS env — that only happens with an explicit
+// pass-env:true opt-in.
+func TestStartDefaultsToNoPassEnv(t *testing.T) {
+	t.Setenv("GOPHERD_TEST_DEFAULT_CLEAN", "should-be-dropped")
+	// PassEnv nil (not set in config) → effective pass-env: false
+	svc := mustNew(t, Process{
+		Command:     "sh",
+		Args:        []string{"-c", "[ -z \"$GOPHERD_TEST_DEFAULT_CLEAN\" ]"},
+		Environment: map[string]string{"PATH": "/bin:/usr/bin"},
+	}, "")
+	pid, err := svc.Start()
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	var ws syscall.WaitStatus
+	syscall.Wait4(pid, &ws, 0, nil)
+	svc.MarkExited()
+	if ws.ExitStatus() != 0 {
+		t.Errorf("default pass-env did not drop GOPHERD_TEST_DEFAULT_CLEAN; child saw it set (exit %d)", ws.ExitStatus())
+	}
+}
+
+// TestRemoveEnvStripsKeys verifies that keys listed in RemoveEnv are
+// removed from the final child env, regardless of whether they came from
+// the Environment map or (when pass-env: true) OS env.
+func TestRemoveEnvStripsKeys(t *testing.T) {
+	t.Setenv("GOPHERD_REMOVE_OS", "from-os")
+	trueVal := true // opt in to pass-env so OS-env removal is exercised too
+	svc := mustNew(t, Process{
+		Command:     "sh",
+		Args:        []string{"-c", "[ -z \"$GOPHERD_REMOVE_OS\" ] && [ -z \"$GOPHERD_REMOVE_PROC\" ]"},
+		PassEnv:     &trueVal,
+		Environment: map[string]string{"GOPHERD_REMOVE_PROC": "from-proc", "KEEP_ME": "yes"},
+		RemoveEnv:   []string{"GOPHERD_REMOVE_OS", "GOPHERD_REMOVE_PROC"},
+	}, "")
+	pid, err := svc.Start()
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	var ws syscall.WaitStatus
+	syscall.Wait4(pid, &ws, 0, nil)
+	svc.MarkExited()
+	if ws.ExitStatus() != 0 {
+		t.Errorf("remove-env did not strip listed keys from child env (exit %d)", ws.ExitStatus())
 	}
 }
 

@@ -11,5 +11,6 @@ processes:
   - name: controller
     command: /usr/local/bin/controller
     after: [haproxy]
+    pass-env: true                     # opt in to inheriting gopherd's OS env (default: false)
     on-success: shutdown
     on-failure: restart

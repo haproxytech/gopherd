@@ -64,6 +64,10 @@ processes:
     ready-check: app-http                # block dependents until this check passes
     ready-timeout: 60s                   # max wait for ready check (default: 60s)
     # prefix: "service"                  # per-process prefix override (see global prefix)
+    # pass-env: true                     # opt in to inheriting gopherd's OS env (default: false)
+    # remove-env:                        # strip these keys from the final child env
+    #   - DB_PASSWORD                    #   (useful for shared dotenv files)
+    #   - AWS_SECRET_ACCESS_KEY
     environment:
       DB_HOST: localhost
       DB_PORT: "5432"

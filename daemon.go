@@ -911,10 +911,13 @@ func processConfigChanged(oldp, newp service.Process) bool {
 	if oldp.StopSignal != newp.StopSignal {
 		return true
 	}
-	if boolPtrDiffers(oldp.CleanEnv, newp.CleanEnv) {
+	if boolPtrDiffers(oldp.PassEnv, newp.PassEnv) {
 		return true
 	}
 	if !maps.Equal(oldp.Environment, newp.Environment) {
+		return true
+	}
+	if !slices.Equal(oldp.RemoveEnv, newp.RemoveEnv) {
 		return true
 	}
 	if oldp.DotEnv != newp.DotEnv {

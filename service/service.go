@@ -80,32 +80,38 @@ func ValidateExitAction(s string) error {
 
 // Process holds the configuration for a single process.
 type Process struct {
-	UserID            *int
-	GroupID           *int
-	Environment       map[string]string
-	OnCheckFailure    map[string]string
-	CleanEnv          *bool
-	Name              string
-	Command           string
-	WorkingDir        string
-	User              string
-	Group             string
-	Startup           string
-	StopSignal        string
-	KillDelay         string
-	OnSuccess         string
-	OnFailure         string
-	BackoffDelay      string
-	BackoffLimit      string
-	ReadyCheck        string
-	ReadyTimeout      string
-	StartupTimeout    string
-	DotEnv            string
-	Prefix            string
-	Args              []string
-	After             []string
-	Before            []string
-	Requires          []string
+	UserID         *int
+	GroupID        *int
+	Environment    map[string]string
+	OnCheckFailure map[string]string
+	PassEnv        *bool
+	Name           string
+	Command        string
+	WorkingDir     string
+	User           string
+	Group          string
+	Startup        string
+	StopSignal     string
+	KillDelay      string
+	OnSuccess      string
+	OnFailure      string
+	BackoffDelay   string
+	BackoffLimit   string
+	ReadyCheck     string
+	ReadyTimeout   string
+	StartupTimeout string
+	DotEnv         string
+	Prefix         string
+	Args           []string
+	After          []string
+	Before         []string
+	Requires       []string
+	// RemoveEnv lists env keys to delete from the child's final environment
+	// after merging OS env (if pass-env is true), dotenv, and per-process
+	// environment. Used to drop shared dotenv keys that one service must
+	// not see, or to strip specific OS env vars when opting in to pass-env
+	// for other reasons.
+	RemoveEnv         []string
 	BackoffFactor     float64
 	UseEntrypointArgs bool
 }
@@ -439,15 +445,16 @@ func parseDotEnv(path string) (map[string]string, error) {
 
 // buildEnvMap builds a merged environment map from OS env, dotenv file, and per-process overrides.
 // Priority (highest last): OS env < dotenv < per-process environment.
-// If cleanEnv is true, the parent's environment is not inherited — only dotenv
+// If passEnv is false (the default), the parent's environment is not inherited — only dotenv
 // and per-process vars are used. This prevents secrets from leaking to children.
+// Set passEnv: true explicitly to opt in to inheritance of gopherd's OS env.
 // The returned userKeys set identifies keys set by dotenv or procEnv; only
 // values at those keys are eligible for {{...}} template expansion, so
 // inherited OS env values that happen to contain "{{" are passed through
 // verbatim.
-func buildEnvMap(dotenvPath string, procEnv map[string]string, cleanEnv bool) (map[string]string, map[string]bool, error) {
+func buildEnvMap(dotenvPath string, procEnv map[string]string, passEnv bool) (map[string]string, map[string]bool, error) {
 	env := make(map[string]string)
-	if !cleanEnv {
+	if passEnv {
 		for _, e := range os.Environ() {
 			if k, v, ok := strings.Cut(e, "="); ok && k != "" {
 				env[k] = v
@@ -586,10 +593,21 @@ func expandTemplates(values []string, env map[string]string, totalMiB int64, tot
 func (s *Service) Start() (int, error) {
 	// Build environment, resolve credentials, and expand templates before
 	// acquiring the lock to minimize time spent in the critical section.
-	cleanEnv := s.Proc.CleanEnv != nil && *s.Proc.CleanEnv
-	env, userKeys, err := buildEnvMap(s.Proc.DotEnv, s.Proc.Environment, cleanEnv)
+	// The default when PassEnv is unset (nil) is FALSE: gopherd does not
+	// forward its own OS env to children unless the operator opts in with
+	// pass-env: true. This prevents operator secrets in gopherd's env
+	// from silently leaking into every child.
+	passEnv := s.Proc.PassEnv != nil && *s.Proc.PassEnv
+	env, userKeys, err := buildEnvMap(s.Proc.DotEnv, s.Proc.Environment, passEnv)
 	if err != nil {
 		return 0, err
+	}
+	// Drop any keys the operator listed in remove-env. Runs after the OS /
+	// dotenv / procEnv merge so a shared dotenv key can be suppressed for
+	// one service without modifying the dotenv file.
+	for _, k := range s.Proc.RemoveEnv {
+		delete(env, k)
+		delete(userKeys, k)
 	}
 
 	totalMiB, _ := memory.Available()
@@ -609,9 +627,11 @@ func (s *Service) Start() (int, error) {
 		cmd.Dir = s.Proc.WorkingDir
 	}
 
-	// Set the child's environment explicitly when dotenv, per-process vars,
-	// or clean-env is used. When cmd.Env is nil, Go inherits the parent env.
-	if cleanEnv || s.Proc.DotEnv != "" || len(s.Proc.Environment) > 0 {
+	// Set the child's environment explicitly when pass-env is off (default),
+	// dotenv / per-process vars are supplied, or remove-env lists any keys
+	// to strip. When cmd.Env is nil, Go inherits the parent env — only
+	// safe when pass-env is on and no other env configuration applies.
+	if !passEnv || s.Proc.DotEnv != "" || len(s.Proc.Environment) > 0 || len(s.Proc.RemoveEnv) > 0 {
 		// Expand {{mem}}, {{cpu}}, and {{.VAR}} only in user-defined env
 		// values (dotenv + procEnv). Inherited OS env values are passed
 		// through verbatim so that incidental "{{" sequences (e.g. a CI

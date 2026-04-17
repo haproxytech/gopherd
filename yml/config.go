@@ -49,14 +49,20 @@ const (
 
 // Config is the top-level gopherd configuration.
 type Config struct {
-	Checks        map[string]check.Config
-	LogTargets    map[string]logger.TargetConfig
-	Prefix        string
+	Checks     map[string]check.Config
+	LogTargets map[string]logger.TargetConfig
+	Prefix     string
+	// PassEnv is the global default for the per-service pass-env flag.
+	// A nil pointer means "not set in config", which the consumer treats as
+	// false (do not inherit gopherd's environment). This default prevents
+	// operator secrets in gopherd's own env from silently leaking into
+	// every child. Explicit true opts in to inheritance.
+	PassEnv *bool
+
 	ShutdownOrder string
 	StopSignal    string // signal that triggers graceful shutdown (default: SIGTERM)
 	Control       control.Config
 	Processes     []service.Process
-	CleanEnv      bool
 	NoLogo        bool
 }
 
@@ -87,8 +93,8 @@ func Unmarshal(data []byte) (*Config, error) {
 	if n := root.Get("no-logo"); n != nil {
 		cfg.NoLogo = n.Bool()
 	}
-	if n := root.Get("clean-env"); n != nil {
-		cfg.CleanEnv = n.Bool()
+	if n := root.Get("pass-env"); n != nil {
+		cfg.PassEnv = n.BoolPtr()
 	}
 	if n := root.Get("stop-signal"); n != nil {
 		cfg.StopSignal = n.String()
@@ -131,10 +137,12 @@ func Unmarshal(data []byte) (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
-		// If per-service clean-env is not set, inherit the global default.
-		if p.CleanEnv == nil && cfg.CleanEnv {
-			v := true
-			p.CleanEnv = &v
+		// If per-service pass-env is unset, inherit the global default
+		// when explicitly set. Either side left nil falls through to the
+		// consumer, which treats nil as false (do not inherit gopherd's env).
+		if p.PassEnv == nil && cfg.PassEnv != nil {
+			v := *cfg.PassEnv
+			p.PassEnv = &v
 		}
 		cfg.Processes = append(cfg.Processes, p)
 	}
@@ -235,11 +243,12 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		ReadyTimeout:      n.Get("ready-timeout").String(),
 		StartupTimeout:    n.Get("startup-timeout").String(),
 		UseEntrypointArgs: n.Get("use-entrypoint-args").Bool(),
-		CleanEnv:          n.Get("clean-env").BoolPtr(),
+		PassEnv:           n.Get("pass-env").BoolPtr(),
 		DotEnv:            n.Get("dotenv").String(),
 		After:             n.Get("after").Strings(),
 		Before:            n.Get("before").Strings(),
 		Requires:          n.Get("requires").Strings(),
+		RemoveEnv:         n.Get("remove-env").Strings(),
 		Environment:       n.Get("environment").StringMap(),
 		OnCheckFailure:    n.Get("on-check-failure").StringMap(),
 		UserID:            n.Get("user-id").IntPtr(),

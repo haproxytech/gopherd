@@ -201,7 +201,11 @@ Templates work in both `args` and `environment` values:
 processes:
   - name: haproxy
     command: /usr/local/sbin/haproxy
-    args: ["-W", "-db", "-m", "{{mem 66%}}", "-n", "{{cpu}}"]
+    args: ["-W", "-db", "-m", "{{mem 66%}}"]
+
+  - name: api
+    command: /usr/local/bin/gunicorn
+    args: ["--workers", "{{cpu}}", "app:wsgi"]
 
   - name: app
     command: /usr/local/bin/app
@@ -213,7 +217,7 @@ processes:
     args: ["--threads", "{{cpu 50%}}"]
 ```
 
-On a container with `--cpus=4`, this resolves to `-n 4`, `GOMAXPROCS=4`, and `--threads 2`.
+On a container with `--cpus=4`, this resolves to `--workers 4`, `GOMAXPROCS=4`, and `--threads 2`.
 
 #### Docker
 
@@ -259,10 +263,13 @@ Below is a full example showing all available options:
 #   "none"               — no prefix at all (raw output)
 # prefix: "service timestamp"
 
-# Global clean-env default. When true, all services start with an empty
-# environment — only variables from dotenv and per-process environment are
-# passed. Individual services can override with clean-env: false.
-# clean-env: true
+# Global pass-env default. When false (the default), services start with
+# an empty environment — only variables from dotenv and per-process
+# environment are passed to children. This prevents operator secrets in
+# gopherd's own environment from leaking into every service. Set to true
+# to forward gopherd's OS environment to all services; individual services
+# can override with per-service pass-env: true/false.
+# pass-env: false
 
 # Control socket
 control:
@@ -366,7 +373,7 @@ log-targets:
 | Field | Type | Default | Description |
 |:------|:-----|:--------|:------------|
 | `prefix` | string | `"service timestamp"` | Log prefix format for all services |
-| `clean-env` | bool | `false` | Global default: start services with empty environment |
+| `pass-env` | bool | `false` | Global default: forward gopherd's OS environment to children (false = empty env, children see only dotenv + per-process `environment`) |
 | `no-logo` | bool | `false` | Suppress ASCII art banner at startup |
 | `shutdown-order` | string | `"reverse-dep"` | Shutdown strategy: `reverse-dep`, `dep`, or `simultaneous` |
 | `stop-signal` | string | `"SIGTERM"` | Signal that triggers graceful shutdown (override with `GOPHERD_STOP_SIGNAL` env). Set this to match Docker's `STOPSIGNAL` if it differs from SIGTERM. |
@@ -385,7 +392,8 @@ log-targets:
 | `user-id` | int | inherited | Run as user (numeric, takes precedence) |
 | `group-id` | int | inherited | Run as group (numeric, takes precedence) |
 | `environment` | map | inherited | Extra environment variables |
-| `clean-env` | bool | global default | Start with empty environment (only dotenv + environment vars) |
+| `pass-env` | bool | global default | Forward gopherd's OS environment to this service (false = empty env + only dotenv/environment vars) |
+| `remove-env` | list | `[]` | Env keys to delete from the final child environment, regardless of source (OS env / dotenv / `environment:`) |
 | `startup` | string | `"enabled"` | `"enabled"`, `"disabled"`, or `"oneshot"`. Supports `{{.VAR}}` / `{{.VAR:-default}}`; empty after expansion → disabled |
 | `startup-timeout` | duration | | Max time for oneshot to complete (kills and fails if exceeded) |
 | `stop-signal` | string | `"SIGTERM"` | Signal name (with or without SIG prefix) |

@@ -10,7 +10,7 @@ processes:
 
   - name: haproxy
     command: /usr/local/sbin/haproxy
-    args: ["-W", "-db", "-f", "/etc/haproxy/haproxy.cfg", "-f", "/etc/haproxy/haproxy-aux.cfg", "-m", "{{mem 66%}}", "-n", "{{cpu}}"]
+    args: ["-W", "-db", "-f", "/etc/haproxy/haproxy.cfg", "-f", "/etc/haproxy/haproxy-aux.cfg", "-m", "{{mem 66%}}"]
     after: [init-config]
     stop-signal: SIGUSR1
     kill-delay: 30s
@@ -24,6 +24,7 @@ processes:
   - name: controller
     command: /usr/local/bin/controller
     after: [haproxy]
+    pass-env: true                     # opt in to inheriting gopherd's OS env (default: false)
     on-success: shutdown
     on-failure: restart
 
