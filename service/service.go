@@ -352,6 +352,12 @@ func checkAncestorsNotSymlinked(path string) error {
 	return nil
 }
 
+// maxDotEnvSize caps how many bytes parseDotEnv will consume from a
+// dotenv file. Real dotenv files are typically under 10 KiB; 1 MiB
+// leaves plenty of headroom while preventing an operator-pointed or
+// swapped-out huge file from OOM-killing PID 1.
+const maxDotEnvSize = 1 << 20
+
 // parseDotEnv reads a dotenv file and returns key-value pairs.
 // Lines are in the format KEY=value. Empty lines and lines starting with # are skipped.
 // Uses O_NOFOLLOW to reject symlinks atomically on the leaf and walks the
@@ -401,9 +407,15 @@ func parseDotEnv(path string) (map[string]string, error) {
 			log.Printf("warning: dotenv %s is group-writable (mode %04o, owner uid=%d)", path, mode.Perm(), stat.Uid)
 		}
 	}
-	data, err := io.ReadAll(f)
+	// Cap the dotenv read so a huge or swapped-out file cannot drive
+	// PID 1 into an unbounded allocation. Dotenv files are typically
+	// under 10 KiB; 1 MiB is generous while still bounded.
+	data, err := io.ReadAll(io.LimitReader(f, maxDotEnvSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("dotenv %s: %w", path, err)
+	}
+	if int64(len(data)) > maxDotEnvSize {
+		return nil, fmt.Errorf("dotenv %s exceeds %d-byte size cap", path, maxDotEnvSize)
 	}
 	// Strip UTF-8 BOM if present so the first key is not prefixed with it.
 	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})

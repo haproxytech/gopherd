@@ -635,6 +635,29 @@ func TestRemoveEnvStripsKeys(t *testing.T) {
 	}
 }
 
+// TestParseDotEnvRejectsOversizedFile verifies that parseDotEnv refuses a
+// dotenv file larger than the size cap. Without the cap, PID 1 could be
+// driven into an unbounded allocation by a misconfigured or swapped-out
+// dotenv path.
+func TestParseDotEnvRejectsOversizedFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "huge.env")
+	// One byte over the cap is enough to trip the guard.
+	huge := make([]byte, maxDotEnvSize+1)
+	for i := range huge {
+		huge[i] = 'a'
+	}
+	if err := os.WriteFile(path, huge, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := parseDotEnv(path); err == nil {
+		t.Fatal("expected error for oversized dotenv, got nil")
+	} else if !strings.Contains(err.Error(), "size cap") {
+		t.Errorf("error %q does not mention size cap", err.Error())
+	}
+}
+
 // TestParseDotEnvRejectsSymlinkedAncestor verifies that parseDotEnv refuses a
 // dotenv path whose intermediate directory is a symlink, not just the leaf.
 // O_NOFOLLOW alone only guards the final component; a symlink higher up would
