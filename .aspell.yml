@@ -4,3 +4,4 @@ allowed:
   - EINTR
   - wakeup
   - parallelize
+  - optim

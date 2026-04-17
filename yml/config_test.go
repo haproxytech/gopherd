@@ -453,3 +453,117 @@ processes:
 		t.Error("expected error for invalid on-check-failure action value")
 	}
 }
+
+// withEnv overrides envFromOS for a single test. Restores the original on cleanup.
+func withEnv(t *testing.T, env map[string]string) {
+	t.Helper()
+	orig := envFromOS
+	envFromOS = func() map[string]string { return env }
+	t.Cleanup(func() { envFromOS = orig })
+}
+
+func TestStartupLiteralUnchanged(t *testing.T) {
+	t.Parallel()
+	cfg, err := Unmarshal([]byte(`
+processes:
+  - name: svc
+    command: /bin/svc
+    startup: oneshot
+`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if cfg.Processes[0].Startup != "oneshot" {
+		t.Errorf("Startup = %q, want oneshot", cfg.Processes[0].Startup)
+	}
+}
+
+func TestStartupEnvUnsetBecomesDisabled(t *testing.T) {
+	withEnv(t, map[string]string{})
+	cfg, err := Unmarshal([]byte(`
+processes:
+  - name: svc
+    command: /bin/svc
+    startup: "{{.START_X}}"
+`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if cfg.Processes[0].Startup != "disabled" {
+		t.Errorf("Startup = %q, want disabled", cfg.Processes[0].Startup)
+	}
+}
+
+func TestStartupEnvEmptyBecomesDisabled(t *testing.T) {
+	withEnv(t, map[string]string{"START_X": ""})
+	cfg, err := Unmarshal([]byte(`
+processes:
+  - name: svc
+    command: /bin/svc
+    startup: "{{.START_X}}"
+`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if cfg.Processes[0].Startup != "disabled" {
+		t.Errorf("Startup = %q, want disabled", cfg.Processes[0].Startup)
+	}
+}
+
+func TestStartupEnvSetToOneshot(t *testing.T) {
+	withEnv(t, map[string]string{"START_X": "oneshot"})
+	cfg, err := Unmarshal([]byte(`
+processes:
+  - name: svc
+    command: /bin/svc
+    startup: "{{.START_X}}"
+`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if cfg.Processes[0].Startup != "oneshot" {
+		t.Errorf("Startup = %q, want oneshot", cfg.Processes[0].Startup)
+	}
+}
+
+func TestStartupEnvDefaultEnabled(t *testing.T) {
+	withEnv(t, map[string]string{})
+	cfg, err := Unmarshal([]byte(`
+processes:
+  - name: svc
+    command: /bin/svc
+    startup: "{{.START_X:-enabled}}"
+`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if cfg.Processes[0].Startup != "enabled" {
+		t.Errorf("Startup = %q, want enabled", cfg.Processes[0].Startup)
+	}
+}
+
+func TestStartupEnvGarbageErrors(t *testing.T) {
+	withEnv(t, map[string]string{"START_X": "garbage"})
+	_, err := Unmarshal([]byte(`
+processes:
+  - name: svc
+    command: /bin/svc
+    startup: "{{.START_X}}"
+`))
+	if err == nil {
+		t.Error("expected error for invalid startup value from env var")
+	}
+}
+
+func TestStartupTypoErrors(t *testing.T) {
+	t.Parallel()
+	_, err := Unmarshal([]byte(`
+processes:
+  - name: svc
+    command: /bin/svc
+    startup: enable
+`))
+	if err == nil {
+		t.Error("expected error for typo in startup field")
+	}
+}

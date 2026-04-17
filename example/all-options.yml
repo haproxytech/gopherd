@@ -41,7 +41,9 @@ processes:
   # Main application with all options.
   - name: app
     command: /usr/local/bin/myapp
-    args: ["--config", "/etc/app.conf", "--verbose", "-m", "{{.MEMLIMIT}}", "--threads", "{{cpu}}"]
+    # {{.VAR}} expands to env value ("" if unset). {{.VAR:-default}} falls
+    # back to the literal default text when VAR is unset or empty.
+    args: ["--config", "/etc/app.conf", "--verbose", "-m", "{{.MEMLIMIT}}", "--threads", "{{cpu}}", "--log-level={{.LOG_LEVEL:-info}}"]
     dotenv: /etc/app.env                 # load KEY=value env vars from file
     working-dir: /app
     user: app
@@ -68,6 +70,7 @@ processes:
       LOG_LEVEL: info
       LD_PRELOAD: /usr/local/lib/libwrapper.so
       GOMAXPROCS: "{{cpu}}"
+      REGION: "{{.REGION:-us-east-1}}"   # env-var default syntax
     on-check-failure:
       app-http: restart                  # action when named check breaches threshold
       db-tcp: shutdown
@@ -86,6 +89,13 @@ processes:
   - name: debug-tool
     command: /usr/local/bin/debug
     startup: disabled
+
+  # Env-var gated: auto-start only when START_METRICS is set to a valid
+  # startup value (e.g. "enabled" or "oneshot"). If unset/empty, the service
+  # is "disabled" and can still be started manually via the control socket.
+  - name: metrics-exporter
+    command: /usr/local/bin/metrics-exporter
+    startup: "{{.START_METRICS}}"
 
 # --- Health checks ---
 checks:

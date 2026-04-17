@@ -18,12 +18,26 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/haproxytech/gopherd/check"
 	"github.com/haproxytech/gopherd/control"
 	"github.com/haproxytech/gopherd/logger"
 	"github.com/haproxytech/gopherd/service"
 )
+
+// envFromOS returns the current process environment as a map.
+// Exposed as a var so tests can stub the environment source.
+var envFromOS = func() map[string]string {
+	env := os.Environ()
+	m := make(map[string]string, len(env))
+	for _, e := range env {
+		if k, v, ok := strings.Cut(e, "="); ok {
+			m[k] = v
+		}
+	}
+	return m
+}
 
 // Config is the top-level gopherd configuration.
 // Shutdown order modes.
@@ -107,8 +121,13 @@ func Unmarshal(data []byte) (*Config, error) {
 		}
 	}
 
+	// Env is snapshotted once per load so all processes see a consistent view
+	// and we avoid rebuilding the map per process. Hot reload picks up new
+	// values because the whole config is re-parsed.
+	env := envFromOS()
+
 	for _, item := range root.Get("processes").Items() {
-		p, err := parseProcess(item)
+		p, err := parseProcess(item, env)
 		if err != nil {
 			return nil, err
 		}
@@ -147,6 +166,12 @@ func Unmarshal(data []byte) (*Config, error) {
 			}
 			return nil, fmt.Errorf("process %q: command is required", name)
 		}
+		switch p.Startup {
+		case "", "enabled", "disabled", "oneshot":
+			// valid
+		default:
+			return nil, fmt.Errorf("process %q: invalid startup %q (valid: enabled, disabled, oneshot)", name, p.Startup)
+		}
 		if err := service.ValidateExitAction(p.OnSuccess); err != nil {
 			return nil, fmt.Errorf("process %q on-success: %w", name, err)
 		}
@@ -168,7 +193,18 @@ func Unmarshal(data []byte) (*Config, error) {
 	return cfg, nil
 }
 
-func parseProcess(n *Node) (service.Process, error) {
+func parseProcess(n *Node, env map[string]string) (service.Process, error) {
+	rawStartup := n.Get("startup").String()
+	startup := strings.TrimSpace(service.ExpandEnvRefs(rawStartup, env))
+	// An env-var reference that resolves to empty means "disabled", so the
+	// common `startup: "{{.START_X}}"` pattern gates the service on whether
+	// $START_X is set. A literal empty string (no reference) keeps today's
+	// behavior of falling through to the default "enabled" branch.
+	if startup == "" && strings.Contains(rawStartup, "{{") {
+		startup = "disabled"
+	}
+
+
 	p := service.Process{
 		Name:              n.Get("name").String(),
 		Command:           n.Get("command").String(),
@@ -176,7 +212,7 @@ func parseProcess(n *Node) (service.Process, error) {
 		WorkingDir:        n.Get("working-dir").String(),
 		User:              n.Get("user").String(),
 		Group:             n.Get("group").String(),
-		Startup:           n.Get("startup").String(),
+		Startup:           startup,
 		StopSignal:        n.Get("stop-signal").String(),
 		KillDelay:         n.Get("kill-delay").String(),
 		OnSuccess:         n.Get("on-success").String(),

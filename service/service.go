@@ -421,8 +421,12 @@ func buildEnvMap(dotenvPath string, procEnv map[string]string, cleanEnv bool) (m
 	return env, nil
 }
 
-// templateRe matches {{.VAR_NAME}} placeholders.
-var templateRe = regexp.MustCompile(`\{\{\s*\.(\w+)\s*\}\}`)
+// templateRe matches {{.VAR_NAME}} and {{.VAR_NAME:-default}} placeholders.
+// Submatches: (1) var name, (2) default text (may be empty; capture group is
+// absent when no ":-default" suffix is present). The default is matched
+// permissively as anything up to the first "}"; "}}" cannot appear inside by
+// construction, so nesting is not supported.
+var templateRe = regexp.MustCompile(`\{\{\s*\.(\w+)\s*(?::-([^}]*))?\s*\}\}`)
 
 // memRe matches {{mem EXPR}} placeholders for memory expressions.
 var memRe = regexp.MustCompile(`\{\{\s*mem\s+(.+?)\s*\}\}`)
@@ -431,11 +435,12 @@ var memRe = regexp.MustCompile(`\{\{\s*mem\s+(.+?)\s*\}\}`)
 // Bare {{cpu}} (no expression) expands to the available CPU count directly.
 var cpuRe = regexp.MustCompile(`\{\{\s*cpu\s*(.*?)\s*\}\}`)
 
-// expandTemplates resolves {{.VAR}}, {{mem EXPR}}, and {{cpu EXPR}} placeholders
-// in a string slice. Environment lookups use env; memory expressions use totalMiB;
-// CPU expressions use totalCPUs. Missing env keys expand to empty string and
-// emit a warning — a silent empty substitution of e.g. a password template
-// has historically caused outages.
+// expandTemplates resolves {{.VAR}}, {{.VAR:-default}}, {{mem EXPR}}, and
+// {{cpu EXPR}} placeholders in a string slice. Environment lookups use env;
+// memory expressions use totalMiB; CPU expressions use totalCPUs. When an env
+// var is unset or empty, {{.VAR:-default}} expands to the literal default
+// text, while {{.VAR}} expands to "" and emits a warning — a silent empty
+// substitution of e.g. a password template has historically caused outages.
 //
 // Expansion is single-pass: if a variable's value itself contains placeholders
 // they are not re-expanded. Variables defined in the environment: block therefore
@@ -486,22 +491,25 @@ func expandTemplates(values []string, env map[string]string, totalMiB int64, tot
 			b.WriteString(s[prev:])
 			s = b.String()
 		}
-		// Expand {{.VAR}} placeholders.
+		// Expand {{.VAR}} and {{.VAR:-default}} placeholders.
 		if locs := templateRe.FindAllStringSubmatchIndex(s, -1); locs != nil {
 			var b strings.Builder
 			prev := 0
 			for _, loc := range locs {
 				b.WriteString(s[prev:loc[0]])
-				key := s[loc[2]:loc[3]]
-				val, ok := env[key]
-				if !ok {
+				name := s[loc[2]:loc[3]]
+				val, ok := env[name]
+				hasDefault := loc[4] >= 0
+				if (!ok || val == "") && hasDefault {
+					val = s[loc[4]:loc[5]]
+				} else if !ok {
 					// Empty substitution of a missing variable can silently
 					// corrupt arguments (e.g. an empty password flag). Warn
 					// once per missing key per call so a service restart loop
 					// does not flood the log with the same warning line.
-					if _, already := warned[key]; !already {
-						warned[key] = struct{}{}
-						log.Printf("warning: template variable {{.%s}} is not set in environment; expanding to empty string", key)
+					if _, already := warned[name]; !already {
+						warned[name] = struct{}{}
+						log.Printf("warning: template variable {{.%s}} is not set in environment; expanding to empty string", name)
 					}
 				}
 				b.WriteString(val)

@@ -15,7 +15,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Per-service stop signal & kill delay** — configurable shutdown signal and grace period before SIGKILL
 - **User/group switching** — run each process as a specific user/group (by name or numeric ID)
 - **Environment & working directory** — per-process environment variables, dotenv file loading, and working directory
-- **Template args** — `{{.VAR}}` placeholders in args and environment values, resolved from env vars and dotenv files
+- **Template args** — `{{.VAR}}` and `{{.VAR:-default}}` placeholders in args, environment values, and `startup`, resolved from env vars and dotenv files
 - **Memory-aware templates** — `{{mem EXPR}}` expands to available memory in MiB (auto-detects system RAM and cgroup limits)
 - **CPU-aware templates** — `{{cpu EXPR}}` expands to available CPUs (auto-detects cgroup CFS quota and cpuset pinning)
 - **Restart policies** — configurable `on-success` / `on-failure` actions: `restart`, `shutdown`, `ignore`
@@ -115,6 +115,40 @@ containers:
 ```
 
 The service receives `["--base-flag", "--log-level=debug", "--feature-x"]`. Only one service may set `use-entrypoint-args: true`.
+
+#### Environment-variable templates
+
+The `{{.VAR}}` syntax expands to the value of environment variable `$VAR`. Lookups check per-process `environment:` entries first, then any loaded `dotenv:` file, then the process environment gopherd inherited. Missing variables expand to an empty string.
+
+Use `{{.VAR:-default}}` to supply a fallback when the variable is unset **or** empty — the same behavior as POSIX `${VAR:-default}`:
+
+```yaml
+processes:
+  - name: app
+    command: /usr/local/bin/app
+    args: ["--log-level={{.LOG_LEVEL:-info}}", "--host={{.HOST:-127.0.0.1}}"]
+    environment:
+      REGION: "{{.REGION:-us-east-1}}"
+```
+
+The default text is a literal string — it cannot contain `}}` and is not itself re-expanded.
+
+Env-var templates also work in the `startup` field (see [Service gating](#service-gating)).
+
+#### Service gating
+
+The `startup` field accepts env-var templates, so a service can be enabled or disabled based on an env var set at container launch:
+
+| Config                             | `$START_X` unset or empty | `$START_X=oneshot` | `$START_X=garbage` |
+|:-----------------------------------|:--------------------------|:-------------------|:-------------------|
+| `startup: "{{.START_X}}"`          | disabled                  | oneshot            | config error       |
+| `startup: "{{.START_X:-enabled}}"` | enabled                   | oneshot            | config error       |
+
+An env-var reference that resolves to empty is remapped to `disabled` — this is the only field where empty-after-expansion has special meaning. A literal empty `startup:` still falls through to the default (`enabled`).
+
+Typos in `startup` (e.g. `enable` instead of `enabled`) now fail at config load.
+
+Hot reload (`SIGHUP` / `reload`) re-reads the config and picks up env-var changes; gopherd does not watch the environment for changes between reloads.
 
 #### Memory-aware templates
 
@@ -343,7 +377,7 @@ log-targets:
 |:------|:-----|:--------|:------------|
 | `name` | string | command path | Service name for logging and control |
 | `command` | string | *required* | Executable path |
-| `args` | string[] | `[]` | Command arguments (supports `{{.VAR}}`, `{{mem EXPR}}`, and `{{cpu EXPR}}` templates) |
+| `args` | string[] | `[]` | Command arguments (supports `{{.VAR}}` / `{{.VAR:-default}}`, `{{mem EXPR}}`, and `{{cpu EXPR}}` templates) |
 | `dotenv` | string | | Path to env file (`KEY=value` per line), loaded into templates and child env |
 | `working-dir` | string | inherited | Working directory |
 | `user` | string | inherited | Run as user (name) |
@@ -352,7 +386,7 @@ log-targets:
 | `group-id` | int | inherited | Run as group (numeric, takes precedence) |
 | `environment` | map | inherited | Extra environment variables |
 | `clean-env` | bool | global default | Start with empty environment (only dotenv + environment vars) |
-| `startup` | string | `"enabled"` | `"enabled"`, `"disabled"`, or `"oneshot"` |
+| `startup` | string | `"enabled"` | `"enabled"`, `"disabled"`, or `"oneshot"`. Supports `{{.VAR}}` / `{{.VAR:-default}}`; empty after expansion → disabled |
 | `startup-timeout` | duration | | Max time for oneshot to complete (kills and fails if exceeded) |
 | `stop-signal` | string | `"SIGTERM"` | Signal name (with or without SIG prefix) |
 | `kill-delay` | duration | `"5s"` | Grace period before SIGKILL |

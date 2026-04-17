@@ -321,6 +321,27 @@ func TestExpandEnvTemplates(t *testing.T) {
 			procEnv: map[string]string{"MEMLIMIT": "2048"},
 			want:    []string{"-m", "2048"},
 		},
+		{
+			name: "default used when var unset",
+			args: []string{"--host={{.NONEXISTENT:-127.0.0.1}}"},
+			want: []string{"--host=127.0.0.1"},
+		},
+		{
+			name: "default ignored when var set",
+			args: []string{"--host={{.HOST:-127.0.0.1}}"},
+			want: []string{"--host=localhost"},
+		},
+		{
+			name:    "default used when var set to empty",
+			args:    []string{"--host={{.HOST:-127.0.0.1}}"},
+			procEnv: map[string]string{"HOST": ""},
+			want:    []string{"--host=127.0.0.1"},
+		},
+		{
+			name: "multiple placeholders with mixed defaults",
+			args: []string{"{{.HOST}}:{{.PORT:-8080}}"},
+			want: []string{"localhost:8080"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
