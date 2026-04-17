@@ -17,6 +17,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/haproxytech/gopherd/yml"
@@ -168,5 +169,27 @@ log-targets:
 	}
 	if cfg.LogTargets["syslog"].Labels["env"] != "test" {
 		t.Errorf("label env = %q", cfg.LogTargets["syslog"].Labels["env"])
+	}
+}
+
+// TestReadConfigFileRejectsOversized verifies that readConfigFile refuses a
+// config file larger than the size cap. Without the cap, a misconfigured
+// GOPHERD_CONFIG or a swapped-out config could drive PID 1 into an
+// unbounded allocation.
+func TestReadConfigFileRejectsOversized(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.yml")
+	huge := make([]byte, maxConfigFileSize+1)
+	for i := range huge {
+		huge[i] = ' '
+	}
+	if err := os.WriteFile(path, huge, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := readConfigFile(path); err == nil {
+		t.Fatal("expected error for oversized config, got nil")
+	} else if !strings.Contains(err.Error(), "size cap") {
+		t.Errorf("error %q does not mention size cap", err.Error())
 	}
 }

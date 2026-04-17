@@ -36,6 +36,12 @@ import (
 	"github.com/haproxytech/gopherd/yml"
 )
 
+// maxConfigFileSize caps how many bytes readConfigFile will consume from the
+// gopherd config file. Real configs are typically a few KiB; 4 MiB is
+// generous for comment-heavy or large examples while preventing an
+// operator-supplied or swapped-out huge file from OOM-killing PID 1.
+const maxConfigFileSize = 4 << 20
+
 // readConfigFile opens path, verifies it is not a symlink and passes
 // permission checks, then returns its contents. All checks are performed on
 // the open file descriptor to eliminate the TOCTOU window that exists when
@@ -43,6 +49,11 @@ import (
 //
 // O_NOFOLLOW causes the open to fail immediately if the final path component
 // is a symlink, making the check atomic with the open.
+//
+// The read is capped at maxConfigFileSize so a misconfigured
+// GOPHERD_CONFIG pointing at a huge file, or a config-management pipeline
+// that accidentally replaced the file, cannot drive PID 1 into an
+// unbounded allocation.
 func readConfigFile(path string) ([]byte, error) {
 	// syscall.Open with O_NOFOLLOW fails with ELOOP (Linux/macOS/FreeBSD)
 	// if path is a symlink, so no separate Lstat is needed.
@@ -83,7 +94,17 @@ func readConfigFile(path string) ([]byte, error) {
 		}
 	}
 
-	return io.ReadAll(f)
+	// Read at most maxConfigFileSize+1 so we can distinguish "exactly at the
+	// cap" from "overflowed". If we read maxConfigFileSize+1 bytes, the
+	// file is too large.
+	data, err := io.ReadAll(io.LimitReader(f, maxConfigFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxConfigFileSize {
+		return nil, fmt.Errorf("config %s exceeds %d-byte size cap", path, maxConfigFileSize)
+	}
+	return data, nil
 }
 
 // resolveStopSignal determines the signal that triggers graceful shutdown.
