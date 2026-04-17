@@ -55,6 +55,14 @@ type Server struct {
 	// The unsubscribe func must be called when done.
 	LogsFn func(name string, follow bool) (recent [][]byte, ch <-chan []byte, unsub func(), err error)
 
+	// done is closed by Stop() to signal long-running handlers (currently only
+	// `logs -f` streaming) that they must return immediately rather than
+	// blocking on their log channel. Without this, an idle streaming client
+	// would hold handlersWg open until it disconnects, blocking clean
+	// shutdown and leaking buffered log lines that closeLogTargets() would
+	// otherwise flush.
+	done chan struct{}
+
 	SocketPath string
 
 	// handlersWg tracks in-flight handleConn goroutines. Stop() waits on it so
@@ -85,7 +93,7 @@ func NewServer(cfg Config) *Server {
 	if mode == 0 {
 		mode = DefaultSocketMode
 	}
-	return &Server{SocketPath: path, socketMode: mode}
+	return &Server{SocketPath: path, socketMode: mode, done: make(chan struct{})}
 }
 
 // Start begins listening. Call in a goroutine or before the reap loop.
@@ -176,6 +184,14 @@ const connReadTimeout = 5 * time.Second
 // connWriteTimeout is the maximum time allowed to write a response to a client.
 // Prevents stalled readers from holding connection slots indefinitely.
 const connWriteTimeout = 10 * time.Second
+
+// streamIdleTimeout caps how long a `logs -f` subscription may sit quiet on
+// an idle service. Without a cap, an authorised client (or attacker with the
+// daemon's uid) could open up to maxStreaming sessions on silent services and
+// permanently hold every streaming slot. Set well above the client's own
+// read idle timeout so a legitimate active session is closed by the client,
+// not pre-emptively by the server.
+const streamIdleTimeout = 1 * time.Hour
 
 func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 	// Centralise semaphore release and panic recovery so that no path leaks
@@ -353,13 +369,37 @@ func (cs *Server) handleLogs(conn net.Conn, parts []string) {
 		return
 	}
 
-	// Stream new lines until client disconnects or channel closes.
-	// A per-write deadline prevents a slow or stalled reader from holding
-	// a streaming slot (streamSem) indefinitely.
-	for line := range ch {
-		conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
-		if _, err := conn.Write(line); err != nil {
-			return // client disconnected or timed out
+	// Stream new lines until:
+	//   - the subscription channel closes (the service removed its writer),
+	//   - the client disconnects (surfaces as a Write error),
+	//   - the server is shutting down (cs.done closed by Stop), or
+	//   - the session has sat idle longer than streamIdleTimeout.
+	// A per-write deadline separately prevents a slow reader from stalling
+	// an in-flight Write.
+	idle := time.NewTimer(streamIdleTimeout)
+	defer idle.Stop()
+	for {
+		select {
+		case line, ok := <-ch:
+			if !ok {
+				return
+			}
+			conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
+			if _, err := conn.Write(line); err != nil {
+				return
+			}
+			// Reset idle timer on every successful write.
+			if !idle.Stop() {
+				select {
+				case <-idle.C:
+				default:
+				}
+			}
+			idle.Reset(streamIdleTimeout)
+		case <-idle.C:
+			return
+		case <-cs.done:
+			return
 		}
 	}
 }
@@ -371,8 +411,14 @@ func (cs *Server) handleLogs(conn net.Conn, parts []string) {
 // an already-closed restartCh.
 func (cs *Server) Stop() {
 	cs.mu.Lock()
+	alreadyClosed := cs.closed
 	cs.closed = true
 	cs.mu.Unlock()
+	// Signal streaming handlers to return. Guard against a double Stop(),
+	// which would double-close the channel and panic.
+	if !alreadyClosed && cs.done != nil {
+		close(cs.done)
+	}
 	if cs.listener != nil {
 		cs.listener.Close()
 	}

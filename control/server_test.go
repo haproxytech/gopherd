@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testSocket(t *testing.T) string {
@@ -283,6 +284,52 @@ func TestLogsMissingName(t *testing.T) {
 	resp := sendCommand(t, cs.SocketPath, "logs")
 	if !strings.Contains(resp, "error:") {
 		t.Errorf("expected error, got: %q", resp)
+	}
+}
+
+// TestLogsFollowUnblocksOnStop verifies that Server.Stop() returns promptly
+// even while an idle `logs -f` subscriber is still connected. Without the
+// cs.done signal, handleLogs would block on an empty channel, handlersWg
+// would never complete, and the daemon would hang on shutdown.
+func TestLogsFollowUnblocksOnStop(t *testing.T) {
+	t.Parallel()
+	cs := NewServer(Config{SocketPath: testSocket(t)})
+	// LogsFn returns a channel that is never written to and never closed,
+	// simulating a tail on a completely idle service.
+	cs.LogsFn = func(_ string, follow bool) ([][]byte, <-chan []byte, func(), error) {
+		if !follow {
+			return nil, nil, nil, nil
+		}
+		ch := make(chan []byte) // never closed, never sent to
+		return nil, ch, func() {}, nil
+	}
+	if err := cs.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// Dial, send the follow command, and keep the connection open.
+	conn, err := net.Dial("unix", cs.SocketPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if _, err := fmt.Fprintf(conn, "logs svc -f\n"); err != nil {
+		t.Fatalf("send command: %v", err)
+	}
+
+	// Give the server a moment to enter the streaming select.
+	time.Sleep(50 * time.Millisecond)
+
+	done := make(chan struct{})
+	go func() {
+		cs.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Success: Stop() returned even though the subscriber was idle.
+	case <-time.After(3 * time.Second):
+		t.Fatal("Server.Stop() blocked on idle logs -f subscriber")
 	}
 }
 
