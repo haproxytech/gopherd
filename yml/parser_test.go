@@ -15,6 +15,7 @@
 package yml
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -340,5 +341,28 @@ func TestParseIntPtr(t *testing.T) {
 	p = n.Get("missing").IntPtr()
 	if p != nil {
 		t.Error("expected nil for missing")
+	}
+}
+
+// TestParseRejectsDeepNesting verifies that pathologically nested structures
+// are rejected before recursion can exhaust the PID 1 stack. Without a depth
+// cap, a config nested thousands of levels would push a parseBlock frame per
+// level and eventually crash the daemon.
+func TestParseRejectsDeepNesting(t *testing.T) {
+	t.Parallel()
+	const depth = 1000 // well beyond maxParseDepth
+	var b strings.Builder
+	for i := range depth {
+		b.WriteString(strings.Repeat("  ", i))
+		b.WriteString("a:\n")
+	}
+	b.WriteString(strings.Repeat("  ", depth))
+	b.WriteString("leaf: 1\n")
+	_, err := Parse([]byte(b.String()))
+	if err == nil {
+		t.Fatal("expected error for deeply nested YAML, got nil")
+	}
+	if !strings.Contains(err.Error(), "nesting exceeds maximum depth") {
+		t.Errorf("error %q does not mention nesting depth limit", err.Error())
 	}
 }
