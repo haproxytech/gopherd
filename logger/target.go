@@ -187,11 +187,13 @@ func (fw *fileWriter) Close() error {
 	return fw.f.Close()
 }
 
-// openFile opens a log file for append-only writing, creating parent
-// directories and the file itself if they don't exist. The path must be
-// absolute to prevent relative path confusion. O_NOFOLLOW prevents the
-// kernel from following symlinks at the final path component, closing the
-// TOCTOU gap between Lstat and OpenFile.
+// openFile opens a log file for append-only writing. The path must be
+// absolute to prevent relative path confusion. The parent directory must
+// already exist and must be a real directory — not a symlink — so gopherd
+// running as root does not silently materialise directories with broad
+// permissions (0o755 traversable) on operator-unexpected paths (M5).
+// O_NOFOLLOW prevents the kernel from following symlinks at the final path
+// component, closing the TOCTOU gap between Lstat and OpenFile.
 func openFile(location string) (io.WriteCloser, error) {
 	path := strings.TrimPrefix(location, "file://")
 	if path == "" {
@@ -202,8 +204,16 @@ func openFile(location string) (io.WriteCloser, error) {
 	}
 
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("create log directory: %w", err)
+	// Lstat, not Stat, so a symlinked parent is rejected rather than followed.
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("log directory %s: %w", dir, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("log directory %s is a symlink", dir)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("log directory %s is not a directory", dir)
 	}
 
 	// O_NOFOLLOW causes the open to fail if the final path component is a

@@ -62,6 +62,12 @@ func readConfigFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Reject non-regular files. Without this check, a FIFO/pipe at the config
+	// path would cause io.ReadAll to block forever (stalling startup or
+	// reload), and a character/block device would return unexpected bytes.
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("config %s is not a regular file (mode %s); refusing to open", path, info.Mode())
+	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if ok {
 		mode := info.Mode()
@@ -140,6 +146,12 @@ type daemon struct {
 	mu sync.RWMutex
 	// reloadMu serialises concurrent hot-reloads so that two rapid SIGHUPs
 	// cannot race on d.checkers, d.cfg, or d.services.
+	//
+	// Lock ordering: reloadMu is only ever acquired by reload(), and reload()
+	// must take it BEFORE mu. All other code paths (control-socket handlers,
+	// signal handlers, reap loop) take only mu. This one-way ordering makes
+	// deadlock impossible: no caller ever needs to acquire reloadMu while
+	// holding mu (L7).
 	reloadMu sync.Mutex
 
 	// exitCode and shuttingDown are accessed from multiple goroutines.
@@ -183,9 +195,13 @@ func (d *daemon) startService(svc *service.Service) (int, error) {
 		return 0, err
 	}
 	d.pidMap[pid] = svc
+	// Record ServiceStarted under d.mu so a fast-exiting child cannot be
+	// reaped (which calls ServiceExited) before we have recorded the start.
+	// With the call outside the lock the metrics could show exits > starts
+	// transiently, which is misleading in "stats" output.
+	d.m.ServiceStarted(svc.Name)
 	d.mu.Unlock()
 	log.Printf("started %s (pid %d)", svc.Name, pid)
-	d.m.ServiceStarted(svc.Name)
 	return pid, nil
 }
 
@@ -363,7 +379,11 @@ func (d *daemon) buildLogTargets() {
 	}
 }
 
-func (d *daemon) buildServices() {
+// buildServices constructs runtime Service wrappers for every process in the
+// current config. Returns an error if any process config is malformed (e.g.
+// invalid stop-signal or duration), so callers can abort startup or reload
+// before applying partial state.
+func (d *daemon) buildServices() error {
 	d.services = make(map[string]*service.Service)
 	for _, p := range d.cfg.Processes {
 		// Inject entrypoint args into the designated service.
@@ -375,7 +395,10 @@ func (d *daemon) buildServices() {
 		if p.Prefix == "" {
 			p.Prefix = d.cfg.Prefix
 		}
-		svc := service.New(p, d.cfg.Prefix)
+		svc, err := service.New(p, d.cfg.Prefix)
+		if err != nil {
+			return err
+		}
 		d.services[svc.Name] = svc
 		for _, lt := range d.logTargets {
 			if lt.AppliesTo(svc.Name) {
@@ -384,6 +407,7 @@ func (d *daemon) buildServices() {
 			}
 		}
 	}
+	return nil
 }
 
 // buildOrderServices converts a Config's process list into the format needed
@@ -501,6 +525,18 @@ func (d *daemon) reload() (string, error) {
 		return "", fmt.Errorf("reload dependencies: %w", err)
 	}
 
+	// Pre-validate every process config (stop-signal, kill-delay, backoff-*,
+	// exit actions) before mutating state. service.New is the authoritative
+	// validator, so a dry-run here guarantees buildServices below cannot fail
+	// mid-reload and leave the daemon in a half-applied state. Without this a
+	// typo like kill-delay: "bogus" in a SIGHUP-reloaded config would abort
+	// reload after services had already been stopped and removed.
+	for _, p := range newCfg.Processes {
+		if _, err := service.New(p, newCfg.Prefix); err != nil {
+			return "", fmt.Errorf("reload: %w", err)
+		}
+	}
+
 	d.mu.Lock()
 
 	if d.shuttingDown.Load() {
@@ -565,7 +601,14 @@ func (d *daemon) reload() (string, error) {
 
 	d.cfg = newCfg
 	d.buildLogTargets()
-	d.buildServices()
+	// Config was already pre-validated above, so buildServices cannot fail here
+	// in practice. Defence-in-depth: if it does, abort the reload with d.mu
+	// still held so the partial state is internally consistent (already-stopped
+	// services stay stopped, caller sees the error).
+	if err := d.buildServices(); err != nil {
+		d.mu.Unlock()
+		return "", fmt.Errorf("reload: %w", err)
+	}
 
 	// Preserve running state: if a service was running and its process config
 	// is unchanged, keep the existing service wrapper. If any field that
@@ -744,20 +787,32 @@ func (d *daemon) setupControl() *control.Server {
 			d.mu.Unlock()
 			return "", fmt.Errorf("unknown service %q", name)
 		}
-		// Capture done and call Stop under the same Lock to prevent a TOCTOU
-		// race where the service exits and restarts between Done() and IsRunning(),
-		// which would make done reference an already-closed channel.
+		// Refuse the restart early if the daemon has started shutting down, so
+		// we never stop a service with no plan to bring it back up.
+		if d.shuttingDown.Load() {
+			d.mu.Unlock()
+			return "", fmt.Errorf("daemon is shutting down")
+		}
+		// Capture done under d.mu. Before calling Stop(), verify that restartCh
+		// has capacity for the enqueue: otherwise we would stop the service and
+		// leave it stopped with no pending restart, which is inconsistent from
+		// the caller's perspective ("restart queue full" but the service is
+		// actually down). A non-blocking send outside the lock would hit the
+		// same race; use senderWg.Go for a tracked blocking send that is
+		// synchronised with the shutdown path (senderWg.Wait before close).
 		done := svc.Done()
 		if svc.IsRunning() {
 			svc.Stop()
 		}
+		// Use senderWg.Go so the sender is tracked by the shutdown path just
+		// like the reap-loop and check-failure restart senders. This allows a
+		// blocking send without risk of panicking on a closed channel: run.go
+		// waits for senderWg to drain before closing restartCh.
+		d.senderWg.Go(func() {
+			d.restartCh <- restartReq{svc: svc, done: done, delay: 0}
+		})
 		d.mu.Unlock()
-		select {
-		case d.restartCh <- restartReq{svc: svc, done: done, delay: 0}:
-			return fmt.Sprintf("%s: restart scheduled", name), nil
-		default:
-			return "", fmt.Errorf("restart queue full, try again later")
-		}
+		return fmt.Sprintf("%s: restart scheduled", name), nil
 	}
 	ctrlServer.ReloadFn = func() (string, error) {
 		return d.reload()

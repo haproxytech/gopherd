@@ -28,7 +28,12 @@ import (
 )
 
 // DefaultSocketMode is the default Unix socket file permission.
-const DefaultSocketMode = os.FileMode(0o660)
+// 0o600 matches the uid-based access check in handleConn (owner-only): a
+// looser mode (e.g. 0o660) would allow same-group peers to open the socket
+// but then be rejected at the first command, which is surprising. Setting
+// an explicit socket-mode in config together with a GID-aware deployment
+// is the supported way to broaden access.
+const DefaultSocketMode = os.FileMode(0o600)
 
 // DefaultSocketPath is the default Unix socket path.
 const DefaultSocketPath = "/run/gopherd.sock"
@@ -51,9 +56,16 @@ type Server struct {
 	LogsFn func(name string, follow bool) (recent [][]byte, ch <-chan []byte, unsub func(), err error)
 
 	SocketPath string
+
+	// handlersWg tracks in-flight handleConn goroutines. Stop() waits on it so
+	// the daemon can safely close daemon-owned channels (e.g. restartCh) after
+	// Stop() returns without racing an in-flight handler that may still invoke
+	// RestartFn / ReloadFn.
+	handlersWg sync.WaitGroup
+
+	mu         sync.Mutex
 	socketMode os.FileMode
 
-	mu     sync.Mutex
 	closed bool
 }
 
@@ -95,6 +107,21 @@ func (cs *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("control socket: %w", err)
 	}
+	// Post-bind verification: an attacker with write access to the parent
+	// directory could have planted a symlink between our Remove and Listen,
+	// causing bind(2) to materialise the socket at the symlink target. Confirm
+	// that the path we just bound is a real socket file, not a symlink or
+	// regular file. Fail closed if hijacked (M12).
+	postInfo, err := os.Lstat(cs.SocketPath)
+	if err != nil {
+		ln.Close()
+		return fmt.Errorf("control socket: post-bind lstat %s: %w", cs.SocketPath, err)
+	}
+	if postInfo.Mode()&os.ModeSymlink != 0 || postInfo.Mode()&os.ModeSocket == 0 {
+		ln.Close()
+		os.Remove(cs.SocketPath)
+		return fmt.Errorf("control socket: %s is not a socket after bind (mode %s); refusing to serve", cs.SocketPath, postInfo.Mode())
+	}
 	if err := os.Chmod(cs.SocketPath, cs.socketMode); err != nil {
 		log.Printf("warning: control socket: chmod %s: %v", cs.SocketPath, err)
 	}
@@ -132,9 +159,9 @@ func (cs *Server) acceptLoop() {
 		}
 		select {
 		case sem <- struct{}{}:
-			go func() {
+			cs.handlersWg.Go(func() {
 				cs.handleConn(conn, sem, streamSem)
-			}()
+			})
 		default:
 			// At capacity — reject the connection.
 			conn.Close()
@@ -151,29 +178,43 @@ const connReadTimeout = 5 * time.Second
 const connWriteTimeout = 10 * time.Second
 
 func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
-	defer conn.Close()
+	// Centralise semaphore release and panic recovery so that no path leaks
+	// a cmdSem slot — including panics between accept and the first early
+	// return, or inside a callback (L1).
+	cmdReleased := false
+	releaseCmd := func() {
+		if !cmdReleased {
+			cmdReleased = true
+			<-cmdSem
+		}
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("control: handleConn panic: %v", r)
+		}
+		releaseCmd()
+		conn.Close()
+	}()
+
 	conn.SetReadDeadline(time.Now().Add(connReadTimeout))
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {
-		<-cmdSem
 		return
 	}
 	line := strings.TrimSpace(scanner.Text())
 	if line == "" {
-		<-cmdSem
 		return
 	}
 
 	uid := peerUID(conn)
 	// On Linux, enforce that only root (uid 0) or the daemon's own user may
 	// issue commands. This is defense-in-depth on top of socket file
-	// permissions (mode 0660). On other platforms uid is -1 (unavailable)
+	// permissions (mode 0600). On other platforms uid is -1 (unavailable)
 	// and access control falls back to filesystem permissions alone.
 	if uid != -1 && uid != 0 && uid != os.Geteuid() {
 		log.Printf("control: uid=%d rejected: permission denied", uid)
 		conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 		fmt.Fprintf(conn, "error: permission denied\n")
-		<-cmdSem
 		return
 	}
 	log.Printf("control: uid=%d cmd=%q", uid, line)
@@ -185,7 +226,7 @@ func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 	// Streaming commands release the command slot and acquire a streaming
 	// slot instead, so they cannot starve one-shot commands.
 	if parts[0] == "logs" {
-		<-cmdSem // release command slot
+		releaseCmd() // give the command slot back before switching to streaming
 		select {
 		case streamSem <- struct{}{}:
 			defer func() { <-streamSem }()
@@ -197,7 +238,6 @@ func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 		return
 	}
 
-	defer func() { <-cmdSem }()
 	resp := cs.handleCommand(parts)
 	conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 	fmt.Fprintf(conn, "%s\n", resp)
@@ -325,6 +365,10 @@ func (cs *Server) handleLogs(conn net.Conn, parts []string) {
 }
 
 // Stop shuts down the server and removes the socket file.
+// Blocks until all in-flight handleConn goroutines have returned, so callers
+// can rely on no further callbacks (StartFn, RestartFn, ReloadFn, ...) firing
+// after Stop() returns. Without this, a late RestartFn could panic sending on
+// an already-closed restartCh.
 func (cs *Server) Stop() {
 	cs.mu.Lock()
 	cs.closed = true
@@ -332,5 +376,8 @@ func (cs *Server) Stop() {
 	if cs.listener != nil {
 		cs.listener.Close()
 	}
+	// Closing the listener wakes up Accept(); wait for all in-flight handlers
+	// to return before the caller proceeds to tear down shared state.
+	cs.handlersWg.Wait()
 	os.Remove(cs.SocketPath)
 }

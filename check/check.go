@@ -335,6 +335,20 @@ func (c *Checker) checkExec(ctx context.Context) error {
 	if c.credential != nil {
 		cmd.SysProcAttr.Credential = c.credential
 	}
+	// On context cancellation, signal the entire process group so any
+	// grandchildren the check forked are also killed. The default
+	// exec.CommandContext Cancel only sends SIGKILL to the process leader,
+	// leaving descendants to be reparented to PID 1 — where gopherd then
+	// reaps them, but with all of the check's side effects still in flight.
+	// WaitDelay bounds how long we wait for the process group to exit after
+	// the context is cancelled; after that, SIGKILL is forcibly delivered.
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = c.timeout
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("exec check: %w", err)
 	}

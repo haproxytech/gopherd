@@ -544,9 +544,12 @@ func TestStartServiceRejectsReplacedService(t *testing.T) {
 	})
 
 	// Build a stale service pointer that is NOT in d.services.
-	stale := service.New(service.Process{Name: "app", Command: "/bin/app"}, "")
+	stale, err := service.New(service.Process{Name: "app", Command: "/bin/app"}, "")
+	if err != nil {
+		t.Fatalf("service.New: %v", err)
+	}
 
-	_, err := d.startService(stale)
+	_, err = d.startService(stale)
 	if err != errServiceReplaced {
 		t.Errorf("expected errServiceReplaced, got %v", err)
 	}
@@ -704,11 +707,15 @@ func TestStartServiceErrServiceReplacedNotFatal(t *testing.T) {
 	oldSvc := d.services["svc1"]
 
 	// Replace the service in d.services to simulate a concurrent reload.
+	replacement, err := service.New(service.Process{Name: "svc1", Command: "/bin/false"}, "")
+	if err != nil {
+		t.Fatalf("service.New: %v", err)
+	}
 	d.mu.Lock()
-	d.services["svc1"] = service.New(service.Process{Name: "svc1", Command: "/bin/false"}, "")
+	d.services["svc1"] = replacement
 	d.mu.Unlock()
 
-	_, err := d.startService(oldSvc)
+	_, err = d.startService(oldSvc)
 	if err != errServiceReplaced {
 		t.Fatalf("startService with stale pointer: expected errServiceReplaced, got %v", err)
 	}
@@ -740,7 +747,10 @@ func TestAnyRunningCheckUsesPidMap(t *testing.T) {
 	d := newTestDaemon(nil)
 
 	// Place a fake PID into pidMap without touching services.
-	fakeSvc := service.New(service.Process{Name: "ghost", Command: "/bin/ghost"}, "")
+	fakeSvc, err := service.New(service.Process{Name: "ghost", Command: "/bin/ghost"}, "")
+	if err != nil {
+		t.Fatalf("service.New: %v", err)
+	}
 	d.mu.Lock()
 	d.pidMap[99999] = fakeSvc
 	anyRunning := len(d.pidMap) > 0

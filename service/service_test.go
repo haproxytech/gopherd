@@ -23,9 +23,21 @@ import (
 	"time"
 )
 
+// mustNew wraps New for tests where the Process is known-valid. Fails the test
+// immediately if construction errors, matching the previous panic-on-error
+// behaviour without cluttering every test with error checks.
+func mustNew(t *testing.T, p Process, globalPrefix string) *Service {
+	t.Helper()
+	svc, err := New(p, globalPrefix)
+	if err != nil {
+		t.Fatalf("service.New: %v", err)
+	}
+	return svc
+}
+
 func TestNewDefaults(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{Command: "/bin/true"}, "")
+	svc := mustNew(t, Process{Command: "/bin/true"}, "")
 	if svc.Name != "/bin/true" {
 		t.Errorf("name = %q", svc.Name)
 	}
@@ -45,7 +57,7 @@ func TestNewDefaults(t *testing.T) {
 
 func TestNewCustomName(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{Name: "myapp", Command: "/usr/bin/myapp"}, "")
+	svc := mustNew(t, Process{Name: "myapp", Command: "/usr/bin/myapp"}, "")
 	if svc.Name != "myapp" {
 		t.Errorf("name = %q", svc.Name)
 	}
@@ -53,7 +65,7 @@ func TestNewCustomName(t *testing.T) {
 
 func TestNewDisabled(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{Command: "true", Startup: "disabled"}, "")
+	svc := mustNew(t, Process{Command: "true", Startup: "disabled"}, "")
 	if svc.Enabled {
 		t.Error("expected disabled")
 	}
@@ -61,7 +73,7 @@ func TestNewDisabled(t *testing.T) {
 
 func TestNewOneshot(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{Command: "true", Startup: "oneshot"}, "")
+	svc := mustNew(t, Process{Command: "true", Startup: "oneshot"}, "")
 	if !svc.Oneshot {
 		t.Error("expected oneshot")
 	}
@@ -72,7 +84,7 @@ func TestNewOneshot(t *testing.T) {
 
 func TestNewCustomStopSignal(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{Command: "true", StopSignal: "SIGUSR1"}, "")
+	svc := mustNew(t, Process{Command: "true", StopSignal: "SIGUSR1"}, "")
 	if svc.stopSignal != syscall.SIGUSR1 {
 		t.Errorf("stopSignal = %v", svc.stopSignal)
 	}
@@ -80,7 +92,7 @@ func TestNewCustomStopSignal(t *testing.T) {
 
 func TestNewExitActions(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{Command: "true", OnSuccess: "restart", OnFailure: "ignore"}, "")
+	svc := mustNew(t, Process{Command: "true", OnSuccess: "restart", OnFailure: "ignore"}, "")
 	if svc.OnSuccess != ActionRestart {
 		t.Errorf("onSuccess = %q", svc.OnSuccess)
 	}
@@ -91,7 +103,7 @@ func TestNewExitActions(t *testing.T) {
 
 func TestNewRequires(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{Command: "true", Requires: []string{"db", "cache"}}, "")
+	svc := mustNew(t, Process{Command: "true", Requires: []string{"db", "cache"}}, "")
 	if !svc.Requires["db"] || !svc.Requires["cache"] {
 		t.Error("expected requires")
 	}
@@ -99,7 +111,7 @@ func TestNewRequires(t *testing.T) {
 
 func TestNewOnCheckFailure(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{
+	svc := mustNew(t, Process{
 		Command:        "true",
 		OnCheckFailure: map[string]string{"health": "restart", "ready": "shutdown"},
 	}, "")
@@ -110,7 +122,7 @@ func TestNewOnCheckFailure(t *testing.T) {
 
 func TestStartStop(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{Command: "sleep", Args: []string{"10"}}, "")
+	svc := mustNew(t, Process{Command: "sleep", Args: []string{"10"}}, "")
 	pid, err := svc.Start()
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -133,7 +145,7 @@ func TestStartStop(t *testing.T) {
 
 func TestWasStoppedFlag(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{Command: "sleep", Args: []string{"10"}}, "")
+	svc := mustNew(t, Process{Command: "sleep", Args: []string{"10"}}, "")
 
 	if svc.WasStopped() {
 		t.Error("WasStopped should be false before Stop()")
@@ -166,7 +178,7 @@ func TestWasStoppedFlag(t *testing.T) {
 
 func TestWasStoppedResetsOnStart(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{Command: "sleep", Args: []string{"10"}}, "")
+	svc := mustNew(t, Process{Command: "sleep", Args: []string{"10"}}, "")
 
 	pid, err := svc.Start()
 	if err != nil {
@@ -197,7 +209,7 @@ func TestWasStoppedResetsOnStart(t *testing.T) {
 
 func TestSignal(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{Command: "sleep", Args: []string{"10"}}, "")
+	svc := mustNew(t, Process{Command: "sleep", Args: []string{"10"}}, "")
 	pid, err := svc.Start()
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -214,14 +226,14 @@ func TestSignal(t *testing.T) {
 
 func TestSignalNotRunning(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{Command: "true"}, "")
+	svc := mustNew(t, Process{Command: "true"}, "")
 	svc.Signal(syscall.SIGUSR1) // should not panic
 	svc.Stop()
 }
 
 func TestEnvironment(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{Command: "env", Environment: map[string]string{"TEST_VAR": "hello"}}, "")
+	svc := mustNew(t, Process{Command: "env", Environment: map[string]string{"TEST_VAR": "hello"}}, "")
 	pid, err := svc.Start()
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -233,7 +245,7 @@ func TestEnvironment(t *testing.T) {
 
 func TestWorkingDir(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{Command: "true", WorkingDir: os.TempDir()}, "")
+	svc := mustNew(t, Process{Command: "true", WorkingDir: os.TempDir()}, "")
 	pid, err := svc.Start()
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -259,7 +271,10 @@ func TestParseExitActionValues(t *testing.T) {
 		{"", ActionRestart, ActionRestart},
 	}
 	for _, tt := range tests {
-		got := ParseExitAction(tt.input, tt.def)
+		got, err := ParseExitAction(tt.input, tt.def)
+		if err != nil {
+			t.Errorf("ParseExitAction(%q, %q) returned error: %v", tt.input, tt.def, err)
+		}
 		if got != tt.expected {
 			t.Errorf("ParseExitAction(%q, %q) = %q, want %q", tt.input, tt.def, got, tt.expected)
 		}
@@ -268,7 +283,7 @@ func TestParseExitActionValues(t *testing.T) {
 
 func TestCustomKillDelay(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{Command: "true", KillDelay: "30s"}, "")
+	svc := mustNew(t, Process{Command: "true", KillDelay: "30s"}, "")
 	if svc.killDelay != 30*time.Second {
 		t.Errorf("killDelay = %v", svc.killDelay)
 	}
@@ -376,7 +391,7 @@ func TestDotEnvProcEnvOverrides(t *testing.T) {
 // must return an already-closed channel so callers unblock immediately.
 func TestDoneNeverStarted(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{Command: "true"}, "")
+	svc := mustNew(t, Process{Command: "true"}, "")
 	ch := svc.Done()
 	select {
 	case <-ch:
@@ -425,7 +440,7 @@ func TestSignalUsesProcessGroup(t *testing.T) {
 	// sleep and records the child PID. On SIGUSR1 (default=Terminate), both the
 	// sh and the background sleep should exit when the whole group is signalled.
 	// With process-only signalling, only sh exits; sleep survives as an orphan.
-	svc := New(Process{
+	svc := mustNew(t, Process{
 		Command: "sh",
 		Args:    []string{"-c", "sleep 100 & echo $! > " + pidFile + "; wait"},
 	}, "")
@@ -481,7 +496,7 @@ func (dummySignal) String() string { return "dummy" }
 // value does not panic. Without the comma-ok fix the type assertion panics (B6).
 func TestSignalNonSyscallSignalNoPanic(t *testing.T) {
 	t.Parallel()
-	svc := New(Process{Command: "sleep", Args: []string{"10"}}, "")
+	svc := mustNew(t, Process{Command: "sleep", Args: []string{"10"}}, "")
 	pid, err := svc.Start()
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -531,7 +546,7 @@ func TestDotEnvEmptyKeySkipped(t *testing.T) {
 func TestDoubleStopCancelsFirstTimer(t *testing.T) {
 	t.Parallel()
 	// Use a non-zero kill-delay so the timer is actually created.
-	svc := New(Process{Command: "sleep", Args: []string{"10"}, KillDelay: "5s"}, "")
+	svc := mustNew(t, Process{Command: "sleep", Args: []string{"10"}, KillDelay: "5s"}, "")
 
 	pid, err := svc.Start()
 	if err != nil {

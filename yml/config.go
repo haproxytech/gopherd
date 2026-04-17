@@ -78,6 +78,12 @@ func Unmarshal(data []byte) (*Config, error) {
 	}
 	if n := root.Get("stop-signal"); n != nil {
 		cfg.StopSignal = n.String()
+		// Surface unknown signal names at config load rather than at shutdown (L4).
+		if cfg.StopSignal != "" {
+			if _, err := service.ParseSignal(cfg.StopSignal); err != nil {
+				return nil, fmt.Errorf("invalid stop-signal %q: %w", cfg.StopSignal, err)
+			}
+		}
 	}
 	if n := root.Get("shutdown-order"); n != nil {
 		cfg.ShutdownOrder = n.String()
@@ -102,7 +108,10 @@ func Unmarshal(data []byte) (*Config, error) {
 	}
 
 	for _, item := range root.Get("processes").Items() {
-		p := parseProcess(item)
+		p, err := parseProcess(item)
+		if err != nil {
+			return nil, err
+		}
 		// If per-service clean-env is not set, inherit the global default.
 		if p.CleanEnv == nil && cfg.CleanEnv {
 			v := true
@@ -112,7 +121,11 @@ func Unmarshal(data []byte) (*Config, error) {
 	}
 
 	for _, e := range root.Get("checks").Entries() {
-		cfg.Checks[e.Key] = parseCheck(e.Val)
+		c, err := parseCheck(e.Val)
+		if err != nil {
+			return nil, fmt.Errorf("check %q: %w", e.Key, err)
+		}
+		cfg.Checks[e.Key] = c
 	}
 
 	for _, e := range root.Get("log-targets").Entries() {
@@ -140,6 +153,11 @@ func Unmarshal(data []byte) (*Config, error) {
 		if err := service.ValidateExitAction(p.OnFailure); err != nil {
 			return nil, fmt.Errorf("process %q on-failure: %w", name, err)
 		}
+		if p.StopSignal != "" {
+			if _, err := service.ParseSignal(p.StopSignal); err != nil {
+				return nil, fmt.Errorf("process %q stop-signal: %w", name, err)
+			}
+		}
 		for checkName, action := range p.OnCheckFailure {
 			if err := service.ValidateExitAction(action); err != nil {
 				return nil, fmt.Errorf("process %q on-check-failure[%s]: %w", name, checkName, err)
@@ -150,7 +168,7 @@ func Unmarshal(data []byte) (*Config, error) {
 	return cfg, nil
 }
 
-func parseProcess(n *Node) service.Process {
+func parseProcess(n *Node) (service.Process, error) {
 	p := service.Process{
 		Name:              n.Get("name").String(),
 		Command:           n.Get("command").String(),
@@ -179,21 +197,34 @@ func parseProcess(n *Node) service.Process {
 		UserID:            n.Get("user-id").IntPtr(),
 		GroupID:           n.Get("group-id").IntPtr(),
 	}
-	if v, ok := n.Get("backoff-factor").Float(); ok {
+	// Surface unparseable numeric fields rather than silently defaulting (M4).
+	if raw := n.Get("backoff-factor").String(); raw != "" {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			name := p.Name
+			if name == "" {
+				name = p.Command
+			}
+			return p, fmt.Errorf("process %q: invalid backoff-factor %q: %w", name, raw, err)
+		}
 		p.BackoffFactor = v
 	}
 	p.Prefix = n.Get("prefix").String()
-	return p
+	return p, nil
 }
 
-func parseCheck(n *Node) check.Config {
+func parseCheck(n *Node) (check.Config, error) {
 	c := check.Config{
 		Period:       n.Get("period").String(),
 		Timeout:      n.Get("timeout").String(),
 		InitialDelay: n.Get("initial-delay").String(),
 		Level:        n.Get("level").String(),
 	}
-	if v, ok := n.Get("threshold").Int(); ok {
+	if raw := n.Get("threshold").String(); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil {
+			return c, fmt.Errorf("invalid threshold %q: %w", raw, err)
+		}
 		c.Threshold = v
 	}
 	if h := n.Get("http"); h != nil {
@@ -203,7 +234,14 @@ func parseCheck(n *Node) check.Config {
 		}
 	}
 	if t := n.Get("tcp"); t != nil {
-		port, _ := t.Get("port").Int()
+		var port int
+		if raw := t.Get("port").String(); raw != "" {
+			v, err := strconv.Atoi(raw)
+			if err != nil {
+				return c, fmt.Errorf("invalid tcp.port %q: %w", raw, err)
+			}
+			port = v
+		}
 		c.TCP = &check.TCP{
 			Host: t.Get("host").String(),
 			Port: port,
@@ -215,7 +253,7 @@ func parseCheck(n *Node) check.Config {
 			Args:    e.Get("args").Strings(),
 		}
 	}
-	return c
+	return c, nil
 }
 
 func parseLogTarget(n *Node) logger.TargetConfig {

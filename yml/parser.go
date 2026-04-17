@@ -18,10 +18,16 @@
 package yml
 
 import (
+	"bytes"
 	"fmt"
 	"strconv"
 	"strings"
 )
+
+// maxParseDepth caps how deeply parseBlock may recurse. Guards against a
+// malformed or adversarial config exhausting the stack of the PID 1 process
+// via pathologically nested structures (M9).
+const maxParseDepth = 64
 
 // Node represents a parsed YAML value.
 type Node struct {
@@ -47,8 +53,32 @@ const (
 
 // Parse parses YAML text into a node tree.
 func Parse(data []byte) (*Node, error) {
-	lines := splitLines(data)
-	n, _, err := parseBlock(lines, 0, -1)
+	// Strip UTF-8 BOM so the first key does not parse with a \ufeff prefix
+	// when configs are saved by Windows editors (M10).
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	// Normalize bare-\r line endings (classic Mac) to \n so they split correctly;
+	// \r\n is already handled by the TrimRight inside splitLines (L5). Single
+	// pass: on a CRLF file the previous two-pass approach re-allocated the whole
+	// buffer twice.
+	if bytes.IndexByte(data, '\r') >= 0 {
+		out := make([]byte, 0, len(data))
+		for i := 0; i < len(data); i++ {
+			if data[i] == '\r' {
+				out = append(out, '\n')
+				if i+1 < len(data) && data[i+1] == '\n' {
+					i++ // skip the \n in a \r\n pair
+				}
+				continue
+			}
+			out = append(out, data[i])
+		}
+		data = out
+	}
+	lines, err := splitLines(data)
+	if err != nil {
+		return nil, err
+	}
+	n, _, err := parseBlock(lines, 0, -1, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +91,7 @@ type rawLine struct {
 	num    int
 }
 
-func splitLines(data []byte) []rawLine {
+func splitLines(data []byte) ([]rawLine, error) {
 	var lines []rawLine
 	i := 0
 	for raw := range strings.SplitSeq(string(data), "\n") {
@@ -69,6 +99,13 @@ func splitLines(data []byte) []rawLine {
 		trimmed := strings.TrimRight(raw, " \t\r")
 		if trimmed == "" || strings.TrimSpace(trimmed) == "" {
 			continue
+		}
+		// Tab-indented lines are rejected rather than silently flattened:
+		// indent is counted in spaces only, so a leading \t would parse as
+		// indent=0 and attach the line at the wrong depth. YAML 1.2 forbids
+		// tabs for indentation (M8).
+		if len(raw) > 0 && raw[0] == '\t' {
+			return nil, fmt.Errorf("line %d: tab character used for indentation; YAML requires spaces", i)
 		}
 		content := strings.TrimSpace(trimmed)
 		if strings.HasPrefix(content, "#") {
@@ -78,7 +115,7 @@ func splitLines(data []byte) []rawLine {
 		indent := len(trimmed) - len(strings.TrimLeft(trimmed, " "))
 		lines = append(lines, rawLine{indent: indent, text: content, num: i})
 	}
-	return lines
+	return lines, nil
 }
 
 func stripInlineComment(s string) string {
@@ -115,21 +152,32 @@ func stripInlineComment(s string) string {
 	return s
 }
 
-func parseBlock(lines []rawLine, pos, minIndent int) (*Node, int, error) {
+func parseBlock(lines []rawLine, pos, minIndent, depth int) (*Node, int, error) {
+	if depth > maxParseDepth {
+		lineNum := 0
+		if pos < len(lines) {
+			lineNum = lines[pos].num
+		}
+		return nil, pos, fmt.Errorf("line %d: YAML nesting exceeds maximum depth of %d", lineNum, maxParseDepth)
+	}
 	if pos >= len(lines) {
 		return &Node{kind: kindScalar, scalar: ""}, pos, nil
 	}
 
 	line := lines[pos]
 	if strings.HasPrefix(line.text, "- ") {
-		return parseSequence(lines, pos, line.indent)
+		return parseSequence(lines, pos, line.indent, depth)
 	}
 
-	return parseMapping(lines, pos, minIndent)
+	return parseMapping(lines, pos, minIndent, depth)
 }
 
-func parseMapping(lines []rawLine, pos, minIndent int) (*Node, int, error) {
+func parseMapping(lines []rawLine, pos, minIndent, depth int) (*Node, int, error) {
 	m := &Node{kind: kindMapping}
+	// seenKeys detects duplicate mapping keys at the same level so an
+	// ambiguous config fails loudly rather than silently keeping first-wins
+	// semantics that differ from YAML 1.2 (M11).
+	seenKeys := make(map[string]int)
 	baseIndent := -1 // indent of the first key; all siblings must match
 
 	for pos < len(lines) {
@@ -153,6 +201,10 @@ func parseMapping(lines []rawLine, pos, minIndent int) (*Node, int, error) {
 		}
 
 		key := strings.TrimSpace(line.text[:colonIdx])
+		if prev, dup := seenKeys[key]; dup {
+			return nil, pos, fmt.Errorf("line %d: duplicate key %q (previously defined on line %d)", line.num, key, prev)
+		}
+		seenKeys[key] = line.num
 		rest := strings.TrimSpace(line.text[colonIdx+1:])
 
 		if rest != "" {
@@ -165,7 +217,7 @@ func parseMapping(lines []rawLine, pos, minIndent int) (*Node, int, error) {
 				m.mapping = append(m.mapping, MapEntry{Key: key, Val: &Node{kind: kindScalar, scalar: ""}})
 				continue
 			}
-			child, nextPos, err := parseBlock(lines, pos, line.indent)
+			child, nextPos, err := parseBlock(lines, pos, line.indent, depth+1)
 			if err != nil {
 				return nil, nextPos, err
 			}
@@ -177,7 +229,7 @@ func parseMapping(lines []rawLine, pos, minIndent int) (*Node, int, error) {
 	return m, pos, nil
 }
 
-func parseSequence(lines []rawLine, pos, seqIndent int) (*Node, int, error) {
+func parseSequence(lines []rawLine, pos, seqIndent, depth int) (*Node, int, error) {
 	seq := &Node{kind: kindSequence}
 
 	for pos < len(lines) {
@@ -200,7 +252,7 @@ func parseSequence(lines []rawLine, pos, seqIndent int) (*Node, int, error) {
 			pos++
 		}
 
-		item, _, err := parseBlock(itemLines, 0, itemIndent-1)
+		item, _, err := parseBlock(itemLines, 0, itemIndent-1, depth+1)
 		if err != nil {
 			return nil, pos, err
 		}

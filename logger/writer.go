@@ -177,69 +177,97 @@ func (pw *PrefixWriter) Recent() [][]byte {
 }
 
 // Write implements io.Writer.
+// Peak per-Write memory is bounded to ~maxBufSize: p is consumed in chunks
+// that never grow pw.buf beyond the cap, and a synthetic newline is injected
+// whenever the cap is reached with no natural newline in sight. Without this,
+// a service that emitted a single multi-megabyte newline-free chunk would
+// allocate len(p) bytes in pw.buf before the size check fires (M7).
 func (pw *PrefixWriter) Write(p []byte) (int, error) {
 	pw.mu.Lock()
 	defer pw.mu.Unlock()
 
 	total := len(p)
-	pw.buf = append(pw.buf, p...)
-
-	// If buffer exceeds max size without a newline, force a flush to prevent
-	// unbounded memory growth from binary or malicious output.
-	if len(pw.buf) > maxBufSize && bytes.IndexByte(pw.buf, '\n') < 0 {
-		pw.buf = append(pw.buf, '\n')
-	}
-
-	for {
-		idx := bytes.IndexByte(pw.buf, '\n')
-		if idx < 0 {
-			break
-		}
-		line := pw.buf[:idx+1]
-		rest := pw.buf[idx+1:]
-		// Reset buf to the start of the backing array when possible,
-		// so append can reuse capacity instead of allocating.
-		if len(rest) == 0 {
-			pw.buf = pw.buf[:0]
+	for len(p) > 0 {
+		room := maxBufSize - len(pw.buf)
+		if room <= 0 {
+			// Buffer already at the cap with no newline; inject one to force
+			// a drain before appending more.
+			pw.buf = append(pw.buf, '\n')
 		} else {
-			pw.buf = rest
+			take := min(room, len(p))
+			// If a natural newline falls within this chunk, stop at it so
+			// line boundaries stay aligned with real input.
+			if nl := bytes.IndexByte(p[:take], '\n'); nl >= 0 {
+				take = nl + 1
+			}
+			pw.buf = append(pw.buf, p[:take]...)
+			p = p[take:]
+			// If we filled the buffer without seeing a newline, inject one so
+			// the drain loop below flushes and we do not carry an oversized
+			// fragment across iterations.
+			if len(pw.buf) >= maxBufSize && bytes.IndexByte(pw.buf, '\n') < 0 {
+				pw.buf = append(pw.buf, '\n')
+			}
 		}
 
-		prefixed := pw.prefix(line)
-		// prefixed aliases pw.prefixBuf and is reused on the next iteration.
-		// All writers registered here (os.Stdout/Stderr, syslogWriter, *os.File)
-		// must consume the bytes synchronously before Write returns — they must
-		// not retain the slice after returning.
-		_, _ = pw.dest.Write(prefixed)
-		for _, w := range pw.extra {
-			_, _ = w.Write(prefixed)
-		}
+		for {
+			idx := bytes.IndexByte(pw.buf, '\n')
+			if idx < 0 {
+				break
+			}
+			line := pw.buf[:idx+1]
+			rest := pw.buf[idx+1:]
+			// Reset buf to the start of the backing array when possible,
+			// so append can reuse capacity instead of allocating.
+			if len(rest) == 0 {
+				pw.buf = pw.buf[:0]
+			} else {
+				pw.buf = rest
+			}
 
-		// Store in circular ring buffer. Reuse existing slot capacity
-		// when possible to avoid allocating a new []byte per line.
-		slot := pw.ring[pw.ringPos]
-		if cap(slot) >= len(prefixed) {
-			slot = slot[:len(prefixed)]
-		} else {
-			slot = make([]byte, len(prefixed))
-		}
-		copy(slot, prefixed)
-		pw.ring[pw.ringPos] = slot
-		pw.ringPos++
-		if pw.ringPos >= defaultRingSize {
-			pw.ringPos = 0
-			pw.ringFull = true
-		}
+			prefixed := pw.prefix(line)
+			// prefixed aliases pw.prefixBuf and is reused on the next iteration.
+			// All writers registered here (os.Stdout/Stderr, syslogWriter, *os.File)
+			// must consume the bytes synchronously before Write returns — they must
+			// not retain the slice after returning.
+			_, _ = pw.dest.Write(prefixed)
+			for _, w := range pw.extra {
+				_, _ = w.Write(prefixed)
+			}
 
-		// Fan out to subscribers (non-blocking).
-		// Send a copy so subscribers cannot observe a future ring-slot overwrite.
-		for _, ch := range pw.subs {
-			msg := make([]byte, len(slot))
-			copy(msg, slot)
-			select {
-			case ch <- msg:
-			default:
-				// subscriber too slow, drop line
+			// Store in circular ring buffer. Reuse existing slot capacity
+			// when possible to avoid allocating a new []byte per line.
+			slot := pw.ring[pw.ringPos]
+			if cap(slot) >= len(prefixed) {
+				slot = slot[:len(prefixed)]
+			} else {
+				slot = make([]byte, len(prefixed))
+			}
+			copy(slot, prefixed)
+			pw.ring[pw.ringPos] = slot
+			pw.ringPos++
+			if pw.ringPos >= defaultRingSize {
+				pw.ringPos = 0
+				pw.ringFull = true
+			}
+
+			// Fan out to subscribers (non-blocking).
+			// Allocate a single immutable copy shared across all subscribers so
+			// N subscribers incur one copy per line, not N. Subscribers must
+			// treat the slice as read-only (standard channel-message contract).
+			// The copy is necessary because the ring slot will be overwritten
+			// when the ring wraps.
+			var msg []byte
+			if len(pw.subs) > 0 {
+				msg = make([]byte, len(slot))
+				copy(msg, slot)
+			}
+			for _, ch := range pw.subs {
+				select {
+				case ch <- msg:
+				default:
+					// subscriber too slow, drop line
+				}
 			}
 		}
 	}

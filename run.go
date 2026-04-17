@@ -82,6 +82,12 @@ func run(entrypointArgs []string) int {
 	if entrypointCount > 1 {
 		log.Fatalf("only one process may set use-entrypoint-args: true")
 	}
+	// Warn if the user passed entrypoint args but no process is configured to
+	// consume them — the args are otherwise silently discarded, which is a
+	// common misconfiguration when migrating a container's CMD to gopherd.
+	if entrypointCount == 0 && len(entrypointArgs) > 0 {
+		log.Printf("warning: entrypoint args %q will be discarded because no process sets use-entrypoint-args: true", entrypointArgs)
+	}
 
 	d := &daemon{
 		configPath:     configPath,
@@ -107,7 +113,9 @@ func run(entrypointArgs []string) int {
 
 	// Build log targets and services.
 	d.buildLogTargets()
-	d.buildServices()
+	if err := d.buildServices(); err != nil {
+		log.Fatalf("config: %v", err)
+	}
 
 	// Start enabled services in dependency order.
 	for _, name := range startOrd {
@@ -331,7 +339,17 @@ func run(entrypointArgs []string) int {
 				if success {
 					action = service.ActionIgnore
 				} else {
-					action = service.ParseExitAction(svc.Proc.OnFailure, service.ActionIgnore)
+					// svc.Proc.OnFailure was pre-validated by yml.Unmarshal
+					// (ValidateExitAction) and again by service.New, so a parse
+					// error here is impossible in practice. If one did occur we
+					// fall back to Ignore rather than propagating the error:
+					// fatalling from the reap loop would crash PID 1.
+					parsed, err := service.ParseExitAction(svc.Proc.OnFailure, service.ActionIgnore)
+					if err != nil {
+						log.Printf("warning: %s: %v; ignoring exit", svc.Name, err)
+						parsed = service.ActionIgnore
+					}
+					action = parsed
 				}
 			} else if success {
 				action = svc.OnSuccess
@@ -400,6 +418,11 @@ func run(entrypointArgs []string) int {
 
 	ctrlServer.Stop()
 	d.stopChecks()
+	// Stop delivering signals before final teardown so a late SIGHUP cannot
+	// trigger d.reload() concurrent with closeLogTargets() touching d.services.
+	// Closing the channel lets the signal-forwarding goroutine exit cleanly.
+	goSignal.Stop(sigs)
+	close(sigs)
 	// All sources that write to restartCh (reap loop, check callbacks, control
 	// socket RestartFn) have now stopped. Wait for any in-flight sender
 	// goroutines, then close the channel so the restart goroutine's range loop
