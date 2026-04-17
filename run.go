@@ -306,6 +306,10 @@ func run(entrypointArgs []string) int {
 		svc, isManaged := d.pidMap[pid]
 		if isManaged {
 			delete(d.pidMap, pid)
+			// MarkExited invalidates svc.Pid and svc.running atomically
+			// before acquiring svc.mu, so concurrent Stop/Signal/killTimer
+			// callers see a stale-pid guard trip and do not issue
+			// syscall.Kill against a pid the kernel has just freed.
 			runDuration := svc.MarkExited()
 			log.Printf("%s exited (status %d)", svc.Name, code)
 			// Compute effective code before recording metrics: intentional stops

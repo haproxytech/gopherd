@@ -717,10 +717,22 @@ func (s *Service) Signal(sig os.Signal) {
 // MarkExited marks the service as no longer running and returns how long it ran.
 // It cancels any pending deferred SIGKILL to prevent sending signals to a
 // recycled PID.
+//
+// Atomically clears s.running and s.Pid BEFORE acquiring s.mu so that
+// concurrent Stop, Signal, and killTimer callers — which all re-read these
+// atomics after locking s.mu — see the invalidated values and their
+// `pid <= 0` / `Pid.Load() != kpid` guards trip. By the time Wait4 has
+// returned and the reap loop reaches this function, the kernel has already
+// freed the pid for reuse; the atomic stores bound the window in which a
+// concurrent signaller could issue syscall.Kill against a just-recycled
+// pid. The residual window cannot be closed without pidfd_send_signal,
+// which is not in syscall stdlib.
 func (s *Service) MarkExited() time.Duration {
+	s.running.Store(false)
+	s.Pid.Store(0)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.running.Store(false)
 	if s.done != nil {
 		close(s.done)
 	}

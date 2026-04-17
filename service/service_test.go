@@ -609,6 +609,42 @@ func TestDoubleStopCancelsFirstTimer(t *testing.T) {
 	}
 }
 
+// TestMarkExitedInvalidatesPidAndRunning verifies that MarkExited clears
+// svc.Pid and svc.running atomically. This is the narrowing that Stop,
+// Signal, and the killTimer callback rely on to avoid issuing a
+// syscall.Kill against a pid the kernel has freed for reuse. If these
+// stores regress, a concurrent signal path holding svc.mu would still
+// see a valid pid and running==true after Wait4 has already reaped the
+// service, widening the PID-reuse race window.
+func TestMarkExitedInvalidatesPidAndRunning(t *testing.T) {
+	t.Parallel()
+	svc := mustNew(t, Process{Command: "sleep", Args: []string{"30"}}, "")
+	pid, err := svc.Start()
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if svc.Pid.Load() != int64(pid) {
+		t.Fatalf("Pid atomic not set after Start: got %d, want %d", svc.Pid.Load(), pid)
+	}
+	if !svc.running.Load() {
+		t.Fatalf("running atomic should be true after Start")
+	}
+
+	// Clean up the child before MarkExited so we're not lying to the kernel.
+	syscall.Kill(pid, syscall.SIGKILL)
+	var ws syscall.WaitStatus
+	syscall.Wait4(pid, &ws, 0, nil)
+
+	svc.MarkExited()
+
+	if got := svc.Pid.Load(); got != 0 {
+		t.Errorf("Pid after MarkExited = %d, want 0 (must invalidate to block concurrent signals)", got)
+	}
+	if svc.running.Load() {
+		t.Error("running after MarkExited = true, want false")
+	}
+}
+
 // TestExpandCPUTemplates verifies that the {{cpu}} regex matches bare
 // {{cpu}} and {{cpu EXPR}} but leaves identifiers like "cpus" or "cpu_x"
 // as literal text (so a user typo does not produce a confusing
