@@ -962,6 +962,11 @@ func processConfigChanged(oldp, newp service.Process) bool {
 	if oldp.SDNotifyTimeout != newp.SDNotifyTimeout {
 		return true
 	}
+	// Parent-death signal is applied via SysProcAttr at fork time, so a
+	// change only takes effect on the next spawn — require a restart.
+	if oldp.ParentDeathSignal != newp.ParentDeathSignal {
+		return true
+	}
 	return false
 }
 

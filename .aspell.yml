@@ -6,3 +6,4 @@ allowed:
   - parallelize
   - optim
   - oom
+  - subreaper

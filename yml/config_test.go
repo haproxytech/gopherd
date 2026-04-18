@@ -222,6 +222,60 @@ processes:
 	}
 }
 
+func TestLoadSubreaper(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sub.yml")
+	os.WriteFile(cfgPath, []byte(`
+subreaper: true
+
+processes:
+  - name: app
+    command: /bin/app
+`), 0o644)
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Subreaper {
+		t.Error("expected Subreaper=true")
+	}
+}
+
+func TestLoadParentDeathSignal(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pdeath.yml")
+	os.WriteFile(cfgPath, []byte(`
+processes:
+  - name: app
+    command: /bin/app
+    parent-death-signal: SIGTERM
+`), 0o644)
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Processes[0].ParentDeathSignal != "SIGTERM" {
+		t.Errorf("ParentDeathSignal = %q, want SIGTERM", cfg.Processes[0].ParentDeathSignal)
+	}
+}
+
+func TestLoadInvalidParentDeathSignal(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "bad.yml")
+	os.WriteFile(cfgPath, []byte(`
+processes:
+  - name: app
+    command: /bin/app
+    parent-death-signal: SIGBOGUS
+`), 0o644)
+	if _, err := Load(cfgPath); err == nil {
+		t.Error("expected error for invalid parent-death-signal")
+	}
+}
+
 func TestLoadNoProcesses(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -52,6 +52,19 @@ func run(entrypointArgs []string) int {
 	}
 	log.Printf("%s (built from %s)", version.Version, version.Repo)
 
+	// When configured, mark ourselves as the child subreaper so orphaned
+	// descendants are re-parented to us rather than to the real PID 1.
+	// Intentionally non-fatal: a kernel/config that rejects the prctl (e.g.
+	// unsupported platform, LSM denial) must not crash PID 1. Log and move
+	// on; orphans will just be reaped by PID 1 instead, same as today.
+	if cfg.Subreaper {
+		if err := service.SetChildSubreaper(); err != nil {
+			log.Printf("warning: subreaper: %v", err)
+		} else {
+			log.Printf("subreaper: enabled (orphans re-parent to gopherd)")
+		}
+	}
+
 	// Check if another daemon is already running by probing the control socket.
 	socketPath := cfg.Control.SocketPath
 	if socketPath == "" {

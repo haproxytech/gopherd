@@ -65,6 +65,11 @@ type Config struct {
 	Control       control.Config
 	Processes     []service.Process
 	NoLogo        bool
+	// Subreaper enables PR_SET_CHILD_SUBREAPER at startup so orphaned
+	// descendants are re-parented to gopherd (and reaped by its Wait4 loop)
+	// instead of the real PID 1. Useful when gopherd itself is not PID 1
+	// (e.g. inside docker exec, k8s sidecars, nested init).
+	Subreaper bool
 }
 
 // Load reads and parses a YAML config file.
@@ -93,6 +98,9 @@ func Unmarshal(data []byte) (*Config, error) {
 	}
 	if n := root.Get("no-logo"); n != nil {
 		cfg.NoLogo = n.Bool()
+	}
+	if n := root.Get("subreaper"); n != nil {
+		cfg.Subreaper = n.Bool()
 	}
 	if n := root.Get("pass-env"); n != nil {
 		cfg.PassEnv = n.BoolPtr()
@@ -256,6 +264,17 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		GroupID:           n.Get("group-id").IntPtr(),
 		SDNotify:          n.Get("sd-notify").Bool(),
 		SDNotifyTimeout:   n.Get("sd-notify-timeout").String(),
+		ParentDeathSignal: n.Get("parent-death-signal").String(),
+	}
+	// Validate parent-death-signal at parse time so a typo surfaces before spawn.
+	if p.ParentDeathSignal != "" {
+		if _, err := service.ParseSignal(p.ParentDeathSignal); err != nil {
+			name := p.Name
+			if name == "" {
+				name = p.Command
+			}
+			return p, fmt.Errorf("process %q: invalid parent-death-signal %q: %w", name, p.ParentDeathSignal, err)
+		}
 	}
 	// Validate sd-notify-timeout at parse time so a typo surfaces before spawn.
 	if p.SDNotifyTimeout != "" {

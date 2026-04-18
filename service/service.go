@@ -108,10 +108,15 @@ type Process struct {
 	// on $NOTIFY_SOCKET after the service has started. Empty = 60s default.
 	// Only meaningful when SDNotify is true.
 	SDNotifyTimeout string
-	Args            []string
-	After           []string
-	Before          []string
-	Requires        []string
+	// ParentDeathSignal is the signal name (e.g. "SIGTERM", "SIGKILL") that
+	// the kernel will deliver to the child when its parent thread dies. Set
+	// via prctl(PR_SET_PDEATHSIG) after fork, before exec. Empty = unset.
+	// Linux-only: silently ignored on non-Linux builds.
+	ParentDeathSignal string
+	Args              []string
+	After             []string
+	Before            []string
+	Requires          []string
 	// RemoveEnv lists env keys to delete from the child's final environment
 	// after merging OS env (if pass-env is true), dotenv, and per-process
 	// environment. Used to drop shared dotenv keys that one service must
@@ -678,6 +683,19 @@ func (s *Service) Start() (pid int, err error) {
 	cmd.Stderr = s.Stderr
 	cmd.Stdin = nil // each child gets /dev/null as stdin (exec.Cmd default)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	// Parent-death signal: the kernel delivers sig to the child when its
+	// parent thread terminates, so children do not linger after gopherd is
+	// killed abruptly (e.g. SIGKILL). Validated at config load, so we
+	// surface any residual parse error here as an internal bug rather than
+	// a user-facing one. Non-Linux builds silently skip via setPdeathsig.
+	if s.Proc.ParentDeathSignal != "" {
+		pdeathSig, perr := ParseSignal(s.Proc.ParentDeathSignal)
+		if perr != nil {
+			return 0, fmt.Errorf("parent-death-signal: %w", perr)
+		}
+		setPdeathsig(cmd.SysProcAttr, pdeathSig)
+	}
 
 	if s.Proc.WorkingDir != "" {
 		cmd.Dir = s.Proc.WorkingDir

@@ -440,6 +440,7 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `no-logo` | bool | `false` | Suppress ASCII art banner at startup |
 | `shutdown-order` | string | `"reverse-dep"` | Shutdown strategy: `reverse-dep`, `dep`, or `simultaneous` |
 | `stop-signal` | string | `"SIGTERM"` | Signal that triggers graceful shutdown (override with `GOPHERD_STOP_SIGNAL` env). Set this to match Docker's `STOPSIGNAL` if it differs from SIGTERM. |
+| `subreaper` | bool | `false` | Set `PR_SET_CHILD_SUBREAPER` so orphaned descendants re-parent to gopherd (and get reaped by its `Wait4` loop) instead of the real PID 1. Useful when gopherd is not PID 1 (k8s sidecar, `docker exec`, nested init). Linux only; warns and no-ops elsewhere. |
 
 #### Process fields
 
@@ -475,6 +476,7 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `ready-timeout` | duration | `"60s"` | Max wait for ready check to pass |
 | `sd-notify` | bool | `false` | Enable systemd-compatible sd_notify readiness: gopherd sets `$NOTIFY_SOCKET` in the child env; dependents wait until the child writes `READY=1` to that socket |
 | `sd-notify-timeout` | duration | `"60s"` | Max wait for `READY=1` after spawn when `sd-notify: true` |
+| `parent-death-signal` | string | | Signal name (e.g. `SIGTERM`, `SIGKILL`) delivered by the kernel to this child when its parent thread dies (`prctl(PR_SET_PDEATHSIG)`). Ensures children do not linger if gopherd is killed abruptly. Linux only. |
 | `prefix` | string | `"service timestamp"` | Log prefix format: `"service timestamp"`, `"timestamp service"`, `"timestamp"`, `"service"`, `"none"` |
 
 #### Exit actions

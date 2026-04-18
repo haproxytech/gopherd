@@ -21,6 +21,11 @@
 #   simultaneous:  all services stop concurrently (fastest)
 # shutdown-order: reverse-dep
 
+# Subreaper mode: re-parent orphaned descendants to gopherd so its reap
+# loop collects them. Only needed when gopherd is NOT PID 1 (e.g. inside
+# docker exec, a k8s sidecar, or nested init). Linux-only.
+# subreaper: true
+
 # Control socket for runtime service management.
 # Use `gopherd stats` to view service and check statistics.
 control:
@@ -65,6 +70,7 @@ processes:
     ready-timeout: 60s                   # max wait for ready check (default: 60s)
     # sd-notify: true                    # systemd sd_notify: dependents wait for READY=1 on $NOTIFY_SOCKET
     # sd-notify-timeout: 30s             # max wait for READY=1 after spawn (default: 60s)
+    # parent-death-signal: SIGTERM       # kernel delivers this signal to the child when gopherd dies (Linux)
     # prefix: "service"                  # per-process prefix override (see global prefix)
     # pass-env: true                     # opt in to inheriting gopherd's OS env (default: false)
     # remove-env:                        # strip these keys from the final child env
