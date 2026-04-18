@@ -33,7 +33,17 @@ tasks:
   build:
     desc: "build gopherd binary for current platform"
     cmds:
-      - go build -o gopherd .
+      - go build -trimpath -ldflags="-s" -o gopherd .
+
+  build-upx:
+    desc: "build and UPX-compress gopherd (slower startup; not for all envs)"
+    deps:
+      - task: build
+    preconditions:
+      - sh: command -v upx
+        msg: "upx not found; install from https://upx.github.io/"
+    cmds:
+      - upx --best --lzma gopherd
 
   build-all:
     desc: "cross-compile gopherd for all release platforms"
@@ -69,7 +79,7 @@ tasks:
             unset GOARM
           fi
           echo "building ${name}..."
-          CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -o "{{.OUT}}/${name}" . || exit 1
+          CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags="-s" -o "{{.OUT}}/${name}" . || exit 1
         done
         echo "all builds OK ({{.OUT}}/)"
       - rm -rf {{.OUT}}

@@ -20,6 +20,10 @@ builds:
     binary: gopherd
     id: gopherd
     main: .
+    flags:
+      - -trimpath
+    ldflags:
+      - -s
     goos:
       - linux
       - darwin

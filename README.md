@@ -38,6 +38,31 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 
 ### Usage
 
+#### Install
+
+Via `go install` (builds from source, requires Go toolchain):
+
+```bash
+go install -trimpath -ldflags="-s" github.com/haproxytech/gopherd@latest     # latest tagged release
+go install -trimpath -ldflags="-s" github.com/haproxytech/gopherd@v1.2.3     # specific version
+go install -trimpath -ldflags="-s" github.com/haproxytech/gopherd@main       # tip of main branch
+```
+
+`-trimpath -ldflags="-s"` strips symbol tables and local paths for a ~30% smaller binary. Omit them if you need DWARF for profiling/debugging.
+
+The binary lands in `$(go env GOBIN)` (or `$(go env GOPATH)/bin`).
+
+Pre-built release binaries (no Go toolchain needed) are published on the [releases page](https://github.com/haproxytech/gopherd/releases) for linux/darwin/freebsd across amd64/arm64/arm/386/ppc64le/riscv64/s390x. Archive names follow `gopherd_<version>_<OS>_<arch>.tar.gz` (e.g. `Linux_x86_64`, `Linux_arm64`, `Darwin_arm64`):
+
+```bash
+VERSION=1.2.3
+curl -fsSLO "https://github.com/haproxytech/gopherd/releases/download/v${VERSION}/gopherd_${VERSION}_Linux_x86_64.tar.gz"
+tar -xzf "gopherd_${VERSION}_Linux_x86_64.tar.gz"
+sudo install -m 0755 gopherd /usr/local/bin/gopherd
+```
+
+Verify the download against `checksums.txt` from the same release before installing.
+
 #### Build
 
 ```bash
