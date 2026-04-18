@@ -276,6 +276,171 @@ processes:
 	}
 }
 
+func TestLoadExitCodeMap(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "em.yml")
+	os.WriteFile(cfgPath, []byte(`
+processes:
+  - name: app
+    command: /bin/app
+    exit-code-map:
+      143: 0
+      137: 0
+      42: 7
+`), 0o644)
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := cfg.Processes[0].ExitCodeMap
+	if got[143] != 0 || got[137] != 0 || got[42] != 7 {
+		t.Errorf("ExitCodeMap = %v", got)
+	}
+}
+
+func TestLoadExitCodeMapInvalidKey(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "em.yml")
+	os.WriteFile(cfgPath, []byte(`
+processes:
+  - name: app
+    command: /bin/app
+    exit-code-map:
+      totally-not-a-signal: 0
+`), 0o644)
+	if _, err := Load(cfgPath); err == nil {
+		t.Error("expected error for non-integer, non-signal exit-code-map key")
+	}
+}
+
+// TestLoadExitCodeMapSignalNames verifies that signal names on either side
+// of exit-code-map are accepted and translated to the 128+signum shell
+// convention — so `SIGTERM: 0` remaps the 143 that the reap loop reports
+// for SIGTERM-terminated children. Mixing integer and signal forms must
+// also work so users can migrate gradually.
+func TestLoadExitCodeMapSignalNames(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "em.yml")
+	os.WriteFile(cfgPath, []byte(`
+processes:
+  - name: app
+    command: /bin/app
+    exit-code-map:
+      SIGTERM: 0
+      SIGKILL: 0
+      USR1: SIGUSR1
+      137: 0
+`), 0o644)
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	m := cfg.Processes[0].ExitCodeMap
+	if m[143] != 0 {
+		t.Errorf("SIGTERM (143) not mapped to 0: %v", m)
+	}
+	if m[137] != 0 {
+		t.Errorf("SIGKILL (137) / literal 137 not mapped to 0: %v", m)
+	}
+	// SIGUSR1 = 10, so both sides resolve to 138.
+	if m[138] != 138 {
+		t.Errorf("USR1 -> SIGUSR1 not mapped to 138->138: %v", m)
+	}
+}
+
+func TestLoadSignalRewriteCanonicalises(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sr.yml")
+	// Mix "USR1" (short, no prefix) with the "SIGFOO" form. The loader
+	// should canonicalise both sides to "SIGFOO" so the runtime lookup
+	// does not need to re-parse on every event. Values like "quit" (no
+	// prefix, lowercase) must also canonicalise.
+	os.WriteFile(cfgPath, []byte(`
+processes:
+  - name: app
+    command: /bin/app
+    signal-rewrite:
+      USR1: SIGHUP
+      USR2: quit
+`), 0o644)
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	sr := cfg.Processes[0].SignalRewrite
+	if sr["SIGUSR1"] != "SIGHUP" {
+		t.Errorf("SignalRewrite[SIGUSR1] = %q, want SIGHUP", sr["SIGUSR1"])
+	}
+	if sr["SIGUSR2"] != "SIGQUIT" {
+		t.Errorf("SignalRewrite[SIGUSR2] = %q, want SIGQUIT", sr["SIGUSR2"])
+	}
+}
+
+// TestLoadSignalRewriteRejectsReservedKeys covers the known-dead-entry
+// problem: gopherd's signal dispatcher in run.go always routes SIGTERM,
+// SIGINT, and SIGHUP to its own shutdown/reload paths before the forward
+// branch runs. A user who wrote `signal-rewrite: {TERM: QUIT}` expecting
+// gopherd to deliver SIGQUIT to the child would be silently disappointed,
+// so we reject such configurations at load.
+func TestLoadSignalRewriteRejectsReservedKeys(t *testing.T) {
+	t.Parallel()
+	for _, sig := range []string{"SIGTERM", "TERM", "SIGINT", "INT", "SIGHUP", "HUP"} {
+		cfgPath := filepath.Join(t.TempDir(), "sr.yml")
+		os.WriteFile(cfgPath, fmt.Appendf(nil, `
+processes:
+  - name: app
+    command: /bin/app
+    signal-rewrite:
+      %s: SIGUSR1
+`, sig), 0o644)
+		if _, err := Load(cfgPath); err == nil {
+			t.Errorf("expected error for signal-rewrite key %q (reserved by gopherd)", sig)
+		}
+	}
+}
+
+// TestLoadSignalRewriteRejectsGlobalStopSignal verifies that changing the
+// global stop-signal likewise makes that signal reserved — a user cannot
+// configure `stop-signal: SIGUSR1` AND `signal-rewrite: {USR1: ...}` on a
+// service, because the dispatcher would consume USR1 for shutdown and
+// never reach the forward branch.
+func TestLoadSignalRewriteRejectsGlobalStopSignal(t *testing.T) {
+	t.Parallel()
+	cfgPath := filepath.Join(t.TempDir(), "sr.yml")
+	os.WriteFile(cfgPath, []byte(`
+stop-signal: SIGUSR1
+
+processes:
+  - name: app
+    command: /bin/app
+    signal-rewrite:
+      USR1: SIGHUP
+`), 0o644)
+	if _, err := Load(cfgPath); err == nil {
+		t.Error("expected error when signal-rewrite key matches the global stop-signal")
+	}
+}
+
+func TestLoadSignalRewriteInvalid(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sr.yml")
+	os.WriteFile(cfgPath, []byte(`
+processes:
+  - name: app
+    command: /bin/app
+    signal-rewrite:
+      SIGBOGUS: SIGHUP
+`), 0o644)
+	if _, err := Load(cfgPath); err == nil {
+		t.Error("expected error for invalid signal-rewrite source")
+	}
+}
+
 func TestLoadNoProcesses(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

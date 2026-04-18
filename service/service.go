@@ -113,10 +113,23 @@ type Process struct {
 	// via prctl(PR_SET_PDEATHSIG) after fork, before exec. Empty = unset.
 	// Linux-only: silently ignored on non-Linux builds.
 	ParentDeathSignal string
-	Args              []string
-	After             []string
-	Before            []string
-	Requires          []string
+	// ExitCodeMap remaps observed child exit codes before they feed into
+	// OnSuccess/OnFailure dispatch and before they become gopherd's own
+	// exit code. Typical use: neutralise SIGTERM→143 and SIGKILL→137 so a
+	// cleanly-stopped service is not reported as a failure. A nil or empty
+	// map means "pass the code through unchanged".
+	ExitCodeMap map[int]int
+	// SignalRewrite opts this service into signal forwarding and optionally
+	// rewrites the signal on the way to the child. Keys and values are
+	// signal names ("SIGUSR1", "USR1", "HUP", ...). When nil/empty, gopherd
+	// does NOT forward arbitrary received signals to the child; forwarding
+	// is strictly opt-in. Does not affect the shutdown/reload signal paths
+	// — gopherd's own reactions to SIGTERM/SIGINT/SIGHUP still run.
+	SignalRewrite map[string]string
+	Args          []string
+	After         []string
+	Before        []string
+	Requires      []string
 	// RemoveEnv lists env keys to delete from the child's final environment
 	// after merging OS env (if pass-env is true), dotenv, and per-process
 	// environment. Used to drop shared dotenv keys that one service must
@@ -903,6 +916,53 @@ func (s *Service) WaitSDNotifyReady(ctx context.Context) error {
 // from unexpected exits for the purpose of exit code propagation.
 func (s *Service) WasStopped() bool {
 	return s.stopped.Load()
+}
+
+// RemapExitCode applies the service's exit-code-map to the observed code.
+// When the map is empty or has no entry for code, the original value is
+// returned unchanged. Used by the reap loop before OnSuccess/OnFailure
+// dispatch and before the code is propagated as gopherd's own exit.
+func (s *Service) RemapExitCode(code int) int {
+	if len(s.Proc.ExitCodeMap) == 0 {
+		return code
+	}
+	if mapped, ok := s.Proc.ExitCodeMap[code]; ok {
+		return mapped
+	}
+	return code
+}
+
+// RewriteSignal looks up sig in the service's signal-rewrite map and
+// returns (rewritten, true) if an entry exists, or (0, false) when the
+// service did not opt in to forwarding for this signal. Unrecognised
+// target names fall back to the original signal rather than failing
+// silently; names are pre-validated at config load so this is defensive.
+func (s *Service) RewriteSignal(sig syscall.Signal) (syscall.Signal, bool) {
+	if len(s.Proc.SignalRewrite) == 0 {
+		return 0, false
+	}
+	from := SignalName(sig)
+	to, ok := s.Proc.SignalRewrite[from]
+	if !ok {
+		return 0, false
+	}
+	parsed, err := ParseSignal(to)
+	if err != nil {
+		log.Printf("%s: signal-rewrite target %q invalid, using %s: %v", s.Name, to, from, err)
+		return sig, true
+	}
+	return parsed, true
+}
+
+// SignalName returns the canonical "SIGFOO" name for a syscall.Signal,
+// or its numeric form when no name is known. Used by RewriteSignal for
+// map lookup and by the yml package to canonicalise signal-rewrite keys.
+// Mirrors how ParseSignal accepts both "SIGUSR1" and "USR1".
+func SignalName(sig syscall.Signal) string {
+	if name, ok := sigNames[sig]; ok {
+		return name
+	}
+	return fmt.Sprintf("%d", int(sig))
 }
 
 // IsRunning returns whether the service is currently running.

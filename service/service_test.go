@@ -904,6 +904,72 @@ func TestSDNotifyListenerReplacedOnRestart(t *testing.T) {
 	}
 }
 
+func TestRemapExitCode(t *testing.T) {
+	t.Parallel()
+	svc := mustNew(t, Process{
+		Command:     "true",
+		ExitCodeMap: map[int]int{143: 0, 137: 0, 42: 7},
+	}, "")
+	tests := []struct {
+		in   int
+		want int
+	}{
+		{143, 0}, {137, 0}, {42, 7}, {0, 0}, {1, 1}, {99, 99},
+	}
+	for _, tc := range tests {
+		if got := svc.RemapExitCode(tc.in); got != tc.want {
+			t.Errorf("RemapExitCode(%d) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestRemapExitCodeEmptyMap(t *testing.T) {
+	t.Parallel()
+	svc := mustNew(t, Process{Command: "true"}, "")
+	// Empty map must pass through unchanged.
+	for _, code := range []int{0, 1, 42, 143, 255} {
+		if got := svc.RemapExitCode(code); got != code {
+			t.Errorf("RemapExitCode(%d) on empty map = %d, want unchanged", code, got)
+		}
+	}
+}
+
+func TestRewriteSignalOptsIn(t *testing.T) {
+	t.Parallel()
+	svc := mustNew(t, Process{
+		Command:       "true",
+		SignalRewrite: map[string]string{"SIGUSR1": "SIGHUP", "SIGTERM": "SIGQUIT"},
+	}, "")
+	got, ok := svc.RewriteSignal(syscall.SIGUSR1)
+	if !ok || got != syscall.SIGHUP {
+		t.Errorf("RewriteSignal(USR1) = (%v, %v), want (SIGHUP, true)", got, ok)
+	}
+	got, ok = svc.RewriteSignal(syscall.SIGTERM)
+	if !ok || got != syscall.SIGQUIT {
+		t.Errorf("RewriteSignal(TERM) = (%v, %v), want (SIGQUIT, true)", got, ok)
+	}
+}
+
+func TestRewriteSignalNoEntryMeansNoForward(t *testing.T) {
+	t.Parallel()
+	// The default "no signal-rewrite" behaviour must mean "do not forward".
+	// A regression here would re-enable the pre-3d blast-every-signal-to-
+	// every-service behaviour.
+	svc := mustNew(t, Process{Command: "true"}, "")
+	if _, ok := svc.RewriteSignal(syscall.SIGUSR1); ok {
+		t.Error("empty signal-rewrite should not forward any signal")
+	}
+
+	// A map that does not list the received signal must likewise not forward.
+	svc2 := mustNew(t, Process{
+		Command:       "true",
+		SignalRewrite: map[string]string{"SIGUSR1": "SIGUSR1"},
+	}, "")
+	if _, ok := svc2.RewriteSignal(syscall.SIGUSR2); ok {
+		t.Error("signal-rewrite without SIGUSR2 entry should not forward SIGUSR2")
+	}
+}
+
 // TestExpandCPUTemplates verifies that the {{cpu}} regex matches bare
 // {{cpu}} and {{cpu EXPR}} but leaves identifiers like "cpus" or "cpu_x"
 // as literal text (so a user typo does not produce a confusing

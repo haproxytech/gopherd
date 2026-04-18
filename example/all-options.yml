@@ -71,6 +71,16 @@ processes:
     # sd-notify: true                    # systemd sd_notify: dependents wait for READY=1 on $NOTIFY_SOCKET
     # sd-notify-timeout: 30s             # max wait for READY=1 after spawn (default: 60s)
     # parent-death-signal: SIGTERM       # kernel delivers this signal to the child when gopherd dies (Linux)
+    # exit-code-map:                     # remap observed exit codes before on-success/on-failure + propagation
+    #   SIGTERM: 0                       #   SIGTERM-induced exit (shell code 143) → success
+    #   SIGKILL: 0                       #   SIGKILL-induced exit (shell code 137) → success
+    #   42: 0                            #   integer exit codes also accepted
+    # signal-rewrite:                    # opt in to signal forwarding; keys/values are signal names
+    #   USR1: HUP                        #   forward a received SIGUSR1 as SIGHUP to this service
+    #   USR2: USR2                       #   forward a received SIGUSR2 as-is
+    # Keys may not be SIGTERM/SIGINT/SIGHUP or the global stop-signal —
+    # those are consumed by gopherd for shutdown/reload and never reach
+    # this forwarding branch. Invalid configs are rejected at load.
     # prefix: "service"                  # per-process prefix override (see global prefix)
     # pass-env: true                     # opt in to inheriting gopherd's OS env (default: false)
     # remove-env:                        # strip these keys from the final child env

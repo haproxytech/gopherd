@@ -660,6 +660,11 @@ func (d *daemon) reload() (string, error) {
 			oldSvc.OnFailure = newSvc.OnFailure
 			oldSvc.OnCheckFailure = newSvc.OnCheckFailure
 			oldSvc.Requires = newSvc.Requires
+			// exit-code-map and signal-rewrite live on Proc and are read by
+			// the reap loop / signal-forward branch. Copy them so a reload
+			// that only tunes these maps takes effect without a restart.
+			oldSvc.Proc.ExitCodeMap = newSvc.Proc.ExitCodeMap
+			oldSvc.Proc.SignalRewrite = newSvc.Proc.SignalRewrite
 			d.services[name] = oldSvc
 		} else if oldSvc.IsRunning() {
 			// Config changed — stop old instance. Set exit actions to ignore
@@ -967,6 +972,11 @@ func processConfigChanged(oldp, newp service.Process) bool {
 	if oldp.ParentDeathSignal != newp.ParentDeathSignal {
 		return true
 	}
+	// Exit-code-map and signal-rewrite are consulted at runtime against the
+	// live Process, so a change does NOT require a restart — updating the
+	// struct in-place is enough. These checks exist to surface the fact
+	// that the reload handler updates those fields on the preserved
+	// service wrapper.
 	return false
 }
 

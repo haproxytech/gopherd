@@ -123,6 +123,8 @@ processes:
     args: ["-c", "trap 'echo GOT_USR1 > /test/signal.log' USR1; while true; do sleep 0.1; done"]
     on-success: ignore
     on-failure: ignore
+    signal-rewrite:
+      USR1: USR1
 
   - name: keeper
     command: /bin/sh
@@ -158,6 +160,8 @@ processes:
     args: ["-c", "trap 'echo GOT_USR2 > /test/signal.log' USR2; while true; do sleep 0.1; done"]
     on-success: ignore
     on-failure: ignore
+    signal-rewrite:
+      USR2: USR2
 
   - name: keeper
     command: /bin/sh

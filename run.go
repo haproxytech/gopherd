@@ -272,9 +272,18 @@ func run(entrypointArgs []string) int {
 					log.Printf("%s", msg)
 				}
 			default:
+				// Signal forwarding is opt-in per service via the
+				// signal-rewrite map. Services that do not list the
+				// received signal are not forwarded to — this is the
+				// documented behaviour change from the pre-3d model
+				// that blasted every caught signal to every service.
 				d.mu.Lock()
 				for _, svc := range d.services {
-					svc.Signal(sig)
+					rewritten, ok := svc.RewriteSignal(sysSig)
+					if !ok {
+						continue
+					}
+					svc.Signal(rewritten)
 				}
 				d.mu.Unlock()
 			}
@@ -344,7 +353,15 @@ func run(entrypointArgs []string) int {
 			// callers see a stale-pid guard trip and do not issue
 			// syscall.Kill against a pid the kernel has just freed.
 			runDuration := svc.MarkExited()
-			log.Printf("%s exited (status %d)", svc.Name, code)
+			// Apply the user-configured exit-code-map BEFORE the WasStopped
+			// fallback so an explicit mapping (e.g. 143 -> 42) wins over the
+			// implicit "intentional-stop-becomes-0" heuristic.
+			if mapped := svc.RemapExitCode(code); mapped != code {
+				log.Printf("%s exited (status %d, remapped to %d)", svc.Name, code, mapped)
+				code = mapped
+			} else {
+				log.Printf("%s exited (status %d)", svc.Name, code)
+			}
 			// Compute effective code before recording metrics: intentional stops
 			// (WasStopped) should record exit code 0, not a crash/failure code.
 			effectiveCode := code

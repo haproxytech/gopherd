@@ -199,9 +199,44 @@ func Unmarshal(data []byte) (*Config, error) {
 				return nil, fmt.Errorf("process %q on-check-failure[%s]: %w", name, checkName, err)
 			}
 		}
+		// signal-rewrite keys must not overlap with signals gopherd itself
+		// consumes (SIGTERM/SIGINT = shutdown, SIGHUP = reload, plus the
+		// configured global stop-signal): such entries would be silently
+		// dead code because the switch in run.go dispatches those signals
+		// before ever reaching the forward branch. Fail loudly at load.
+		if err := validateSignalRewrite(name, p.SignalRewrite, cfg.StopSignal); err != nil {
+			return nil, err
+		}
 	}
 
 	return cfg, nil
+}
+
+// validateSignalRewrite rejects signal-rewrite keys that collide with
+// signals gopherd always handles itself (SIGTERM/SIGINT/SIGHUP) or with
+// the configured global stop-signal. Keys and values have already been
+// canonicalised to "SIGFOO" form by parseProcess, so this comparison is a
+// direct string match after canonicalising the reserved set.
+func validateSignalRewrite(procName string, rewrite map[string]string, globalStop string) error {
+	if len(rewrite) == 0 {
+		return nil
+	}
+	reserved := map[string]string{
+		"SIGTERM": "triggers gopherd shutdown",
+		"SIGINT":  "triggers gopherd shutdown",
+		"SIGHUP":  "triggers gopherd reload",
+	}
+	if globalStop != "" {
+		// globalStop has already been validated; ParseSignal cannot fail.
+		sig, _ := service.ParseSignal(globalStop)
+		reserved[service.SignalName(sig)] = "matches the global stop-signal"
+	}
+	for key := range rewrite {
+		if why, clash := reserved[key]; clash {
+			return fmt.Errorf("process %q: signal-rewrite key %s is reserved (%s); choose a different signal", procName, key, why)
+		}
+	}
+	return nil
 }
 
 func parseProcess(n *Node, env map[string]string) (service.Process, error) {
@@ -265,6 +300,63 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		SDNotify:          n.Get("sd-notify").Bool(),
 		SDNotifyTimeout:   n.Get("sd-notify-timeout").String(),
 		ParentDeathSignal: n.Get("parent-death-signal").String(),
+		SignalRewrite:     n.Get("signal-rewrite").StringMap(),
+	}
+	// exit-code-map: YAML keys parse as strings; convert to int-keyed map.
+	// Accept either a raw integer (e.g. "143") or a signal name (e.g.
+	// "SIGTERM" / "TERM") on both sides; signal names translate to the
+	// shell convention 128+signum, which is the same code waitStatusCode
+	// reports for signal-terminated children. Mixed forms are fine:
+	//   exit-code-map:
+	//     SIGTERM: 0
+	//     137: 0
+	if raw := n.Get("exit-code-map").StringMap(); len(raw) > 0 {
+		p.ExitCodeMap = make(map[int]int, len(raw))
+		for k, v := range raw {
+			keyInt, err := parseExitCode(k)
+			if err != nil {
+				name := p.Name
+				if name == "" {
+					name = p.Command
+				}
+				return p, fmt.Errorf("process %q: exit-code-map key %q: %w", name, k, err)
+			}
+			valInt, err := parseExitCode(v)
+			if err != nil {
+				name := p.Name
+				if name == "" {
+					name = p.Command
+				}
+				return p, fmt.Errorf("process %q: exit-code-map[%s] = %q: %w", name, k, v, err)
+			}
+			p.ExitCodeMap[keyInt] = valInt
+		}
+	}
+	// signal-rewrite: validate both key and value as known signal names at
+	// load time. Canonicalise to "SIGFOO" form so the runtime lookup does
+	// not have to re-parse on every event.
+	if len(p.SignalRewrite) > 0 {
+		canon := make(map[string]string, len(p.SignalRewrite))
+		for k, v := range p.SignalRewrite {
+			fromSig, err := service.ParseSignal(k)
+			if err != nil {
+				name := p.Name
+				if name == "" {
+					name = p.Command
+				}
+				return p, fmt.Errorf("process %q: signal-rewrite source %q: %w", name, k, err)
+			}
+			toSig, err := service.ParseSignal(v)
+			if err != nil {
+				name := p.Name
+				if name == "" {
+					name = p.Command
+				}
+				return p, fmt.Errorf("process %q: signal-rewrite target %q: %w", name, v, err)
+			}
+			canon[service.SignalName(fromSig)] = service.SignalName(toSig)
+		}
+		p.SignalRewrite = canon
 	}
 	// Validate parent-death-signal at parse time so a typo surfaces before spawn.
 	if p.ParentDeathSignal != "" {
@@ -300,6 +392,25 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 	}
 	p.Prefix = n.Get("prefix").String()
 	return p, nil
+}
+
+// parseExitCode accepts either a decimal integer exit code ("143") or a
+// signal name ("SIGTERM", "TERM") and returns the numeric exit status. The
+// shell convention is 128+signum, matching what waitStatusCode reports for
+// signal-terminated children, so `SIGTERM` and `143` are interchangeable.
+func parseExitCode(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty exit code")
+	}
+	if v, err := strconv.Atoi(s); err == nil {
+		return v, nil
+	}
+	sig, err := service.ParseSignal(s)
+	if err != nil {
+		return 0, fmt.Errorf("not an integer and not a known signal name: %w", err)
+	}
+	return 128 + int(sig), nil
 }
 
 func parseCheck(n *Node) (check.Config, error) {

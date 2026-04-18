@@ -477,6 +477,8 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `sd-notify` | bool | `false` | Enable systemd-compatible sd_notify readiness: gopherd sets `$NOTIFY_SOCKET` in the child env; dependents wait until the child writes `READY=1` to that socket |
 | `sd-notify-timeout` | duration | `"60s"` | Max wait for `READY=1` after spawn when `sd-notify: true` |
 | `parent-death-signal` | string | | Signal name (e.g. `SIGTERM`, `SIGKILL`) delivered by the kernel to this child when its parent thread dies (`prctl(PR_SET_PDEATHSIG)`). Ensures children do not linger if gopherd is killed abruptly. Linux only. |
+| `exit-code-map` | map | `{}` | Remap observed child exit codes before `on-success`/`on-failure` dispatch and before propagation as gopherd's own exit code. Keys and values accept either an integer exit code or a signal name (shell convention: `SIGTERM` = 128+15 = 143, `SIGKILL` = 137, etc.), so `{SIGTERM: 0, SIGKILL: 0}` is the idiomatic "treat signal-induced exits as success in CI". |
+| `signal-rewrite` | map[string]string | `{}` | Opt this service into signal forwarding. Keys and values are signal names (`SIGUSR1`, `USR1`, …). When unset/empty, gopherd does **not** forward arbitrary received signals to the child; forwarding is strictly opt-in. Keys may not overlap with `SIGTERM`/`SIGINT`/`SIGHUP` or the global `stop-signal` — those are consumed by gopherd's own shutdown/reload handlers before the forward branch runs, and overlapping entries are rejected at config load. |
 | `prefix` | string | `"service timestamp"` | Log prefix format: `"service timestamp"`, `"timestamp service"`, `"timestamp"`, `"service"`, `"none"` |
 
 #### Exit actions
@@ -521,7 +523,7 @@ Core design:
 - Zero external dependencies — built-in YAML parser, no protobuf/prometheus
 - Single `Wait4(-1)` reap loop handles both managed children and orphaned zombies (no separate reaper goroutine — avoids race with `cmd.Wait()`)
 - Graceful shutdown ordering is configurable: `reverse-dep` (dependents first, default), `dep` (dependencies first), or `simultaneous` (all at once)
-- Forwards SIGTERM, SIGINT to all children using per-service stop signals; other signals forwarded as-is
+- Forwards SIGTERM/SIGINT to all children using per-service stop signals; SIGHUP triggers reload. Other received signals (SIGUSR1/SIGUSR2/etc.) are forwarded to a service **only if** that service declares a `signal-rewrite` entry for them (opt-in)
 - Each child gets its own process group (`Setpgid`)
 - Services start in topological order based on dependency graph
 - Restart requests are handled asynchronously via a channel with backoff delays
