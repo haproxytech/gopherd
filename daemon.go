@@ -107,29 +107,6 @@ func readConfigFile(path string) ([]byte, error) {
 	return data, nil
 }
 
-// resolveStopSignal determines the signal that triggers graceful shutdown.
-// Priority: GOPHERD_STOP_SIGNAL env > config stop-signal > SIGTERM default.
-// This allows matching Docker's STOPSIGNAL directive.
-func resolveStopSignal(cfgSignal string) syscall.Signal {
-	name := cfgSignal
-	if v := os.Getenv("GOPHERD_STOP_SIGNAL"); v != "" {
-		name = v
-	}
-	if name == "" {
-		return syscall.SIGTERM
-	}
-	sig, err := service.ParseSignal(name)
-	if err != nil {
-		log.Printf("warning: invalid stop-signal %q, using SIGTERM", name)
-		return syscall.SIGTERM
-	}
-	if sig == syscall.SIGKILL || sig == syscall.SIGSTOP {
-		log.Printf("warning: stop-signal %q cannot be caught; using SIGTERM", name)
-		return syscall.SIGTERM
-	}
-	return sig
-}
-
 // errShuttingDown is returned by startService when the daemon has already
 // started its shutdown sequence. Callers must not treat this as a fatal error.
 var errShuttingDown = fmt.Errorf("daemon is shutting down")

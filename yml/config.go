@@ -19,6 +19,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/haproxytech/gopherd/check"
@@ -61,15 +62,40 @@ type Config struct {
 	PassEnv *bool
 
 	ShutdownOrder string
-	StopSignal    string // signal that triggers graceful shutdown (default: SIGTERM)
-	Control       control.Config
-	Processes     []service.Process
-	NoLogo        bool
+	// InitStopSignal lists the signals that cause gopherd itself to begin
+	// a graceful shutdown. When unset, defaults to [SIGTERM, SIGINT].
+	// SIGKILL/SIGSTOP are rejected at load (cannot be caught).
+	InitStopSignal []string
+	Control        control.Config
+	Processes      []service.Process
+	NoLogo         bool
 	// Subreaper enables PR_SET_CHILD_SUBREAPER at startup so orphaned
 	// descendants are re-parented to gopherd (and reaped by its Wait4 loop)
 	// instead of the real PID 1. Useful when gopherd itself is not PID 1
 	// (e.g. inside docker exec, k8s sidecars, nested init).
 	Subreaper bool
+}
+
+// ShutdownSignals returns the set of signals that, when received by
+// gopherd, trigger a graceful shutdown. Uses `init-stop-signal` when
+// set; defaults to {SIGTERM, SIGINT} otherwise.
+//
+// Signal names are already validated at parse time, so parse failures
+// here would indicate an internal bug; they are skipped rather than
+// returned as an error so PID 1 never crashes on a malformed set.
+func (c *Config) ShutdownSignals() map[syscall.Signal]bool {
+	out := make(map[syscall.Signal]bool)
+	if len(c.InitStopSignal) == 0 {
+		out[syscall.SIGTERM] = true
+		out[syscall.SIGINT] = true
+		return out
+	}
+	for _, name := range c.InitStopSignal {
+		if sig, err := service.ParseSignal(name); err == nil {
+			out[sig] = true
+		}
+	}
+	return out
 }
 
 // Load reads and parses a YAML config file.
@@ -105,12 +131,18 @@ func Unmarshal(data []byte) (*Config, error) {
 	if n := root.Get("pass-env"); n != nil {
 		cfg.PassEnv = n.BoolPtr()
 	}
-	if n := root.Get("stop-signal"); n != nil {
-		cfg.StopSignal = n.String()
-		// Surface unknown signal names at config load rather than at shutdown.
-		if cfg.StopSignal != "" {
-			if _, err := service.ParseSignal(cfg.StopSignal); err != nil {
-				return nil, fmt.Errorf("invalid stop-signal %q: %w", cfg.StopSignal, err)
+	if n := root.Get("init-stop-signal"); n != nil {
+		cfg.InitStopSignal = n.Strings()
+		// Validate each entry and reject non-catchable signals (SIGKILL /
+		// SIGSTOP), which the kernel never delivers to a userspace handler
+		// — putting them in the list would be dead config.
+		for _, name := range cfg.InitStopSignal {
+			sig, err := service.ParseSignal(name)
+			if err != nil {
+				return nil, fmt.Errorf("invalid init-stop-signal %q: %w", name, err)
+			}
+			if sig == syscall.SIGKILL || sig == syscall.SIGSTOP {
+				return nil, fmt.Errorf("invalid init-stop-signal %q: %s cannot be caught by a userspace handler", name, service.SignalName(sig))
 			}
 		}
 	}
@@ -200,11 +232,13 @@ func Unmarshal(data []byte) (*Config, error) {
 			}
 		}
 		// signal-rewrite keys must not overlap with signals gopherd itself
-		// consumes (SIGTERM/SIGINT = shutdown, SIGHUP = reload, plus the
-		// configured global stop-signal): such entries would be silently
-		// dead code because the switch in run.go dispatches those signals
-		// before ever reaching the forward branch. Fail loudly at load.
-		if err := validateSignalRewrite(name, p.SignalRewrite, cfg.StopSignal); err != nil {
+		// consumes (SIGHUP = reload, plus every entry in the effective
+		// shutdown set — the init-stop-signal list or the legacy
+		// {SIGTERM, SIGINT, stop-signal} default): such entries would be
+		// silently dead code because the switch in run.go dispatches
+		// those signals before ever reaching the forward branch. Fail
+		// loudly at load.
+		if err := validateSignalRewrite(name, p.SignalRewrite, cfg.ShutdownSignals()); err != nil {
 			return nil, err
 		}
 	}
@@ -213,23 +247,20 @@ func Unmarshal(data []byte) (*Config, error) {
 }
 
 // validateSignalRewrite rejects signal-rewrite keys that collide with
-// signals gopherd always handles itself (SIGTERM/SIGINT/SIGHUP) or with
-// the configured global stop-signal. Keys and values have already been
-// canonicalised to "SIGFOO" form by parseProcess, so this comparison is a
-// direct string match after canonicalising the reserved set.
-func validateSignalRewrite(procName string, rewrite map[string]string, globalStop string) error {
+// signals gopherd always handles itself (SIGHUP = reload) or with any
+// signal in the effective shutdown set (init-stop-signal, or the legacy
+// {SIGTERM, SIGINT, stop-signal} default). Such entries would be dead
+// code because the switch in run.go dispatches those signals before ever
+// reaching the forward branch.
+func validateSignalRewrite(procName string, rewrite map[string]string, shutdownSet map[syscall.Signal]bool) error {
 	if len(rewrite) == 0 {
 		return nil
 	}
 	reserved := map[string]string{
-		"SIGTERM": "triggers gopherd shutdown",
-		"SIGINT":  "triggers gopherd shutdown",
-		"SIGHUP":  "triggers gopherd reload",
+		"SIGHUP": "triggers gopherd reload",
 	}
-	if globalStop != "" {
-		// globalStop has already been validated; ParseSignal cannot fail.
-		sig, _ := service.ParseSignal(globalStop)
-		reserved[service.SignalName(sig)] = "matches the global stop-signal"
+	for sig := range shutdownSet {
+		reserved[service.SignalName(sig)] = "triggers gopherd shutdown"
 	}
 	for key := range rewrite {
 		if why, clash := reserved[key]; clash {

@@ -282,7 +282,7 @@ ENTRYPOINT ["/sbin/gopherd"]
 # Debug:  docker run <image> /bin/sh  → passthrough to shell
 ```
 
-If your Dockerfile uses a custom `STOPSIGNAL`, configure gopherd to match so it shuts down gracefully:
+If your Dockerfile uses a custom `STOPSIGNAL`, add it to `init-stop-signal` so gopherd shuts down gracefully when the runtime sends it:
 
 ```dockerfile
 STOPSIGNAL SIGQUIT
@@ -290,13 +290,7 @@ STOPSIGNAL SIGQUIT
 
 ```yaml
 # gopherd.yml
-stop-signal: SIGQUIT
-```
-
-Or override at runtime via environment variable (no config change needed):
-
-```bash
-docker run -e GOPHERD_STOP_SIGNAL=SIGQUIT myimage
+init-stop-signal: [SIGTERM, SIGINT, SIGQUIT]
 ```
 
 ### Configuration
@@ -439,7 +433,7 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `pass-env` | bool | `false` | Global default: forward gopherd's OS environment to children (false = empty env, children see only dotenv + per-process `environment`) |
 | `no-logo` | bool | `false` | Suppress ASCII art banner at startup |
 | `shutdown-order` | string | `"reverse-dep"` | Shutdown strategy: `reverse-dep`, `dep`, or `simultaneous` |
-| `stop-signal` | string | `"SIGTERM"` | Signal that triggers graceful shutdown (override with `GOPHERD_STOP_SIGNAL` env). Set this to match Docker's `STOPSIGNAL` if it differs from SIGTERM. |
+| `init-stop-signal` | string[] | `[SIGTERM, SIGINT]` | Signals that trigger gopherd's own graceful shutdown. `SIGKILL` and `SIGSTOP` are rejected at load (cannot be caught). |
 | `subreaper` | bool | `false` | Set `PR_SET_CHILD_SUBREAPER` so orphaned descendants re-parent to gopherd (and get reaped by its `Wait4` loop) instead of the real PID 1. Useful when gopherd is not PID 1 (k8s sidecar, `docker exec`, nested init). Linux only; warns and no-ops elsewhere. |
 
 #### Process fields

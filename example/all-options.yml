@@ -21,6 +21,11 @@
 #   simultaneous:  all services stop concurrently (fastest)
 # shutdown-order: reverse-dep
 
+# Signals that trigger gopherd's own graceful shutdown. When unset,
+# defaults to [SIGTERM, SIGINT]. SIGKILL and SIGSTOP are rejected at
+# load — they cannot be caught by a userspace handler.
+# init-stop-signal: [SIGTERM, SIGINT]
+
 # Subreaper mode: re-parent orphaned descendants to gopherd so its reap
 # loop collects them. Only needed when gopherd is NOT PID 1 (e.g. inside
 # docker exec, a k8s sidecar, or nested init). Linux-only.
@@ -78,9 +83,9 @@ processes:
     # signal-rewrite:                    # opt in to signal forwarding; keys/values are signal names
     #   USR1: HUP                        #   forward a received SIGUSR1 as SIGHUP to this service
     #   USR2: USR2                       #   forward a received SIGUSR2 as-is
-    # Keys may not be SIGTERM/SIGINT/SIGHUP or the global stop-signal —
-    # those are consumed by gopherd for shutdown/reload and never reach
-    # this forwarding branch. Invalid configs are rejected at load.
+    # Keys may not be SIGHUP or any signal in init-stop-signal — those
+    # are consumed by gopherd for reload/shutdown and never reach this
+    # forwarding branch. Invalid configs are rejected at load.
     # prefix: "service"                  # per-process prefix override (see global prefix)
     # pass-env: true                     # opt in to inheriting gopherd's OS env (default: false)
     # remove-env:                        # strip these keys from the final child env

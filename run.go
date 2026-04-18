@@ -20,6 +20,8 @@ import (
 	"log"
 	"os"
 	goSignal "os/signal"
+	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -238,22 +240,36 @@ func run(entrypointArgs []string) int {
 		log.Printf("control socket: %s", ctrlServer.SocketPath)
 	}
 
-	// Determine which signal triggers graceful shutdown.
-	// Default: SIGTERM. Override via config stop-signal or GOPHERD_STOP_SIGNAL env.
-	// This allows matching Docker's STOPSIGNAL directive so gopherd shuts down
-	// gracefully regardless of which signal the container runtime sends.
-	stopSignal := resolveStopSignal(cfg.StopSignal)
-	if stopSignal != syscall.SIGTERM {
-		log.Printf("stop-signal: %s", stopSignal)
+	// Signals that trigger gopherd's graceful shutdown. Driven entirely
+	// by `init-stop-signal` in config (defaults to {SIGTERM, SIGINT}).
+	shutdownSet := cfg.ShutdownSignals()
+	shutdownSigs := make([]syscall.Signal, 0, len(shutdownSet))
+	for sig := range shutdownSet {
+		shutdownSigs = append(shutdownSigs, sig)
+	}
+	if len(cfg.InitStopSignal) > 0 {
+		log.Printf("init-stop-signal: %s", formatSignalSet(shutdownSigs))
 	}
 
 	// Forward signals to all children. SIGHUP triggers reload.
 	sigs := make(chan os.Signal, 16)
-	goSignal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGUSR1, syscall.SIGUSR2)
-	if stopSignal != syscall.SIGTERM && stopSignal != syscall.SIGINT &&
-		stopSignal != syscall.SIGHUP && stopSignal != syscall.SIGUSR1 && stopSignal != syscall.SIGUSR2 {
-		goSignal.Notify(sigs, stopSignal)
+	// Subscribe to the shutdown set plus the signals that always have a
+	// special meaning inside gopherd (SIGHUP for reload) and those a
+	// service may opt into forwarding (SIGUSR1, SIGUSR2).
+	subscribed := make(map[syscall.Signal]bool)
+	notify := func(sig syscall.Signal) {
+		if subscribed[sig] {
+			return
+		}
+		subscribed[sig] = true
+		goSignal.Notify(sigs, sig)
 	}
+	for _, sig := range shutdownSigs {
+		notify(sig)
+	}
+	notify(syscall.SIGHUP)
+	notify(syscall.SIGUSR1)
+	notify(syscall.SIGUSR2)
 	go func() {
 		for sig := range sigs {
 			sysSig, ok := sig.(syscall.Signal)
@@ -261,7 +277,7 @@ func run(entrypointArgs []string) int {
 				continue
 			}
 			switch {
-			case sysSig == stopSignal || sysSig == syscall.SIGTERM || sysSig == syscall.SIGINT:
+			case shutdownSet[sysSig]:
 				// initiateShutdown is idempotent (CAS) and acquires d.mu itself.
 				d.initiateShutdown(0)
 			case sysSig == syscall.SIGHUP:
@@ -537,6 +553,23 @@ func waitOneshot(pid int, timeoutStr string) (int, error) {
 		go func() { <-ch }()
 		return 0, fmt.Errorf("timed out after %s", timeout)
 	}
+}
+
+// formatSignalSet renders a list of signals as a deterministic string
+// ("SIGINT, SIGTERM") for log output. Sorted by numeric value so the
+// output does not flap across runs.
+func formatSignalSet(sigs []syscall.Signal) string {
+	if len(sigs) == 0 {
+		return "(none)"
+	}
+	sorted := make([]syscall.Signal, len(sigs))
+	copy(sorted, sigs)
+	slices.Sort(sorted)
+	names := make([]string, len(sorted))
+	for i, sig := range sorted {
+		names[i] = service.SignalName(sig)
+	}
+	return strings.Join(names, ", ")
 }
 
 func waitStatusCode(ws syscall.WaitStatus) int {

@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -403,28 +404,6 @@ processes:
 	}
 }
 
-// TestLoadSignalRewriteRejectsGlobalStopSignal verifies that changing the
-// global stop-signal likewise makes that signal reserved — a user cannot
-// configure `stop-signal: SIGUSR1` AND `signal-rewrite: {USR1: ...}` on a
-// service, because the dispatcher would consume USR1 for shutdown and
-// never reach the forward branch.
-func TestLoadSignalRewriteRejectsGlobalStopSignal(t *testing.T) {
-	t.Parallel()
-	cfgPath := filepath.Join(t.TempDir(), "sr.yml")
-	os.WriteFile(cfgPath, []byte(`
-stop-signal: SIGUSR1
-
-processes:
-  - name: app
-    command: /bin/app
-    signal-rewrite:
-      USR1: SIGHUP
-`), 0o644)
-	if _, err := Load(cfgPath); err == nil {
-		t.Error("expected error when signal-rewrite key matches the global stop-signal")
-	}
-}
-
 func TestLoadSignalRewriteInvalid(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -438,6 +417,100 @@ processes:
 `), 0o644)
 	if _, err := Load(cfgPath); err == nil {
 		t.Error("expected error for invalid signal-rewrite source")
+	}
+}
+
+func TestLoadInitStopSignal(t *testing.T) {
+	t.Parallel()
+	cfgPath := filepath.Join(t.TempDir(), "isl.yml")
+	os.WriteFile(cfgPath, []byte(`
+init-stop-signal: [SIGTERM, SIGINT, SIGUSR1]
+
+processes:
+  - name: app
+    command: /bin/app
+`), 0o644)
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	set := cfg.ShutdownSignals()
+	for _, want := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1} {
+		if !set[want] {
+			t.Errorf("ShutdownSignals missing %v; got %v", want, set)
+		}
+	}
+}
+
+// TestLoadInitStopSignalDefaults covers the no-config path: when the user
+// does not supply init-stop-signal, the effective set is {SIGTERM, SIGINT}.
+func TestLoadInitStopSignalDefaults(t *testing.T) {
+	t.Parallel()
+	cfgPath := filepath.Join(t.TempDir(), "min.yml")
+	os.WriteFile(cfgPath, []byte(`
+processes:
+  - name: app
+    command: /bin/app
+`), 0o644)
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	set := cfg.ShutdownSignals()
+	if !set[syscall.SIGTERM] || !set[syscall.SIGINT] || len(set) != 2 {
+		t.Errorf("default ShutdownSignals should be {SIGTERM, SIGINT}, got %v", set)
+	}
+}
+
+func TestLoadInitStopSignalRejectsUncatchable(t *testing.T) {
+	t.Parallel()
+	cfgPath := filepath.Join(t.TempDir(), "kill.yml")
+	os.WriteFile(cfgPath, []byte(`
+init-stop-signal: [SIGKILL]
+
+processes:
+  - name: app
+    command: /bin/app
+`), 0o644)
+	if _, err := Load(cfgPath); err == nil {
+		t.Error("expected error for SIGKILL in init-stop-signal (cannot be caught)")
+	}
+}
+
+func TestLoadInitStopSignalRejectsInvalidName(t *testing.T) {
+	t.Parallel()
+	cfgPath := filepath.Join(t.TempDir(), "bad.yml")
+	os.WriteFile(cfgPath, []byte(`
+init-stop-signal: [SIGBOGUS]
+
+processes:
+  - name: app
+    command: /bin/app
+`), 0o644)
+	if _, err := Load(cfgPath); err == nil {
+		t.Error("expected error for unknown signal in init-stop-signal")
+	}
+}
+
+// TestLoadSignalRewriteRejectsInitStopSignal verifies the cross-field
+// validation: if a signal appears in init-stop-signal, signal-rewrite
+// entries for that same signal are dead code (the dispatcher consumes
+// the signal for shutdown before reaching the forward branch) and must
+// be rejected at load.
+func TestLoadSignalRewriteRejectsInitStopSignal(t *testing.T) {
+	t.Parallel()
+	cfgPath := filepath.Join(t.TempDir(), "clash.yml")
+	os.WriteFile(cfgPath, []byte(`
+init-stop-signal: [SIGTERM, SIGUSR1]
+
+processes:
+  - name: app
+    command: /bin/app
+    signal-rewrite:
+      USR1: SIGHUP
+`), 0o644)
+	if _, err := Load(cfgPath); err == nil {
+		t.Error("expected error when signal-rewrite key is in init-stop-signal")
 	}
 }
 

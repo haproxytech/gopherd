@@ -630,27 +630,6 @@ func TestWaitOneshotTimeout(t *testing.T) {
 	}
 }
 
-// TestResolveStopSignalRejectsSIGKILL covers O1: SIGKILL cannot be caught by
-// signal.Notify; configuring it as stop-signal silently has no effect.
-// resolveStopSignal must fall back to SIGTERM and log a warning.
-func TestResolveStopSignalRejectsSIGKILL(t *testing.T) {
-	t.Parallel()
-	sig := resolveStopSignal("SIGKILL")
-	if sig == syscall.SIGKILL {
-		t.Errorf("stop-signal SIGKILL should be rejected (uncatchable); got SIGKILL, want SIGTERM")
-	}
-}
-
-// TestResolveStopSignalRejectsSIGSTOP covers O1: SIGSTOP, like SIGKILL, cannot
-// be caught by signal.Notify; it must also be rejected in favour of SIGTERM.
-func TestResolveStopSignalRejectsSIGSTOP(t *testing.T) {
-	t.Parallel()
-	sig := resolveStopSignal("SIGSTOP")
-	if sig == syscall.SIGSTOP {
-		t.Errorf("stop-signal SIGSTOP should be rejected (uncatchable); got SIGSTOP, want SIGTERM")
-	}
-}
-
 // TestReloadRejectsMultipleEntrypointArgs verifies that reload() rejects a
 // config where more than one process has use-entrypoint-args: true, matching
 // the same check that run() performs at startup. Without this, a hot-reload
