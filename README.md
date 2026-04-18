@@ -389,7 +389,18 @@ log-targets:
     type: file
     location: /var/log/app.log
     services: [app]
+    max-size: 10MiB                  # rotate when the file grows past this
+    max-files: 5                     # keep N rotated files (default: 5)
+    compress: true                   # gzip rotated files (app.log.1.gz, ...)
 ```
+
+File-target rotation keys (all optional; omit `max-size` to disable rotation):
+
+| Field | Default | Description |
+|:------|:--------|:------------|
+| `max-size` | unset | Rotate when the current file would exceed this size. Units: `B`, `KB`, `KiB`, `MB`, `MiB`, `GB`, `GiB`. |
+| `max-files` | 5 (when `max-size` set) | Number of rotated files to retain. Older files are deleted on rotation. |
+| `compress` | false | gzip rotated files. Rotated names become `<path>.1.gz`, `<path>.2.gz`, … |
 
 ### Configuration Reference
 

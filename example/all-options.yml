@@ -159,3 +159,12 @@ log-targets:
     # services omitted = all services
     labels:
       purpose: audit
+
+  # Write app logs to a file with size-triggered rotation.
+  app-file:
+    type: file
+    location: /var/log/app.log
+    services: [app]
+    max-size: 10MiB                      # rotate when file would exceed this
+    max-files: 5                         # keep app.log.1 ... app.log.5
+    compress: true                       # gzip rotated files (.1.gz, .2.gz, ...)

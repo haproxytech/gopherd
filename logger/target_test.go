@@ -161,7 +161,7 @@ func TestOpenFileRejectsSymlinkedAncestor(t *testing.T) {
 	}
 
 	target := filepath.Join(link, "sub", "out.log")
-	w, err := openFile("file://" + target)
+	w, err := openFile("file://"+target, TargetConfig{Type: "file"})
 	if err == nil {
 		if c, ok := w.(io.Closer); ok {
 			_ = c.Close()
@@ -183,7 +183,7 @@ func TestOpenFileAcceptsRealAncestors(t *testing.T) {
 		t.Fatalf("mkdirall: %v", err)
 	}
 	target := filepath.Join(sub, "out.log")
-	w, err := openFile("file://" + target)
+	w, err := openFile("file://"+target, TargetConfig{Type: "file"})
 	if err != nil {
 		t.Fatalf("unexpected error on real-ancestor path: %v", err)
 	}

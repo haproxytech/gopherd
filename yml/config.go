@@ -314,10 +314,16 @@ func parseCheck(n *Node) (check.Config, error) {
 }
 
 func parseLogTarget(n *Node) logger.TargetConfig {
-	return logger.TargetConfig{
+	cfg := logger.TargetConfig{
 		Type:     n.Get("type").String(),
 		Location: n.Get("location").String(),
 		Services: n.Get("services").Strings(),
 		Labels:   n.Get("labels").StringMap(),
+		MaxSize:  n.Get("max-size").String(),
+		Compress: n.Get("compress").Bool(),
 	}
+	if v, ok := n.Get("max-files").Int(); ok {
+		cfg.MaxFiles = v
+	}
+	return cfg
 }

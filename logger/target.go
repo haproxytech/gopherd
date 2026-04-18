@@ -29,9 +29,21 @@ import (
 // TargetConfig defines a log forwarding target.
 type TargetConfig struct {
 	Labels   map[string]string // custom metadata
-	Type     string            // "syslog"
-	Location string            // e.g. "udp://logs.example.com:514"
-	Services []string          // filter: only these service names
+	Type     string            // "syslog" or "file"
+	Location string            // e.g. "udp://logs.example.com:514" or "/var/log/app.log"
+	// MaxSize is a human-readable byte size (e.g. "10MiB", "100MB") at which
+	// a file target is rotated. Empty = no rotation. Applies only to file
+	// targets; ignored for syslog.
+	MaxSize  string
+	Services []string // filter: only these service names
+	// MaxFiles is the number of rotated files to keep (app.log.1 ...
+	// app.log.N). Values <= 0 default to 5 when MaxSize is set. Older files
+	// beyond this count are deleted on rotation.
+	MaxFiles int
+	// Compress enables gzip compression of rotated files. Rotated files are
+	// named app.log.1.gz, app.log.2.gz, etc. Only meaningful for file
+	// targets with MaxSize set.
+	Compress bool
 }
 
 // Target wraps a log forwarding destination.
@@ -63,7 +75,7 @@ func NewTarget(name string, cfg TargetConfig) (*Target, error) {
 		}
 		lt.Writer = w
 	case "file":
-		w, err := openFile(cfg.Location)
+		w, err := openFile(cfg.Location, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("log-target %s: %w", name, err)
 		}
@@ -166,27 +178,6 @@ func (sw *syslogWriter) Close() error {
 	return sw.w.Close()
 }
 
-// fileWriter wraps *os.File to apply the same control-character sanitisation
-// as syslogWriter. This prevents ANSI escape sequences and other control bytes
-// from services being written verbatim to log files.
-type fileWriter struct {
-	f *os.File
-}
-
-func (fw *fileWriter) Write(p []byte) (int, error) {
-	clean := sanitize(p)
-	// io.WriteString uses *os.File's WriteString method directly, avoiding
-	// the []byte(clean) allocation that fw.f.Write([]byte(clean)) would require.
-	if _, err := io.WriteString(fw.f, clean); err != nil {
-		return 0, err
-	}
-	return len(p), nil
-}
-
-func (fw *fileWriter) Close() error {
-	return fw.f.Close()
-}
-
 // openFile opens a log file for append-only writing. The path must be
 // absolute to prevent relative path confusion. Every ancestor from "/" down
 // to the parent directory must be a real directory — not a symlink — so
@@ -201,7 +192,10 @@ func (fw *fileWriter) Close() error {
 // a zero-external-dependency policy. The remaining window requires write
 // access to a root-owned directory, which is a higher-privilege primitive
 // than this check already defends against.
-func openFile(location string) (io.WriteCloser, error) {
+//
+// cfg supplies the rotation fields (MaxSize, MaxFiles, Compress). When
+// MaxSize is empty the returned writer still tracks size but never rotates.
+func openFile(location string, cfg TargetConfig) (io.WriteCloser, error) {
 	path := strings.TrimPrefix(location, "file://")
 	if path == "" {
 		return nil, fmt.Errorf("file log target requires a path")
@@ -215,13 +209,36 @@ func openFile(location string) (io.WriteCloser, error) {
 		return nil, err
 	}
 
+	maxSize, err := parseByteSize(cfg.MaxSize)
+	if err != nil {
+		return nil, fmt.Errorf("file log target %s: max-size: %w", path, err)
+	}
+	maxFiles := cfg.MaxFiles
+	if maxSize > 0 && maxFiles <= 0 {
+		maxFiles = defaultMaxFiles
+	}
+
 	// O_NOFOLLOW causes the open to fail if the final path component is a
 	// symlink, preventing TOCTOU attacks without a separate Lstat check.
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW, 0o640)
 	if err != nil {
 		return nil, fmt.Errorf("open log file %s: %w", path, err)
 	}
-	return &fileWriter{f: f}, nil
+	// Seed size from the existing file so appends to a pre-existing log
+	// honour the rotation threshold immediately rather than only after the
+	// first gopherd-written byte.
+	var initialSize int64
+	if info, err := f.Stat(); err == nil {
+		initialSize = info.Size()
+	}
+	return &rotatingFileWriter{
+		f:        f,
+		path:     path,
+		size:     initialSize,
+		maxSize:  maxSize,
+		maxFiles: maxFiles,
+		compress: cfg.Compress,
+	}, nil
 }
 
 // checkAncestorsNotSymlinked walks every ancestor of path from "/" down to
