@@ -19,6 +19,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/haproxytech/gopherd/check"
 	"github.com/haproxytech/gopherd/control"
@@ -253,6 +254,18 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		OnCheckFailure:    n.Get("on-check-failure").StringMap(),
 		UserID:            n.Get("user-id").IntPtr(),
 		GroupID:           n.Get("group-id").IntPtr(),
+		SDNotify:          n.Get("sd-notify").Bool(),
+		SDNotifyTimeout:   n.Get("sd-notify-timeout").String(),
+	}
+	// Validate sd-notify-timeout at parse time so a typo surfaces before spawn.
+	if p.SDNotifyTimeout != "" {
+		if _, err := time.ParseDuration(p.SDNotifyTimeout); err != nil {
+			name := p.Name
+			if name == "" {
+				name = p.Command
+			}
+			return p, fmt.Errorf("process %q: invalid sd-notify-timeout %q: %w", name, p.SDNotifyTimeout, err)
+		}
 	}
 	// Surface unparseable numeric fields rather than silently defaulting.
 	if raw := n.Get("backoff-factor").String(); raw != "" {

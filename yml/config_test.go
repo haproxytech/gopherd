@@ -181,6 +181,47 @@ processes:
 	}
 }
 
+func TestLoadSDNotifyFields(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sd-notify.yml")
+	os.WriteFile(cfgPath, []byte(`
+processes:
+  - name: app
+    command: /bin/app
+    sd-notify: true
+    sd-notify-timeout: 30s
+`), 0o644)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Processes[0].SDNotify {
+		t.Error("expected SDNotify=true")
+	}
+	if cfg.Processes[0].SDNotifyTimeout != "30s" {
+		t.Errorf("SDNotifyTimeout = %q, want 30s", cfg.Processes[0].SDNotifyTimeout)
+	}
+}
+
+func TestLoadInvalidSDNotifyTimeout(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "bad.yml")
+	os.WriteFile(cfgPath, []byte(`
+processes:
+  - name: app
+    command: /bin/app
+    sd-notify: true
+    sd-notify-timeout: bogus
+`), 0o644)
+
+	if _, err := Load(cfgPath); err == nil {
+		t.Error("expected error for invalid sd-notify-timeout")
+	}
+}
+
 func TestLoadNoProcesses(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

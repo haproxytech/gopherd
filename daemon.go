@@ -953,6 +953,15 @@ func processConfigChanged(oldp, newp service.Process) bool {
 	if oldp.KillDelay != newp.KillDelay {
 		return true
 	}
+	// Flipping SDNotify changes the spawn env (adds/removes NOTIFY_SOCKET)
+	// and changes whether dependent startup gates on READY=1; both require
+	// the child to be restarted with the new behaviour.
+	if oldp.SDNotify != newp.SDNotify {
+		return true
+	}
+	if oldp.SDNotifyTimeout != newp.SDNotifyTimeout {
+		return true
+	}
 	return false
 }
 

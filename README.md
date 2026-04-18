@@ -23,7 +23,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Service dependencies** — `after`, `before`, `requires` with topological sort
 - **Oneshot tasks** — run-once init tasks (e.g. config generation, permission setup) that complete before dependents start, with optional `startup-timeout`
 - **Health checks** — HTTP (including over Unix socket), TCP, and exec-based checks with configurable period, timeout, and threshold
-- **Readiness gates** — block dependent services until a health check passes (not just until the process spawns)
+- **Readiness gates** — block dependent services until a health check passes or the service writes `READY=1` to `$NOTIFY_SOCKET` (systemd-compatible sd_notify)
 - **Log prefixing** — service name and timestamp on every output line (configurable format)
 - **Log targets** — forward logs to syslog (UDP/TCP) or files
 - **Stats tracking** — service uptime, restarts, exits, and health check results via `gopherd stats`
@@ -174,6 +174,33 @@ An env-var reference that resolves to empty is remapped to `disabled` — this i
 Typos in `startup` (e.g. `enable` instead of `enabled`) now fail at config load.
 
 Hot reload (`SIGHUP` / `reload`) re-reads the config and picks up env-var changes; gopherd does not watch the environment for changes between reloads.
+
+#### sd_notify readiness (systemd-compatible)
+
+Some services know exactly when they are ready to serve traffic — an HTTP health check can only approximate this with polling. For such services, set `sd-notify: true`:
+
+```yaml
+processes:
+  - name: haproxy
+    command: /usr/local/sbin/haproxy
+    args: [-W, -db, -f, /etc/haproxy.cfg]
+    sd-notify: true
+    sd-notify-timeout: 60s
+
+  - name: hug
+    command: /usr/local/sbin/hug
+    after: [haproxy]   # dependents start only after haproxy writes READY=1
+```
+
+On spawn, gopherd:
+
+1. Allocates a per-service abstract unix datagram socket.
+2. Sets `NOTIFY_SOCKET=@gopherd-sd-notify-<pid>-<service>` in the child env.
+3. Blocks the next service in topological order until `READY=1\n` arrives on that socket, or `sd-notify-timeout` expires.
+
+The child speaks the subset of the sd_notify protocol defined by [sd_notify(3)](https://www.freedesktop.org/software/systemd/man/sd_notify.html): `READY=1` marks readiness, `STOPPING=1` signals draining, and `STATUS=<text>` updates a human-readable status line. Other keys are accepted and ignored.
+
+This works alongside `ready-check`: `ready-check` gates this service on a *dependency* being up (pre-spawn), `sd-notify` gates *dependents* on this service becoming ready (post-spawn). They compose cleanly.
 
 #### Memory-aware templates
 
@@ -446,6 +473,8 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `use-entrypoint-args` | bool | `false` | append Docker/K8s entrypoint args to this service |
 | `ready-check` | string | | Health check name that gates dependents |
 | `ready-timeout` | duration | `"60s"` | Max wait for ready check to pass |
+| `sd-notify` | bool | `false` | Enable systemd-compatible sd_notify readiness: gopherd sets `$NOTIFY_SOCKET` in the child env; dependents wait until the child writes `READY=1` to that socket |
+| `sd-notify-timeout` | duration | `"60s"` | Max wait for `READY=1` after spawn when `sd-notify: true` |
 | `prefix` | string | `"service timestamp"` | Log prefix format: `"service timestamp"`, `"timestamp service"`, `"timestamp"`, `"service"`, `"none"` |
 
 #### Exit actions

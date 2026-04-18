@@ -192,6 +192,26 @@ func run(entrypointArgs []string) int {
 		if _, err := d.startService(svc); err != nil {
 			log.Fatalf("start %s: %v", svc.Name, err)
 		}
+
+		// If the service uses sd_notify-style readiness, block the next
+		// service in topological order until READY=1 arrives. This
+		// complements ready-check (which gates BEFORE spawn on a
+		// dependency being up) by gating AFTER spawn on the service
+		// signalling its own readiness.
+		if svc.Proc.SDNotify {
+			sdNotifyTimeout := 60 * time.Second
+			if svc.Proc.SDNotifyTimeout != "" {
+				// Already validated at config load.
+				sdNotifyTimeout, _ = time.ParseDuration(svc.Proc.SDNotifyTimeout)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), sdNotifyTimeout)
+			err := svc.WaitSDNotifyReady(ctx)
+			cancel()
+			if err != nil {
+				log.Fatalf("%s: sd_notify readiness did not arrive within %s: %v", svc.Name, sdNotifyTimeout, err)
+			}
+			log.Printf("%s: ready (READY=1 received)", svc.Name)
+		}
 	}
 
 	// Start health checks.

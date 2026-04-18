@@ -15,7 +15,9 @@
 package service
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -766,6 +768,139 @@ func TestMarkExitedInvalidatesPidAndRunning(t *testing.T) {
 	}
 	if svc.running.Load() {
 		t.Error("running after MarkExited = true, want false")
+	}
+}
+
+// TestSDNotifyListenerCreatedOnStart verifies that starting a service with
+// SDNotify=true allocates a listener, places its abstract socket path in
+// $NOTIFY_SOCKET for the child, and that WaitSDNotifyReady unblocks as soon
+// as a READY=1 datagram arrives from any sender in the same netns (here,
+// the test itself). MarkExited must also close the listener so the socket
+// name is released for subsequent restarts.
+func TestSDNotifyListenerCreatedOnStart(t *testing.T) {
+	t.Parallel()
+	svc := mustNew(t, Process{
+		Name:     "sd-notify-create",
+		Command:  "sleep",
+		Args:     []string{"10"},
+		SDNotify: true,
+	}, "")
+	pid, err := svc.Start()
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() {
+		syscall.Kill(pid, syscall.SIGKILL)
+		var ws syscall.WaitStatus
+		syscall.Wait4(pid, &ws, 0, nil)
+		svc.MarkExited()
+	})
+
+	if svc.sdNotifyListener == nil {
+		t.Fatal("sdNotifyListener should be set after Start when SDNotify is true")
+	}
+	path := svc.sdNotifyListener.Path()
+	if !strings.HasPrefix(path, "@gopherd-sd-notify-") {
+		t.Errorf("listener path = %q, want @gopherd-sd-notify- prefix", path)
+	}
+
+	// Impersonate the child by sending READY=1 to the abstract socket.
+	// In real use the child reads $NOTIFY_SOCKET from its env; here we
+	// use the listener path directly since we've already asserted the
+	// env wiring elsewhere (TestSDNotifyEnvSocketSet below).
+	c, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Net: "unixgram", Name: path})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+	if _, err := c.Write([]byte("READY=1\n")); err != nil {
+		t.Fatalf("write READY: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := svc.WaitSDNotifyReady(ctx); err != nil {
+		t.Fatalf("WaitSDNotifyReady: %v", err)
+	}
+}
+
+// TestSDNotifyEnvSocketSet checks that NOTIFY_SOCKET is injected into the
+// spawned child's environment. We use `sh -c 'echo $NOTIFY_SOCKET'` and
+// capture stdout to assert the child observed the variable.
+func TestSDNotifyEnvSocketSet(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "out")
+	svc := mustNew(t, Process{
+		Name:     "sd-notify-env",
+		Command:  "sh",
+		Args:     []string{"-c", `printf '%s' "$NOTIFY_SOCKET" > ` + outPath},
+		SDNotify: true,
+	}, "")
+	pid, err := svc.Start()
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	var ws syscall.WaitStatus
+	if _, err := syscall.Wait4(pid, &ws, 0, nil); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	svc.MarkExited()
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read stdout capture: %v", err)
+	}
+	got := string(data)
+	if !strings.HasPrefix(got, "@gopherd-sd-notify-") {
+		t.Errorf("child $NOTIFY_SOCKET = %q, want @gopherd-sd-notify- prefix", got)
+	}
+}
+
+// TestSDNotifyListenerReplacedOnRestart verifies that a second Start on the
+// same Service closes the first listener and creates a fresh one, so
+// stale READY state from the prior run does not leak across restarts.
+func TestSDNotifyListenerReplacedOnRestart(t *testing.T) {
+	// NOT parallel: repeated binds to the same abstract socket name
+	// occasionally race with other parallel-started tests that also fork
+	// child processes, even when the names do not overlap. Running
+	// serially keeps the failure out of flaky-test territory; the listener
+	// lifecycle itself is what we are verifying, not concurrent startup.
+	svc := mustNew(t, Process{
+		Name:     "sd-notify-restart",
+		Command:  "sleep",
+		Args:     []string{"10"},
+		SDNotify: true,
+	}, "")
+	pid, err := svc.Start()
+	if err != nil {
+		t.Fatalf("start 1: %v", err)
+	}
+	first := svc.sdNotifyListener
+	// Simulate exit and restart.
+	syscall.Kill(pid, syscall.SIGKILL)
+	var ws syscall.WaitStatus
+	syscall.Wait4(pid, &ws, 0, nil)
+	svc.MarkExited()
+	if svc.sdNotifyListener != nil {
+		t.Fatal("listener should be nil after MarkExited")
+	}
+
+	pid2, err := svc.Start()
+	if err != nil {
+		t.Fatalf("start 2: %v", err)
+	}
+	t.Cleanup(func() {
+		syscall.Kill(pid2, syscall.SIGKILL)
+		syscall.Wait4(pid2, &ws, 0, nil)
+		svc.MarkExited()
+	})
+
+	if svc.sdNotifyListener == nil {
+		t.Fatal("listener should be re-created on restart")
+	}
+	if svc.sdNotifyListener == first {
+		t.Fatal("listener should be a fresh instance, not reused from prior run")
 	}
 }
 

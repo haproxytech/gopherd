@@ -17,6 +17,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -35,6 +36,7 @@ import (
 	"github.com/haproxytech/gopherd/cpu"
 	"github.com/haproxytech/gopherd/logger"
 	"github.com/haproxytech/gopherd/memory"
+	"github.com/haproxytech/gopherd/sdnotify"
 )
 
 // ExitAction defines what to do when a process exits.
@@ -102,10 +104,14 @@ type Process struct {
 	StartupTimeout string
 	DotEnv         string
 	Prefix         string
-	Args           []string
-	After          []string
-	Before         []string
-	Requires       []string
+	// SDNotifyTimeout is the maximum duration to wait for a READY=1 datagram
+	// on $NOTIFY_SOCKET after the service has started. Empty = 60s default.
+	// Only meaningful when SDNotify is true.
+	SDNotifyTimeout string
+	Args            []string
+	After           []string
+	Before          []string
+	Requires        []string
 	// RemoveEnv lists env keys to delete from the child's final environment
 	// after merging OS env (if pass-env is true), dotenv, and per-process
 	// environment. Used to drop shared dotenv keys that one service must
@@ -114,6 +120,11 @@ type Process struct {
 	RemoveEnv         []string
 	BackoffFactor     float64
 	UseEntrypointArgs bool
+	// SDNotify enables the sd_notify-compatible readiness protocol: gopherd
+	// allocates a per-service abstract unix datagram socket, exposes it via
+	// $NOTIFY_SOCKET in the child env, and blocks the start of dependents
+	// until the child writes "READY=1" to that socket.
+	SDNotify bool
 }
 
 // Service wraps a Process config with runtime state for lifecycle management.
@@ -129,6 +140,11 @@ type Service struct {
 	cmd       *exec.Cmd
 	killTimer *time.Timer // deferred SIGKILL; cancelled on exit to prevent PID reuse race
 	done      chan struct{}
+
+	// sdNotifyListener owns the abstract unix datagram socket for sd_notify
+	// readiness signalling when Proc.SDNotify is set. Created in Start() and
+	// closed in MarkExited(); nil otherwise. Guarded by svc.mu.
+	sdNotifyListener *sdnotify.Listener
 
 	Name      string
 	OnSuccess ExitAction
@@ -602,7 +618,7 @@ func expandTemplates(values []string, env map[string]string, totalMiB int64, tot
 }
 
 // Start launches the process. Returns the PID on success.
-func (s *Service) Start() (int, error) {
+func (s *Service) Start() (pid int, err error) {
 	// Build environment, resolve credentials, and expand templates before
 	// acquiring the lock to minimize time spent in the critical section.
 	// The default when PassEnv is unset (nil) is FALSE: gopherd does not
@@ -620,6 +636,34 @@ func (s *Service) Start() (int, error) {
 	for _, k := range s.Proc.RemoveEnv {
 		delete(env, k)
 		delete(userKeys, k)
+	}
+
+	// Allocate the sd_notify listener before exec so NOTIFY_SOCKET is set
+	// in the child env. A pre-existing listener (restart path) is replaced
+	// because the old socket may still hold stale READY state from the
+	// prior run — dependents of a restarting service must wait for the new
+	// instance to re-notify readiness on its own terms.
+	if s.Proc.SDNotify {
+		if s.sdNotifyListener != nil {
+			_ = s.sdNotifyListener.Close()
+			s.sdNotifyListener = nil
+		}
+		l, lerr := sdnotify.Listen(s.Name, os.Getpid())
+		if lerr != nil {
+			return 0, fmt.Errorf("sd_notify: %w", lerr)
+		}
+		s.sdNotifyListener = l
+		env["NOTIFY_SOCKET"] = l.Path()
+		// Not marked as a userKey: the value is a literal socket path, never
+		// contains "{{", and must not be subject to template expansion.
+		// Release the listener on any subsequent error so the abstract
+		// socket name is not leaked; MarkExited handles the success path.
+		defer func() {
+			if err != nil && s.sdNotifyListener != nil {
+				_ = s.sdNotifyListener.Close()
+				s.sdNotifyListener = nil
+			}
+		}()
 	}
 
 	totalMiB, _ := memory.Available()
@@ -640,10 +684,11 @@ func (s *Service) Start() (int, error) {
 	}
 
 	// Set the child's environment explicitly when pass-env is off (default),
-	// dotenv / per-process vars are supplied, or remove-env lists any keys
-	// to strip. When cmd.Env is nil, Go inherits the parent env — only
-	// safe when pass-env is on and no other env configuration applies.
-	if !passEnv || s.Proc.DotEnv != "" || len(s.Proc.Environment) > 0 || len(s.Proc.RemoveEnv) > 0 {
+	// dotenv / per-process vars are supplied, remove-env lists any keys
+	// to strip, or a notify listener injected NOTIFY_SOCKET. When cmd.Env
+	// is nil, Go inherits the parent env — only safe when pass-env is on
+	// and no other env configuration applies.
+	if !passEnv || s.Proc.DotEnv != "" || len(s.Proc.Environment) > 0 || len(s.Proc.RemoveEnv) > 0 || s.Proc.SDNotify {
 		// Expand {{mem}}, {{cpu}}, and {{.VAR}} only in user-defined env
 		// values (dotenv + procEnv). Inherited OS env values are passed
 		// through verbatim so that incidental "{{" sequences (e.g. a CI
@@ -813,7 +858,26 @@ func (s *Service) MarkExited() time.Duration {
 		s.killTimer.Stop()
 		s.killTimer = nil
 	}
+	if s.sdNotifyListener != nil {
+		_ = s.sdNotifyListener.Close()
+		s.sdNotifyListener = nil
+	}
 	return time.Since(s.startedAt)
+}
+
+// WaitSDNotifyReady blocks until the service writes "READY=1" to
+// $NOTIFY_SOCKET or ctx is done. Returns an error if the service was not
+// started with SDNotify enabled, or if ctx expires first. Safe to call
+// from outside the service goroutine; the listener itself is
+// concurrency-safe.
+func (s *Service) WaitSDNotifyReady(ctx context.Context) error {
+	s.mu.Lock()
+	l := s.sdNotifyListener
+	s.mu.Unlock()
+	if l == nil {
+		return fmt.Errorf("service %s: sd_notify not enabled", s.Name)
+	}
+	return l.WaitReady(ctx)
 }
 
 // WasStopped returns true if the service exited because we called Stop()
