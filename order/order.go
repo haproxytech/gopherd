@@ -122,3 +122,91 @@ func TopoSort(services []Service) ([]string, error) {
 
 	return result, nil
 }
+
+// TopoLayers returns service names grouped into topologically-ordered layers:
+// all services in layer N have every dependency satisfied by services in layers
+// 0..N-1, so layer N's members carry no edges between each other and can be
+// started in parallel. Layer N+1 must wait for layer N to complete.
+// Each layer is sorted alphabetically for deterministic order. Returns an error
+// on cycles or unknown dependency references, with the same diagnostics as
+// TopoSort.
+func TopoLayers(services []Service) ([][]string, error) {
+	names := make(map[string]bool)
+	for _, s := range services {
+		if names[s.Name] {
+			return nil, fmt.Errorf("duplicate process name: %s", s.Name)
+		}
+		names[s.Name] = true
+	}
+
+	edges := make(map[string][]string)
+	inDegree := make(map[string]int)
+	seenEdge := make(map[[2]string]bool)
+
+	addEdge := func(from, to string) {
+		key := [2]string{from, to}
+		if seenEdge[key] {
+			return
+		}
+		seenEdge[key] = true
+		edges[from] = append(edges[from], to)
+		inDegree[to]++
+	}
+
+	for _, s := range services {
+		if _, ok := inDegree[s.Name]; !ok {
+			inDegree[s.Name] = 0
+		}
+		for _, dep := range s.After {
+			if !names[dep] {
+				return nil, fmt.Errorf("process %s: after references unknown process %q", s.Name, dep)
+			}
+			addEdge(dep, s.Name)
+		}
+		for _, dep := range s.Before {
+			if !names[dep] {
+				return nil, fmt.Errorf("process %s: before references unknown process %q", s.Name, dep)
+			}
+			addEdge(s.Name, dep)
+		}
+		for _, dep := range s.Requires {
+			if !names[dep] {
+				return nil, fmt.Errorf("process %s: requires references unknown process %q", s.Name, dep)
+			}
+			addEdge(dep, s.Name)
+		}
+	}
+
+	var layers [][]string
+	emitted := 0
+	for emitted < len(names) {
+		var layer []string
+		for name := range names {
+			if inDegree[name] == 0 {
+				layer = append(layer, name)
+			}
+		}
+		if len(layer) == 0 {
+			// Remaining nodes are in a cycle.
+			var cycled []string
+			for name := range names {
+				if inDegree[name] > 0 {
+					cycled = append(cycled, name)
+				}
+			}
+			slices.Sort(cycled)
+			return nil, fmt.Errorf("dependency cycle detected among: %s", strings.Join(cycled, ", "))
+		}
+		slices.Sort(layer)
+		for _, n := range layer {
+			// Mark as drained: -1 makes inDegree==0 check above ignore it next loop.
+			inDegree[n] = -1
+			for _, neighbor := range edges[n] {
+				inDegree[neighbor]--
+			}
+		}
+		layers = append(layers, layer)
+		emitted += len(layer)
+	}
+	return layers, nil
+}

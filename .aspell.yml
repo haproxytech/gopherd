@@ -7,3 +7,4 @@ allowed:
   - optim
   - oom
   - subreaper
+  - topo

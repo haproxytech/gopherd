@@ -28,6 +28,7 @@ import (
 	"github.com/haproxytech/gopherd/check"
 	"github.com/haproxytech/gopherd/control"
 	"github.com/haproxytech/gopherd/metrics"
+	"github.com/haproxytech/gopherd/order"
 	"github.com/haproxytech/gopherd/service"
 	"github.com/haproxytech/gopherd/version"
 	"github.com/haproxytech/gopherd/yml"
@@ -121,6 +122,12 @@ func run(entrypointArgs []string) int {
 	if err != nil {
 		log.Fatalf("dependencies: %v", err)
 	}
+	// Layers group independent services so oneshots in the same layer run in
+	// parallel. Cycles already fail above; this can't surface a new error.
+	startLayers, err := order.TopoLayers(buildOrderServices(cfg))
+	if err != nil {
+		log.Fatalf("dependencies: %v", err)
+	}
 
 	// Store start order; stopAll() derives the actual sequence from shutdownMode.
 	d.shutdownSeq = startOrd
@@ -132,100 +139,80 @@ func run(entrypointArgs []string) int {
 		log.Fatalf("config: %v", err)
 	}
 
-	// Start enabled services in dependency order.
-	for _, name := range startOrd {
-		svc, ok := d.services[name]
-		if !ok {
-			log.Printf("warning: service %s in start order but not found, skipping", name)
-			continue
-		}
-		if !svc.Enabled {
-			log.Printf("skipping disabled service %s", svc.Name)
-			continue
-		}
+	// Start enabled services layer by layer. Within a layer, oneshots run in
+	// parallel; non-oneshot services in the same layer are launched after the
+	// layer's oneshots complete, preserving ready-check and sd_notify gating.
+	for _, layer := range startLayers {
+		runLayerOneshots(d, layer)
 
-		if svc.Oneshot {
-			pid, err := svc.Start()
-			if err != nil {
-				log.Fatalf("oneshot %s: %v", svc.Name, err)
-			}
-			log.Printf("started oneshot %s (pid %d)", svc.Name, pid)
-
-			code, err := waitOneshot(pid, svc.Proc.StartupTimeout)
-			if err != nil {
-				// Timeout — kill the process and fail.
-				if pid > 0 {
-					syscall.Kill(-pid, syscall.SIGKILL)
-				}
-				log.Fatalf("oneshot %s: %v", svc.Name, err)
-			}
-			svc.MarkExited()
-			if code != 0 {
-				if svc.OnFailure == service.ActionIgnore {
-					log.Printf("oneshot %s exited with status %d (ignored)", svc.Name, code)
-					continue
-				}
-				log.Fatalf("oneshot %s failed (status %d)", svc.Name, code)
-			}
-			log.Printf("oneshot %s completed", svc.Name)
-			continue
-		}
-
-		if svc.Proc.ReadyCheck != "" {
-			checkCfg, ok := cfg.Checks[svc.Proc.ReadyCheck]
+		for _, name := range layer {
+			svc, ok := d.services[name]
 			if !ok {
-				log.Fatalf("%s: ready-check %q not found in [checks]", svc.Name, svc.Proc.ReadyCheck)
+				log.Printf("warning: service %s in start order but not found, skipping", name)
+				continue
 			}
-			c, err := check.New(svc.Proc.ReadyCheck, checkCfg, nil, nil)
-			if err != nil {
-				log.Fatalf("%s: ready check: %v", svc.Name, err)
+			if !svc.Enabled {
+				log.Printf("skipping disabled service %s", svc.Name)
+				continue
 			}
-			if checkCfg.Exec != nil {
-				cred, credErr := service.ResolveCredential(svc.Proc.User, svc.Proc.Group, svc.Proc.UserID, svc.Proc.GroupID)
-				if credErr != nil {
-					log.Printf("warning: %s: ready-check credential: %v", svc.Name, credErr)
-				} else if cred != nil {
-					c.SetCredential(cred)
+			if svc.Oneshot {
+				continue
+			}
+
+			if svc.Proc.ReadyCheck != "" {
+				checkCfg, ok := cfg.Checks[svc.Proc.ReadyCheck]
+				if !ok {
+					log.Fatalf("%s: ready-check %q not found in [checks]", svc.Name, svc.Proc.ReadyCheck)
 				}
-			}
-			readyTimeout := 60 * time.Second
-			if svc.Proc.ReadyTimeout != "" {
-				readyTimeout, err = time.ParseDuration(svc.Proc.ReadyTimeout)
+				c, err := check.New(svc.Proc.ReadyCheck, checkCfg, nil, nil)
 				if err != nil {
-					log.Fatalf("%s: invalid ready-timeout %q: %v", svc.Name, svc.Proc.ReadyTimeout, err)
+					log.Fatalf("%s: ready check: %v", svc.Name, err)
 				}
+				if checkCfg.Exec != nil {
+					cred, credErr := service.ResolveCredential(svc.Proc.User, svc.Proc.Group, svc.Proc.UserID, svc.Proc.GroupID)
+					if credErr != nil {
+						log.Printf("warning: %s: ready-check credential: %v", svc.Name, credErr)
+					} else if cred != nil {
+						c.SetCredential(cred)
+					}
+				}
+				readyTimeout := 60 * time.Second
+				if svc.Proc.ReadyTimeout != "" {
+					readyTimeout, err = time.ParseDuration(svc.Proc.ReadyTimeout)
+					if err != nil {
+						log.Fatalf("%s: invalid ready-timeout %q: %v", svc.Name, svc.Proc.ReadyTimeout, err)
+					}
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), readyTimeout)
+				err = c.WaitReady(ctx)
+				cancel()
+				if err != nil {
+					log.Fatalf("%s: ready-check %q did not pass within %s (ready-check runs before %s starts; it should poll a dependency already running, not the service itself)", svc.Name, svc.Proc.ReadyCheck, readyTimeout, svc.Name)
+				}
+				log.Printf("%s: ready (check %s passed)", svc.Name, svc.Proc.ReadyCheck)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), readyTimeout)
-			err = c.WaitReady(ctx)
-			cancel()
-			if err != nil {
-				log.Fatalf("%s: ready-check %q did not pass within %s (ready-check runs before %s starts; it should poll a dependency already running, not the service itself)", svc.Name, svc.Proc.ReadyCheck, readyTimeout, svc.Name)
-			}
-			log.Printf("%s: ready (check %s passed)", svc.Name, svc.Proc.ReadyCheck)
-		}
 
-		if _, err := d.startService(svc); err != nil {
-			log.Fatalf("start %s: %v", svc.Name, err)
-		}
+			if _, err := d.startService(svc); err != nil {
+				log.Fatalf("start %s: %v", svc.Name, err)
+			}
 
-		// If the service uses sd_notify-style readiness, block the next
-		// service in topological order until READY=1 arrives. This
-		// complements ready-check (which gates BEFORE spawn on a
-		// dependency being up) by gating AFTER spawn on the service
-		// signalling its own readiness.
-		if svc.Proc.SDNotify {
-			sdNotifyTimeout := 60 * time.Second
-			if svc.Proc.SDNotifyTimeout != "" {
-				// Already validated at config load.
-				sdNotifyTimeout, _ = time.ParseDuration(svc.Proc.SDNotifyTimeout)
+			// sd_notify-style readiness: block before the next service in
+			// topological order until READY=1 arrives on the per-service
+			// abstract socket. Complements ready-check (which gates BEFORE
+			// spawn) by gating AFTER spawn on the child signalling itself.
+			if svc.Proc.SDNotify {
+				sdNotifyTimeout := 60 * time.Second
+				if svc.Proc.SDNotifyTimeout != "" {
+					sdNotifyTimeout, _ = time.ParseDuration(svc.Proc.SDNotifyTimeout)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), sdNotifyTimeout)
+				err := svc.WaitSDNotifyReady(ctx)
+				cancel()
+				if err != nil {
+					log.Fatalf("%s: sd_notify readiness did not arrive within %s: %v", svc.Name, sdNotifyTimeout, err)
+				}
+				log.Printf("%s: ready (READY=1 received)", svc.Name)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), sdNotifyTimeout)
-			err := svc.WaitSDNotifyReady(ctx)
-			cancel()
-			if err != nil {
-				log.Fatalf("%s: sd_notify readiness did not arrive within %s: %v", svc.Name, sdNotifyTimeout, err)
-			}
-			log.Printf("%s: ready (READY=1 received)", svc.Name)
 		}
 	}
 
@@ -504,13 +491,101 @@ func run(entrypointArgs []string) int {
 	return int(d.exitCode.Load())
 }
 
+// runLayerOneshots starts every enabled oneshot in `layer` in parallel and
+// blocks until they have all exited (or timed out). On the first non-ignored
+// failure, it waits for the other in-flight oneshots to settle and then
+// log.Fatalfs — matching the original sequential semantics where the first
+// failure aborts gopherd, but without leaving stragglers running.
+//
+// Safety invariant: this is called from the startup loop, which completes
+// entirely before the main reap loop (Wait4(-1,...)) starts. Multiple
+// concurrent specific-PID Wait4 goroutines are safe; only Wait4(-1,...) would
+// race with them, and it has not started yet.
+func runLayerOneshots(d *daemon, layer []string) {
+	type started struct {
+		svc *service.Service
+		pid int
+	}
+	var procs []started
+	for _, name := range layer {
+		svc, ok := d.services[name]
+		if !ok || !svc.Enabled || !svc.Oneshot {
+			continue
+		}
+		pid, err := svc.Start()
+		if err != nil {
+			for _, p := range procs {
+				if p.pid > 0 {
+					syscall.Kill(-p.pid, syscall.SIGKILL)
+				}
+			}
+			log.Fatalf("oneshot %s: %v", svc.Name, err)
+		}
+		log.Printf("started oneshot %s (pid %d)", svc.Name, pid)
+		procs = append(procs, started{svc: svc, pid: pid})
+	}
+	if len(procs) == 0 {
+		return
+	}
+
+	type result struct {
+		err  error
+		name string
+		pid  int
+		code int
+	}
+	results := make(chan result, len(procs))
+	for _, p := range procs {
+		go func(pp started) {
+			code, err := waitOneshot(pp.pid, pp.svc.Proc.StartupTimeout)
+			if err != nil && pp.pid > 0 {
+				// Timeout (or wait4 error) — make sure the process is gone.
+				syscall.Kill(-pp.pid, syscall.SIGKILL)
+			}
+			results <- result{name: pp.svc.Name, pid: pp.pid, code: code, err: err}
+		}(p)
+	}
+
+	var fatalErr *result
+	for i := 0; i < len(procs); i++ {
+		r := <-results
+		svc := d.services[r.name]
+		if r.err != nil {
+			if fatalErr == nil {
+				rc := r
+				fatalErr = &rc
+			}
+			continue
+		}
+		svc.MarkExited()
+		if r.code != 0 {
+			if svc.OnFailure == service.ActionIgnore {
+				log.Printf("oneshot %s exited with status %d (ignored)", r.name, r.code)
+				continue
+			}
+			if fatalErr == nil {
+				rc := r
+				fatalErr = &rc
+			}
+			continue
+		}
+		log.Printf("oneshot %s completed", r.name)
+	}
+	if fatalErr != nil {
+		if fatalErr.err != nil {
+			log.Fatalf("oneshot %s: %v", fatalErr.name, fatalErr.err)
+		}
+		log.Fatalf("oneshot %s failed (status %d)", fatalErr.name, fatalErr.code)
+	}
+}
+
 // waitOneshot waits for a oneshot process to exit, with an optional timeout.
 // If timeoutStr is empty, it waits indefinitely. Returns the exit code or an
 // error if the timeout is exceeded.
 //
-// Safety invariant: this is called during the startup loop, which completes
-// entirely before the main reap loop (Wait4(-1,...)) starts. There is therefore
-// no concurrent Wait4(-1,...) racing with the specific-PID Wait4 goroutine here.
+// Safety invariant: called only during the startup loop, before the main reap
+// loop (Wait4(-1,...)) starts. Concurrent specific-PID Wait4 calls (one per
+// goroutine, distinct PIDs) are safe with each other.
 func waitOneshot(pid int, timeoutStr string) (int, error) {
 	type waitResult struct {
 		err  error

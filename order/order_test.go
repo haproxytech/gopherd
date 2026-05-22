@@ -147,3 +147,81 @@ func TestAfterRequiresSameDepDeduplication(t *testing.T) {
 		t.Errorf("expected [a b], got %v", order)
 	}
 }
+
+func TestLayersIndependent(t *testing.T) {
+	t.Parallel()
+	layers, err := TopoLayers([]Service{
+		{Name: "a"}, {Name: "b"}, {Name: "c"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(layers) != 1 {
+		t.Fatalf("expected 1 layer for independent services, got %d: %v", len(layers), layers)
+	}
+	if got := strings.Join(layers[0], ","); got != "a,b,c" {
+		t.Errorf("expected layer [a b c] sorted, got %q", got)
+	}
+}
+
+func TestLayersChain(t *testing.T) {
+	t.Parallel()
+	layers, err := TopoLayers([]Service{
+		{Name: "a"},
+		{Name: "b", After: []string{"a"}},
+		{Name: "c", After: []string{"b"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(layers) != 3 {
+		t.Fatalf("expected 3 layers, got %d: %v", len(layers), layers)
+	}
+	if layers[0][0] != "a" || layers[1][0] != "b" || layers[2][0] != "c" {
+		t.Errorf("expected a->b->c, got %v", layers)
+	}
+}
+
+func TestLayersDiamond(t *testing.T) {
+	t.Parallel()
+	// a -> {b, c} -> d. b and c should share the middle layer.
+	layers, err := TopoLayers([]Service{
+		{Name: "a"},
+		{Name: "b", After: []string{"a"}},
+		{Name: "c", After: []string{"a"}},
+		{Name: "d", After: []string{"b", "c"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(layers) != 3 {
+		t.Fatalf("expected 3 layers, got %d: %v", len(layers), layers)
+	}
+	if len(layers[1]) != 2 || layers[1][0] != "b" || layers[1][1] != "c" {
+		t.Errorf("expected middle layer [b c], got %v", layers[1])
+	}
+}
+
+func TestLayersCycle(t *testing.T) {
+	t.Parallel()
+	_, err := TopoLayers([]Service{
+		{Name: "a", After: []string{"b"}},
+		{Name: "b", After: []string{"a"}},
+	})
+	if err == nil {
+		t.Fatal("expected cycle error")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("expected cycle message, got %v", err)
+	}
+}
+
+func TestLayersUnknownDep(t *testing.T) {
+	t.Parallel()
+	_, err := TopoLayers([]Service{
+		{Name: "a", After: []string{"ghost"}},
+	})
+	if err == nil {
+		t.Fatal("expected unknown-dep error")
+	}
+}

@@ -452,7 +452,7 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `environment` | map | inherited | Extra environment variables |
 | `pass-env` | bool | global default | Forward gopherd's OS environment to this service (false = empty env + only dotenv/environment vars) |
 | `remove-env` | list | `[]` | Env keys to delete from the final child environment, regardless of source (OS env / dotenv / `environment:`) |
-| `startup` | string | `"enabled"` | `"enabled"`, `"disabled"`, or `"oneshot"`. Supports `{{.VAR}}` / `{{.VAR:-default}}`; empty after expansion → disabled |
+| `startup` | string | `"enabled"` | `"enabled"`, `"disabled"`, or `"oneshot"`. Supports `{{.VAR}}` / `{{.VAR:-default}}`; empty after expansion → disabled. Oneshots with no `after`/`requires` edge between them run concurrently; dependents wait for all oneshots in the prior layer to exit cleanly |
 | `startup-timeout` | duration | | Max time for oneshot to complete (kills and fails if exceeded) |
 | `stop-signal` | string | `"SIGTERM"` | Signal name (with or without SIG prefix) |
 | `kill-delay` | duration | `"5s"` | Grace period before SIGKILL |
@@ -519,7 +519,7 @@ Core design:
 - Graceful shutdown ordering is configurable: `reverse-dep` (dependents first, default), `dep` (dependencies first), or `simultaneous` (all at once)
 - Forwards SIGTERM/SIGINT to all children using per-service stop signals; SIGHUP triggers reload. Other received signals (SIGUSR1/SIGUSR2/etc.) are forwarded to a service **only if** that service declares a `signal-rewrite` entry for them (opt-in)
 - Each child gets its own process group (`Setpgid`)
-- Services start in topological order based on dependency graph
+- Services start in topological order based on dependency graph; independent oneshots in the same dependency layer run in parallel (and the next layer waits for the layer above to complete)
 - Restart requests are handled asynchronously via a channel with backoff delays
 - Control socket uses one-command-per-connection protocol over Unix domain socket (streaming for `logs -f`)
 - SIGHUP triggers config hot-reload instead of being forwarded to children
