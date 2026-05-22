@@ -603,6 +603,16 @@ func expandTemplates(values []string, env map[string]string, totalMiB int64, tot
 			b.WriteString(s[prev:])
 			s = b.String()
 		}
+		// Expand {{file "/path"}} placeholders. Runs before {{.VAR}} so file
+		// contents containing template-like text (e.g. an example config
+		// snippet committed as a secret) are not re-expanded.
+		if strings.Contains(s, "{{") && strings.Contains(s, "file") {
+			expanded, err := ExpandFileRefs(s)
+			if err != nil {
+				return nil, err
+			}
+			s = expanded
+		}
 		// Expand {{.VAR}} and {{.VAR:-default}} placeholders.
 		if locs := templateRe.FindAllStringSubmatchIndex(s, -1); locs != nil {
 			var b strings.Builder

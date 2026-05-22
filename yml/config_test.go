@@ -930,3 +930,77 @@ processes:
 		t.Errorf("error should cite the raw template text; got: %v", err)
 	}
 }
+
+func TestLoadFileTemplateInStartup(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	startupFile := filepath.Join(dir, "startup")
+	if err := os.WriteFile(startupFile, []byte("oneshot\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Unmarshal(fmt.Appendf(nil, `
+processes:
+  - name: svc
+    command: /bin/svc
+    startup: '{{file "%s" trim}}'
+`, startupFile))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if cfg.Processes[0].Startup != "oneshot" {
+		t.Errorf("startup = %q, want oneshot", cfg.Processes[0].Startup)
+	}
+}
+
+// Args/env values are expanded at Start(), not at parse time, so a config
+// referencing files that do not yet exist must still parse cleanly.
+func TestLoadFileTemplateArgsEnvNotExpandedAtParse(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tlsCrt := filepath.Join(dir, "tls.crt")
+	dbPass := filepath.Join(dir, "db_password")
+	_, err := Unmarshal(fmt.Appendf(nil, `
+processes:
+  - name: svc
+    command: /bin/svc
+    args: ["--cert={{file \"%s\"}}"]
+    environment:
+      DB_PASSWORD: "{{file \"%s\" trim}}"
+`, tlsCrt, dbPass))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+}
+
+func TestLoadFileTemplateStartupMissingFileFails(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "absent")
+	_, err := Unmarshal(fmt.Appendf(nil, `
+processes:
+  - name: svc
+    command: /bin/svc
+    startup: '{{file "%s"}}'
+`, missing))
+	if err == nil {
+		t.Fatal("expected error for missing file with no default")
+	}
+}
+
+func TestLoadFileTemplateStartupDefaultFallback(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "absent")
+	cfg, err := Unmarshal(fmt.Appendf(nil, `
+processes:
+  - name: svc
+    command: /bin/svc
+    startup: '{{file "%s":-disabled}}'
+`, missing))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if cfg.Processes[0].Startup != "disabled" {
+		t.Errorf("startup = %q, want disabled", cfg.Processes[0].Startup)
+	}
+}

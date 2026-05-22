@@ -98,6 +98,11 @@ processes:
       LD_PRELOAD: /usr/local/lib/libwrapper.so
       GOMAXPROCS: "{{cpu}}"
       REGION: "{{.REGION:-us-east-1}}"   # env-var default syntax
+      # File-inclusion template: read a Docker/K8s secret file at start time.
+      # `trim` strips the trailing newline that most secret mounts include.
+      # `:-default` falls back when the file does not exist.
+      # DB_PASSWORD: '{{file "/run/secrets/db_password" trim}}'
+      # LICENSE: '{{file "/etc/license.key":-no-license}}'
     on-check-failure:
       app-http: restart                  # action when named check breaches threshold
       db-tcp: shutdown

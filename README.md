@@ -18,6 +18,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Template args** — `{{.VAR}}` and `{{.VAR:-default}}` placeholders in args, environment values, and `startup`, resolved from env vars and dotenv files
 - **Memory-aware templates** — `{{mem EXPR}}` expands to available memory in MiB (auto-detects system RAM and cgroup limits)
 - **CPU-aware templates** — `{{cpu EXPR}}` expands to available CPUs (auto-detects cgroup CFS quota and cpuset pinning)
+- **File-inclusion templates** — `{{file "/path"}}` reads a file's contents at expansion time; supports `trim` modifier and `:-default` fallback. Primary use: Docker/K8s/systemd secrets
 - **Restart policies** — configurable `on-success` / `on-failure` actions: `restart`, `shutdown`, `ignore`
 - **Exponential backoff** — configurable delay, factor, and limit for restart attempts
 - **Service dependencies** — `after`, `before`, `requires` with topological sort
@@ -271,6 +272,52 @@ processes:
 
 On a container with `--cpus=4`, this resolves to `--workers 4`, `GOMAXPROCS=4`, and `--threads 2`.
 
+#### File-inclusion templates
+
+The `{{file "/abs/path"}}` syntax expands to the contents of a file at the given absolute path. Three situations make this the right tool over `{{.VAR}}`:
+
+**Avoiding env-var leakage.** A secret passed via env (`DB_PASSWORD=...`) is visible to anyone who can read `/proc/<pid>/environ`, shows up in `ps eww`, gets captured by any crash dumper or APM agent that grabs the process environment, and is inherited unchanged by every child the process forks. Pulling the secret from a file at exec time means the value lives in the child's address space only — it is not part of the env block the kernel stores on the process, so the usual env-snooping vectors return nothing. Docker `--env-file`, K8s `valueFrom: secretKeyRef`, and HashiCorp Vault all push the secret into env; `{{file ...}}` lets gopherd consume the same secret in the file form those systems mount alongside (under `/run/secrets/`, `/var/run/secrets/`, etc.) without ever putting it on `os.Environ()`.
+
+**Containers with a read-only root filesystem.** A hardened image runs with `--read-only` (Docker) or `securityContext.readOnlyRootFilesystem: true` (K8s); the only writable surfaces are tmpfs mounts the orchestrator chooses — typically `/run/secrets/`, `/var/run/`, or an explicit `emptyDir`. Configuration files can ship baked into the image, but the secret material has to come from a tmpfs the orchestrator populates at start. `{{file ...}}` is what you point the YAML at to consume those tmpfs files without templating them into a writable config first.
+
+**Multi-line content.** TLS certificates, private keys, signed JWTs, PEM bundles, JSON service-account files, and CA chains all carry embedded newlines. Env vars technically allow newlines but most shells, `--env-file` parsers, and orchestrators either reject or silently corrupt them, and inline multi-line YAML (`|`, `>-`) forces the secret into the config file. A file reference keeps the bytes byte-for-byte intact: `{{file "/run/secrets/tls.key"}}` produces the same content the application would read if it opened the file itself, with no quoting, escaping, or line-ending mangling along the way.
+
+Supported forms:
+
+| Expression | Description |
+|:-----------|:------------|
+| `{{file "/run/secrets/db_password"}}` | Raw file contents (includes trailing newline if present) |
+| `{{file "/run/secrets/db_password" trim}}` | Right-trims trailing whitespace and newlines |
+| `{{file "/etc/license.key":-no-license}}` | Falls back to literal `no-license` when the file does not exist |
+| `{{file "/run/secrets/api_token" trim:-anon}}` | Both: trim if found, fallback if missing |
+
+Where it works: `args`, `environment` values, and `startup`. Paths must be absolute.
+
+When the file is read:
+
+- `startup`: at config-load time (once per `gopherd reload` / SIGHUP).
+- `args` and `environment`: at each service start, so a `gopherd <svc> restart` picks up a rotated secret without a config reload.
+
+Error behavior:
+
+- Missing file with no `:-default` is a hard error.
+- Missing file with `:-default` expands to the literal default text. Same `${VAR:-default}` semantics as env-var templates.
+- A present-but-unreadable file (permission denied, path-is-a-directory, etc.) is a hard error even with `:-default` — that is an operator misconfiguration, not a fallback case.
+- 1 MiB size cap per file to make `{{file "/var/log/huge.log"}}` fail loudly. Secrets and license keys are well under this.
+
+Example consuming a Docker/K8s secret mount:
+
+```yaml
+processes:
+  - name: api
+    command: /usr/local/bin/api
+    environment:
+      DB_PASSWORD: '{{file "/run/secrets/db_password" trim}}'
+      API_TOKEN:   '{{file "/run/secrets/api_token" trim}}'
+      LICENSE:     '{{file "/etc/license.key":-no-license}}'
+    args: ["--cert={{file \"/run/secrets/tls.crt\"}}"]
+```
+
 #### Docker
 
 ```dockerfile
@@ -442,17 +489,17 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 |:------|:-----|:--------|:------------|
 | `name` | string | command path | Service name for logging and control |
 | `command` | string | *required* | Executable path |
-| `args` | string[] | `[]` | Command arguments (supports `{{.VAR}}` / `{{.VAR:-default}}`, `{{mem EXPR}}`, and `{{cpu EXPR}}` templates) |
+| `args` | string[] | `[]` | Command arguments (supports `{{.VAR}}` / `{{.VAR:-default}}`, `{{mem EXPR}}`, `{{cpu EXPR}}`, and `{{file "/path"}}` templates) |
+| `environment` | map | inherited | Extra environment variables (values support the same template forms as `args`) |
 | `dotenv` | string | | Path to env file (`KEY=value` per line), loaded into templates and child env |
 | `working-dir` | string | inherited | Working directory |
 | `user` | string | inherited | Run as user (name) |
 | `group` | string | inherited | Run as group (name) |
 | `user-id` | int | inherited | Run as user (numeric, takes precedence) |
 | `group-id` | int | inherited | Run as group (numeric, takes precedence) |
-| `environment` | map | inherited | Extra environment variables |
 | `pass-env` | bool | global default | Forward gopherd's OS environment to this service (false = empty env + only dotenv/environment vars) |
 | `remove-env` | list | `[]` | Env keys to delete from the final child environment, regardless of source (OS env / dotenv / `environment:`) |
-| `startup` | string | `"enabled"` | `"enabled"`, `"disabled"`, or `"oneshot"`. Supports `{{.VAR}}` / `{{.VAR:-default}}`; empty after expansion → disabled. Oneshots with no `after`/`requires` edge between them run concurrently; dependents wait for all oneshots in the prior layer to exit cleanly |
+| `startup` | string | `"enabled"` | `"enabled"`, `"disabled"`, or `"oneshot"`. Supports `{{.VAR}}` / `{{.VAR:-default}}` and `{{file "/path"}}`; empty after expansion → disabled. Oneshots with no `after`/`requires` edge between them run concurrently; dependents wait for all oneshots in the prior layer to exit cleanly |
 | `startup-timeout` | duration | | Max time for oneshot to complete (kills and fails if exceeded) |
 | `stop-signal` | string | `"SIGTERM"` | Signal name (with or without SIG prefix) |
 | `kill-delay` | duration | `"5s"` | Grace period before SIGKILL |
@@ -550,6 +597,7 @@ gopherd is designed for Linux containers. It also compiles and runs on macOS and
 | `{{mem EXPR}}` — cgroup limit detection | Full | Not available (no cgroups) |
 | `{{cpu EXPR}}` — system CPU detection | Full | Full |
 | `{{cpu EXPR}}` — cgroup limit detection | Full | Not available (no cgroups) |
+| `{{file "/path"}}` — file expansion | Full | Full |
 | Control socket audit logging (peer UID) | Full (`SO_PEERCRED`) | Not available (uid=-1) |
 | Config file permission/ownership checks | Full | Partial (no root ownership convention) |
 
