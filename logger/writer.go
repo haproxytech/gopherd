@@ -29,6 +29,25 @@ const defaultRingSize = 200
 // Prevents unbounded memory growth from output without newlines.
 const maxBufSize = 1 << 20 // 1 MB
 
+// subChanCap is the per-subscriber channel buffer.
+//
+// subBufRingSize must be strictly greater than the maximum number of buffers
+// that can be alive (referenced by anything other than the writer) at once.
+// A buf is alive while:
+//   - queued in the subscription channel (up to subChanCap),
+//   - held by the direct receiver between recv and its next action (1), and
+//   - held by any downstream channel/handler the receiver hands the slice
+//     off to without copying.
+//
+// gopherd's control LogsFn does a two-hop merge: sub channel (256) → pipe
+// goroutine (1) → merged channel (256) → control-server handler (1). That
+// is 514 alive bufs max. We size at 520 for slack so bufIdx never wraps
+// onto an in-flight slot, even with both channels saturated.
+const (
+	subChanCap     = 256
+	subBufRingSize = 520
+)
+
 // DefaultPrefix is the default log prefix format: service name followed by timestamp.
 const DefaultPrefix = "service timestamp"
 
@@ -52,13 +71,24 @@ type PrefixWriter struct {
 	buf          []byte
 	extra        []io.Writer // additional writers (log targets)
 	ring         [][]byte    // circular ring buffer of recent prefixed lines
-	subs         []chan []byte
+	subs         []*subscription
 	parts        []string // parsed prefix components
 	prefixBuf    []byte   // reusable buffer for building prefixed lines
 	ringPos      int      // next write position in ring buffer
 	prefixEstLen int      // estimated prefix length for capacity pre-allocation
 	mu           sync.Mutex
 	ringFull     bool // whether ring has wrapped around
+}
+
+// subscription holds a per-subscriber buffer ring so the fan-out path does
+// not allocate per line. The ring size is fixed (subBufRingSize); each slot
+// grows lazily to fit the largest line seen. The writer cycles bufIdx
+// forward only on a successful send, so dropped sends overwrite the same
+// slot rather than poisoning a queued one.
+type subscription struct {
+	out    chan []byte
+	bufs   [subBufRingSize][]byte
+	bufIdx int
 }
 
 // NewPrefixWriter creates a new PrefixWriter. The prefix string controls which
@@ -122,24 +152,31 @@ func (pw *PrefixWriter) ClearTargets() {
 
 // Subscribe returns a channel that receives new prefixed log lines and an
 // unsubscribe function. The channel is buffered to avoid blocking writes.
+//
+// Received slices alias an internal per-subscription buffer that is reused.
+// Consumers must consume each slice synchronously before reading the next
+// one from the channel — by the time the next Write fills the channel again,
+// the writer may overwrite older slots (those no longer in-flight). Holding
+// a slice from a previous receive past the next receive risks observing
+// torn writes.
 func (pw *PrefixWriter) Subscribe() (<-chan []byte, func()) {
-	ch := make(chan []byte, 256)
+	s := &subscription{out: make(chan []byte, subChanCap)}
 	pw.mu.Lock()
-	pw.subs = append(pw.subs, ch)
+	pw.subs = append(pw.subs, s)
 	pw.mu.Unlock()
 
 	unsub := func() {
 		pw.mu.Lock()
 		defer pw.mu.Unlock()
-		for i, s := range pw.subs {
-			if s == ch {
+		for i, sub := range pw.subs {
+			if sub == s {
 				pw.subs = append(pw.subs[:i], pw.subs[i+1:]...)
-				close(ch)
+				close(s.out)
 				return
 			}
 		}
 	}
-	return ch, unsub
+	return s.out, unsub
 }
 
 // Recent returns a deep copy of recent prefixed log lines from the ring buffer.
@@ -251,20 +288,24 @@ func (pw *PrefixWriter) Write(p []byte) (int, error) {
 				pw.ringFull = true
 			}
 
-			// Fan out to subscribers (non-blocking).
-			// Allocate a single immutable copy shared across all subscribers so
-			// N subscribers incur one copy per line, not N. Subscribers must
-			// treat the slice as read-only (standard channel-message contract).
-			// The copy is necessary because the ring slot will be overwritten
-			// when the ring wraps.
-			var msg []byte
-			if len(pw.subs) > 0 {
-				msg = make([]byte, len(slot))
-				copy(msg, slot)
-			}
-			for _, ch := range pw.subs {
+			// bufIdx only advances on a successful send so dropped sends
+			// reuse the same slot.
+			for _, s := range pw.subs {
+				buf := s.bufs[s.bufIdx]
+				if cap(buf) < len(slot) {
+					buf = make([]byte, len(slot))
+				} else {
+					buf = buf[:len(slot)]
+				}
+				copy(buf, slot)
+				s.bufs[s.bufIdx] = buf
+
 				select {
-				case ch <- msg:
+				case s.out <- buf:
+					s.bufIdx++
+					if s.bufIdx >= subBufRingSize {
+						s.bufIdx = 0
+					}
 				default:
 					// subscriber too slow, drop line
 				}

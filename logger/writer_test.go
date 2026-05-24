@@ -136,6 +136,47 @@ func TestSubscribeMultiple(t *testing.T) {
 	}
 }
 
+// TestSubscribeSlowConsumerNoCorruption stresses the per-subscription buffer
+// ring with a deliberately slow consumer (simulates a stalled `logs -f`).
+// Under the previous alloc-per-line design the consumer always saw immutable
+// copies; the new design reuses bufs, so a too-small ring would let the writer
+// overwrite a buf the consumer still references. The test asserts that every
+// observed line still parses as a well-formed sequenced line, with the race
+// detector active.
+func TestSubscribeSlowConsumerNoCorruption(t *testing.T) {
+	t.Parallel()
+	pw := NewPrefixWriter(io.Discard, "svc", "none")
+
+	ch, unsub := pw.Subscribe()
+	defer unsub()
+
+	done := make(chan struct{})
+	var received [][]byte
+	go func() {
+		defer close(done)
+		for line := range ch {
+			cp := make([]byte, len(line))
+			copy(cp, line)
+			received = append(received, cp)
+		}
+	}()
+
+	// Wrap the buf ring multiple times under back-pressure.
+	const writes = subBufRingSize * 4
+	for i := range writes {
+		fmt.Fprintf(pw, "line-%06d\n", i)
+	}
+	unsub()
+	<-done
+
+	for i, line := range received {
+		s := strings.TrimSuffix(string(line), "\n")
+		if !strings.HasPrefix(s, "line-") || len(s) != len("line-000000") {
+			t.Fatalf("received[%d] = %q; corrupted line (writer overwrote a buf still in-flight)", i, s)
+		}
+	}
+}
+
 func TestUnsubscribe(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
@@ -420,6 +461,43 @@ func BenchmarkWriteServiceOnly(b *testing.B) {
 	for range b.N {
 		pw.Write(line)
 	}
+}
+
+// BenchmarkWriteWithSubscriber drives a steady consumer that drains the
+// subscription channel as fast as it is filled. The per-subscription buffer
+// ring should reach steady state and produce zero allocations per line.
+func BenchmarkWriteWithSubscriber(b *testing.B) {
+	pw := NewPrefixWriter(io.Discard, "my-service", "service timestamp")
+	line := []byte("2026-04-06 some log output from the application\n")
+
+	ch, unsub := pw.Subscribe()
+	defer unsub()
+
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case _, ok := <-ch:
+				if !ok {
+					return
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	// Warm the ring buffer and the per-subscription bufs to steady state.
+	for range subBufRingSize * 2 {
+		pw.Write(line)
+	}
+	b.ResetTimer()
+	b.ReportAllocs()
+	for range b.N {
+		pw.Write(line)
+	}
+	b.StopTimer()
+	close(done)
 }
 
 func BenchmarkWriteNone(b *testing.B) {

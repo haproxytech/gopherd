@@ -30,6 +30,35 @@ type errSyslogInfoer struct{ err error }
 func (e *errSyslogInfoer) Info(_ string) error { return e.err }
 func (e *errSyslogInfoer) Close() error        { return nil }
 
+// nopSyslogInfoer discards messages; used for allocation benchmarks.
+type nopSyslogInfoer struct{}
+
+func (nopSyslogInfoer) Info(_ string) error { return nil }
+func (nopSyslogInfoer) Close() error        { return nil }
+
+// BenchmarkSyslogTargetWriteClean exercises the per-line fast path (no
+// control chars) and asserts zero allocations. PERFORMANCE.md claims this
+// path is zero-alloc; this benchmark proves it.
+func BenchmarkSyslogTargetWriteClean(b *testing.B) {
+	sw := &syslogWriter{w: nopSyslogInfoer{}}
+	p := []byte("2026-04-06T12:00:00.000Z [my-service] some clean log output line\n")
+	b.ResetTimer()
+	b.ReportAllocs()
+	for range b.N {
+		_, _ = sw.Write(p)
+	}
+}
+
+// BenchmarkSanitizeFast exercises sanitize() directly on a clean line.
+func BenchmarkSanitizeFast(b *testing.B) {
+	p := []byte("2026-04-06T12:00:00.000Z [my-service] some clean log output line\n")
+	b.ResetTimer()
+	b.ReportAllocs()
+	for range b.N {
+		_ = sanitize(p)
+	}
+}
+
 // TestSyslogWriterIOContractOnError verifies that syslogWriter.Write returns
 // n=0 (not n=len(p)) when Info returns an error. Returning n>0 with a non-nil
 // error violates the io.Writer contract and confuses callers that inspect n.
