@@ -569,3 +569,67 @@ func TestStopClosesHTTPIdleConnections(t *testing.T) {
 		t.Error("Stop() did not call CloseIdleConnections() on the HTTP client transport")
 	}
 }
+
+// BenchmarkExecuteHTTPSuccess measures the per-check allocation of a successful
+// HTTP probe against a loopback server. The current implementation does
+// req.WithContext(ctx) per call (shallow Request copy) — this benchmark
+// quantifies that alloc cost and any others on the success path.
+func BenchmarkExecuteHTTPSuccess(b *testing.B) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer ts.Close()
+
+	c, err := New("bench", Config{HTTP: &HTTP{URL: ts.URL}, Period: "1s", Timeout: "5s"}, nil, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer c.Stop()
+
+	if err := c.Execute(); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	b.ReportAllocs()
+	for range b.N {
+		if err := c.Execute(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkExecuteTCPSuccess measures the per-check allocation of a successful
+// TCP dial against a loopback listener.
+func BenchmarkExecuteTCPSuccess(b *testing.B) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+
+	host, port, _ := net.SplitHostPort(ln.Addr().String())
+	var portN int
+	fmt.Sscanf(port, "%d", &portN)
+	c, err := New("bench", Config{TCP: &TCP{Host: host, Port: portN}, Period: "1s", Timeout: "5s"}, nil, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer c.Stop()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for range b.N {
+		if err := c.Execute(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
