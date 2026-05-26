@@ -111,6 +111,7 @@ func run(entrypointArgs []string) int {
 		entrypointArgs: entrypointArgs,
 		pidMap:         make(map[int]*service.Service),
 		restartCh:      make(chan restartReq, 64),
+		restartPending: make(map[string]bool),
 		shutdownCh:     make(chan struct{}),
 	}
 
@@ -351,9 +352,18 @@ func run(entrypointArgs []string) int {
 			if svc.WasStopped() && code > 128 {
 				effectiveCode = 0
 			}
-			d.m.ServiceExited(svc.Name, effectiveCode)
+			// Restart-driven exits (control restart, check-failure restart,
+			// crash + ActionRestart) count as a single `restarts +1` event, not
+			// also as `exits +1` / ok / fail. Plain stops and one-off exits
+			// still record ServiceExited as usual. The flag is cleared here so a
+			// crash-then-restart sequence later (without an enqueued restart)
+			// counts normally.
+			restartConsumesExit := d.takeRestartPending(svc.Name)
 
 			if d.shuttingDown.Load() {
+				if !restartConsumesExit {
+					d.m.ServiceExited(svc.Name, effectiveCode)
+				}
 				// Use pidMap rather than d.services: services removed during a
 				// reload are deleted from d.services immediately but stay in
 				// pidMap until they actually exit. Checking only d.services
@@ -407,6 +417,13 @@ func run(entrypointArgs []string) int {
 						other.Stop()
 					}
 				}
+			}
+
+			// Record the exit unless it is part of a restart cycle (either an
+			// already-enqueued restart or the ActionRestart branch we are about
+			// to take below).
+			if !restartConsumesExit && action != service.ActionRestart {
+				d.m.ServiceExited(svc.Name, effectiveCode)
 			}
 
 			switch action {

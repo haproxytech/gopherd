@@ -130,6 +130,12 @@ type daemon struct {
 	// on this channel. A closed channel broadcasts to all receivers at once.
 	shutdownCh chan struct{}
 
+	// restartPending marks services whose next observed exit is part of a
+	// restart cycle (control-socket restart or check-failure restart). The reap
+	// loop uses this to suppress the ServiceExited metric so a restart counts
+	// as `restarts +1` only, not also as an `exits +1`. Guarded by d.mu.
+	restartPending map[string]bool
+
 	configPath     string
 	shutdownMode   string // "reverse-dep" (default), "dep", "simultaneous"
 	checkers       []*check.Checker
@@ -141,12 +147,6 @@ type daemon struct {
 	// It must reach zero before restartCh is closed.
 	senderWg sync.WaitGroup
 
-	// pendingRestarts counts restart requests in flight from enqueue until the
-	// restart handler is done. The reap loop checks this on Wait4 ECHILD: if a
-	// restart is pending, the empty-children state is transient (the handler is
-	// about to fork the new process) and the loop must not exit.
-	pendingRestarts atomic.Int32
-
 	mu sync.RWMutex
 	// reloadMu serialises concurrent hot-reloads so that two rapid SIGHUPs
 	// cannot race on d.checkers, d.cfg, or d.services.
@@ -157,6 +157,12 @@ type daemon struct {
 	// deadlock impossible: no caller ever needs to acquire reloadMu while
 	// holding mu.
 	reloadMu sync.Mutex
+
+	// pendingRestarts counts restart requests in flight from enqueue until the
+	// restart handler is done. The reap loop checks this on Wait4 ECHILD: if a
+	// restart is pending, the empty-children state is transient (the handler is
+	// about to fork the new process) and the loop must not exit.
+	pendingRestarts atomic.Int32
 
 	// exitCode and shuttingDown are accessed from multiple goroutines.
 	// Use atomic types so they can be read without holding mu.
@@ -172,6 +178,27 @@ type restartReq struct {
 	// concurrent restart that has already re-created the done channel.
 	done  <-chan struct{}
 	delay time.Duration
+}
+
+// markRestartPending records that a restart was just enqueued for svc, so the
+// reap loop suppresses the ServiceExited metric for the matching exit.
+// Callers must hold d.mu.
+func (d *daemon) markRestartPending(name string) {
+	if d.restartPending == nil {
+		d.restartPending = make(map[string]bool)
+	}
+	d.restartPending[name] = true
+}
+
+// takeRestartPending atomically reads and clears the restart-pending flag for
+// svc. Returns true if the next ServiceExited call should be suppressed.
+// Callers must hold d.mu.
+func (d *daemon) takeRestartPending(name string) bool {
+	if !d.restartPending[name] {
+		return false
+	}
+	delete(d.restartPending, name)
+	return true
 }
 
 // handleRestartReq processes one entry from restartCh: wait for the prior exit
@@ -384,6 +411,8 @@ func (d *daemon) handleCheckFailure(checkName string) {
 			// exits with effectiveCode=0 (WasStopped+signal-death path).
 			done := svc.Done()
 			svc.Stop()
+			d.m.ServiceRestarted(svc.Name)
+			d.markRestartPending(svc.Name)
 			d.pendingRestarts.Add(1)
 			d.senderWg.Go(func() {
 				d.restartCh <- restartReq{svc: svc, done: done, delay: 0}
@@ -849,7 +878,9 @@ func (d *daemon) setupControl() *control.Server {
 		done := svc.Done()
 		if svc.IsRunning() {
 			svc.Stop()
+			d.markRestartPending(svc.Name)
 		}
+		d.m.ServiceRestarted(svc.Name)
 		// Use senderWg.Go so the sender is tracked by the shutdown path just
 		// like the reap-loop and check-failure restart senders. This allows a
 		// blocking send without risk of panicking on a closed channel: run.go

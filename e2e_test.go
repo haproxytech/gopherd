@@ -567,6 +567,17 @@ processes:
 		t.Fatalf("expected running after restart, got: %s", resp)
 	}
 
+	// A control-socket restart counts as one `restarts +1` and must NOT bump
+	// `exits` or `ok`/`fail` — operator-initiated restarts are accounted as a
+	// single restart event rather than exit-and-start.
+	resp = td.sendCommand("stats")
+	if !strings.Contains(resp, "restarts=1") {
+		t.Errorf("expected restarts=1, got: %s", resp)
+	}
+	if !strings.Contains(resp, "exits=0") {
+		t.Errorf("expected exits=0 after a restart-only cycle, got: %s", resp)
+	}
+
 	td.stop()
 }
 
