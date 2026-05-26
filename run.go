@@ -296,38 +296,11 @@ func run(entrypointArgs []string) int {
 	// Handle restart requests from the reap loop.
 	go func() {
 		for req := range d.restartCh {
-			// Wait for the specific exit event that triggered this restart.
-			// Using req.done (captured at enqueue time) rather than calling
-			// req.svc.Done() here avoids blocking on a newer done channel if
-			// the service was already restarted by a concurrent path.
-			<-req.done
-			// Skip if a concurrent restart already brought the service back up.
-			if req.svc.IsRunning() {
-				continue
-			}
-			// Sleep the backoff delay, but wake early if shutdown is initiated.
-			// Without this select, a 30 s backoff would stall daemon exit for
-			// the full delay even after initiateShutdown has been called.
-			// time.NewTimer is used instead of time.After so the timer can be
-			// stopped and its goroutine reclaimed when shutdown fires first.
-			if req.delay > 0 {
-				timer := time.NewTimer(req.delay)
-				select {
-				case <-timer.C:
-				case <-d.shutdownCh:
-					timer.Stop()
-				}
-			}
-			// startService checks shuttingDown atomically with the fork/exec
-			// under d.mu, so no separate pre-check is needed here.
-			// errServiceReplaced is returned when a reload replaced this service
-			// while the restart was queued; that is not a fatal error.
-			if _, err := d.startService(req.svc); err != nil {
-				if err != errShuttingDown && err != errServiceReplaced {
-					log.Printf("restart %s failed: %v", req.svc.Name, err)
-					d.initiateShutdown(1)
-				}
-			}
+			d.handleRestartReq(req)
+			// Decrement after the request is fully processed (started, skipped,
+			// or failed) so the reap loop only treats ECHILD as transient while
+			// a restart could still fork a new child.
+			d.pendingRestarts.Add(-1)
 		}
 	}()
 
@@ -337,6 +310,13 @@ func run(entrypointArgs []string) int {
 		pid, err := syscall.Wait4(-1, &ws, 0, nil)
 		if err != nil {
 			if err == syscall.EINTR {
+				continue
+			}
+			// ECHILD with a restart in flight is transient: the restart
+			// handler is about to fork the replacement child. Sleep briefly
+			// and retry so a single-service daemon survives stop/restart.
+			if err == syscall.ECHILD && d.pendingRestarts.Load() > 0 && !d.shuttingDown.Load() {
+				time.Sleep(10 * time.Millisecond)
 				continue
 			}
 			break
@@ -390,9 +370,18 @@ func run(entrypointArgs []string) int {
 			success := effectiveCode == 0
 			var action service.ExitAction
 
-			// Oneshot services triggered via control socket after startup
-			// should not take shutdown actions — just ignore the exit.
-			if svc.Oneshot {
+			// An intentional Stop() (control-socket stop/restart, check-failure
+			// restart, dependency-cascade stop) must not trigger OnSuccess/
+			// OnFailure: with the default OnSuccess=ActionShutdown a
+			// signal-killed service would otherwise take the whole daemon down.
+			// Pending restart requests already sit on restartCh, so the service
+			// will come back if one was enqueued.
+			switch {
+			case svc.WasStopped():
+				action = service.ActionIgnore
+			case svc.Oneshot:
+				// Oneshot services triggered via control socket after startup
+				// should not take shutdown actions — just ignore the exit.
 				if success {
 					action = service.ActionIgnore
 				} else {
@@ -408,9 +397,9 @@ func run(entrypointArgs []string) int {
 					}
 					action = parsed
 				}
-			} else if success {
+			case success:
 				action = svc.OnSuccess
-			} else {
+			default:
 				action = svc.OnFailure
 				for _, other := range d.services {
 					if other.Requires[svc.Name] && other.IsRunning() {
@@ -433,6 +422,9 @@ func run(entrypointArgs []string) int {
 				// the closed channel for this specific exit event.
 				exitDone := svc.Done()
 				d.mu.Unlock()
+				// Increment before the send so the reap loop sees the pending
+				// restart on its very next Wait4 ECHILD check.
+				d.pendingRestarts.Add(1)
 				d.senderWg.Go(func() {
 					d.restartCh <- restartReq{svc: svc, done: exitDone, delay: delay}
 				})

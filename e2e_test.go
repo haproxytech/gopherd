@@ -533,6 +533,43 @@ processes:
 	td.stop()
 }
 
+// Regression: a control-socket restart of a service whose on-success defaults
+// to shutdown must restart the service in place. Pre-fix, the reap loop saw
+// the signal-death exit, collapsed effectiveCode to 0 via the WasStopped
+// rule, then dispatched the default OnSuccess=Shutdown — racing the pending
+// restart and (often) winning, taking the daemon down. The reap-loop ECHILD
+// path is also exercised here: with svc as the only managed process, Wait4
+// returns ECHILD between the old pid being reaped and the new pid being
+// registered, and the loop must treat that as transient while a restart is
+// in flight.
+func TestE2EControlRestartDefaultOnSuccess(t *testing.T) {
+	td := startDaemon(t, `
+processes:
+  - name: svc
+    command: sleep
+    args: ["300"]
+    kill-delay: 1s
+`)
+	defer td.kill()
+
+	resp := td.sendCommand("restart svc")
+	if strings.Contains(resp, "error") {
+		t.Fatalf("restart failed: %s", resp)
+	}
+
+	time.Sleep(1500 * time.Millisecond)
+
+	if td.cmd.ProcessState != nil {
+		t.Fatalf("daemon exited unexpectedly after restart")
+	}
+	resp = td.sendCommand("status svc")
+	if !strings.Contains(resp, "running") {
+		t.Fatalf("expected running after restart, got: %s", resp)
+	}
+
+	td.stop()
+}
+
 func TestE2EControlStartDisabled(t *testing.T) {
 	td := startDaemon(t, `
 processes:

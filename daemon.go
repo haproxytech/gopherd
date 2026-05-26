@@ -141,6 +141,12 @@ type daemon struct {
 	// It must reach zero before restartCh is closed.
 	senderWg sync.WaitGroup
 
+	// pendingRestarts counts restart requests in flight from enqueue until the
+	// restart handler is done. The reap loop checks this on Wait4 ECHILD: if a
+	// restart is pending, the empty-children state is transient (the handler is
+	// about to fork the new process) and the loop must not exit.
+	pendingRestarts atomic.Int32
+
 	mu sync.RWMutex
 	// reloadMu serialises concurrent hot-reloads so that two rapid SIGHUPs
 	// cannot race on d.checkers, d.cfg, or d.services.
@@ -166,6 +172,42 @@ type restartReq struct {
 	// concurrent restart that has already re-created the done channel.
 	done  <-chan struct{}
 	delay time.Duration
+}
+
+// handleRestartReq processes one entry from restartCh: wait for the prior exit
+// to be observed, optionally sleep the backoff delay, then re-start the
+// service. The caller is responsible for decrementing pendingRestarts after
+// this returns so the reap loop's ECHILD bookkeeping stays accurate.
+func (d *daemon) handleRestartReq(req restartReq) {
+	// Wait for the specific exit event that triggered this restart. Using
+	// req.done (captured at enqueue time) rather than calling req.svc.Done()
+	// here avoids blocking on a newer done channel if the service was already
+	// restarted by a concurrent path.
+	<-req.done
+	if req.svc.IsRunning() {
+		return
+	}
+	// Sleep the backoff delay, but wake early if shutdown is initiated.
+	// Without this select, a long backoff would stall daemon exit even after
+	// initiateShutdown has been called. time.NewTimer is used instead of
+	// time.After so the timer goroutine can be reclaimed on early shutdown.
+	if req.delay > 0 {
+		timer := time.NewTimer(req.delay)
+		select {
+		case <-timer.C:
+		case <-d.shutdownCh:
+			timer.Stop()
+		}
+	}
+	// startService checks shuttingDown atomically with the fork/exec under
+	// d.mu. errServiceReplaced is returned when a reload replaced this
+	// service while the restart was queued; that is not a fatal error.
+	if _, err := d.startService(req.svc); err != nil {
+		if err != errShuttingDown && err != errServiceReplaced {
+			log.Printf("restart %s failed: %v", req.svc.Name, err)
+			d.initiateShutdown(1)
+		}
+	}
 }
 
 func (d *daemon) startService(svc *service.Service) (int, error) {
@@ -342,6 +384,7 @@ func (d *daemon) handleCheckFailure(checkName string) {
 			// exits with effectiveCode=0 (WasStopped+signal-death path).
 			done := svc.Done()
 			svc.Stop()
+			d.pendingRestarts.Add(1)
 			d.senderWg.Go(func() {
 				d.restartCh <- restartReq{svc: svc, done: done, delay: 0}
 			})
@@ -811,6 +854,7 @@ func (d *daemon) setupControl() *control.Server {
 		// like the reap-loop and check-failure restart senders. This allows a
 		// blocking send without risk of panicking on a closed channel: run.go
 		// waits for senderWg to drain before closing restartCh.
+		d.pendingRestarts.Add(1)
 		d.senderWg.Go(func() {
 			d.restartCh <- restartReq{svc: svc, done: done, delay: 0}
 		})
