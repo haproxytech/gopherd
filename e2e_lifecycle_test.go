@@ -68,10 +68,10 @@ processes:
 
 	time.Sleep(500 * time.Millisecond)
 
-	// debug should be stopped (not auto-started).
+	// debug should be disabled (not auto-started).
 	resp := td.sendCommand("status debug")
-	if !strings.Contains(resp, "stopped") {
-		t.Fatalf("expected debug stopped, got: %s", resp)
+	if !strings.Contains(resp, "disabled") {
+		t.Fatalf("expected debug disabled, got: %s", resp)
 	}
 
 	// app should be running.

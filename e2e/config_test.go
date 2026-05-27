@@ -140,7 +140,7 @@ sleep 1
 
 status=$(/usr/local/bin/gopherd disabled-svc status 2>&1)
 echo "disabled: $status"
-echo "$status" | grep -q "stopped" || { echo "FAIL: disabled-svc should be stopped"; exit 1; }
+echo "$status" | grep -q "disabled" || { echo "FAIL: disabled-svc should be disabled"; exit 1; }
 
 # Start it manually.
 /usr/local/bin/gopherd disabled-svc start

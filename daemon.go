@@ -786,9 +786,14 @@ func (d *daemon) setupControl() *control.Server {
 		defer d.mu.RUnlock()
 		var lines []string
 		for _, svc := range d.services {
-			state := "stopped"
-			if svc.IsRunning() {
+			var state string
+			switch {
+			case svc.IsRunning():
 				state = fmt.Sprintf("running (pid %d)", int(svc.Pid.Load()))
+			case !svc.Enabled:
+				state = "disabled"
+			default:
+				state = "stopped"
 			}
 			lines = append(lines, fmt.Sprintf("%-20s %s", svc.Name, state))
 		}
@@ -805,10 +810,14 @@ func (d *daemon) setupControl() *control.Server {
 		if !ok {
 			return "", fmt.Errorf("unknown service %q", name)
 		}
-		if svc.IsRunning() {
+		switch {
+		case svc.IsRunning():
 			return fmt.Sprintf("%s: running (pid %d)", name, int(svc.Pid.Load())), nil
+		case !svc.Enabled:
+			return fmt.Sprintf("%s: disabled", name), nil
+		default:
+			return fmt.Sprintf("%s: stopped", name), nil
 		}
-		return fmt.Sprintf("%s: stopped", name), nil
 	}
 	ctrlServer.StartFn = func(name string) (string, error) {
 		d.mu.RLock()

@@ -147,10 +147,10 @@ processes:
 `)
 	defer td.kill()
 
-	// lazy should be stopped initially.
+	// lazy should be disabled initially.
 	resp := td.sendCommand("status lazy")
-	if !strings.Contains(resp, "stopped") {
-		t.Fatalf("expected lazy stopped, got: %s", resp)
+	if !strings.Contains(resp, "disabled") {
+		t.Fatalf("expected lazy disabled, got: %s", resp)
 	}
 
 	// Start it via control socket.
