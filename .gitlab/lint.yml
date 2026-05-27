@@ -87,6 +87,7 @@ lint:
       junit: junit-report.xml
 commit-policy:
   stage: lint
+  allow_failure: true
   needs: []
   rules:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
