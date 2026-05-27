@@ -227,6 +227,77 @@ func TestStatusOverviewCmd(t *testing.T) {
 	}
 }
 
+func TestStatusJSONOverview(t *testing.T) {
+	t.Parallel()
+	cs := newTestServer(t)
+	cs.StatsJSONFn = func() string { return `{"services":[{"name":"svc1"}],"checks":[]}` }
+	resp := sendCommand(t, cs.SocketPath, "status -o json")
+	if !strings.Contains(resp, `"services"`) || !strings.Contains(resp, `"svc1"`) {
+		t.Errorf("expected JSON with svc1, got: %q", resp)
+	}
+}
+
+func TestStatusJSONSingle(t *testing.T) {
+	t.Parallel()
+	cs := newTestServer(t)
+	cs.StatusJSONFn = func(name string) (string, error) {
+		return `{"name":"` + name + `","state":"up"}`, nil
+	}
+	resp := sendCommand(t, cs.SocketPath, "status svc1 -o json")
+	if !strings.Contains(resp, `"name":"svc1"`) || !strings.Contains(resp, `"state":"up"`) {
+		t.Errorf("expected JSON for svc1, got: %q", resp)
+	}
+}
+
+func TestStatusUnknownFormat(t *testing.T) {
+	t.Parallel()
+	cs := newTestServer(t)
+	resp := sendCommand(t, cs.SocketPath, "status -o xml")
+	if !strings.Contains(resp, "error") {
+		t.Errorf("expected error for unknown format, got: %q", resp)
+	}
+}
+
+func TestStatusOExpectsArg(t *testing.T) {
+	t.Parallel()
+	cs := newTestServer(t)
+	resp := sendCommand(t, cs.SocketPath, "status -o")
+	if !strings.Contains(resp, "error") {
+		t.Errorf("expected error for bare -o, got: %q", resp)
+	}
+}
+
+func TestParseStatusArgs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		args    []string
+		svc     string
+		fmt     string
+		wantErr bool
+	}{
+		{nil, "", "", false},
+		{[]string{"svc1"}, "svc1", "", false},
+		{[]string{"-o", "json"}, "", "json", false},
+		{[]string{"svc1", "-o", "json"}, "svc1", "json", false},
+		{[]string{"-o", "json", "svc1"}, "svc1", "json", false},
+		{[]string{"-o"}, "", "", true},
+		{[]string{"-o", "xml"}, "", "", true},
+		{[]string{"a", "b"}, "", "", true},
+	}
+	for _, tt := range tests {
+		svc, fmt, errMsg := parseStatusArgs(tt.args)
+		gotErr := errMsg != ""
+		if gotErr != tt.wantErr {
+			t.Errorf("parseStatusArgs(%v) errMsg=%q want err=%v", tt.args, errMsg, tt.wantErr)
+			continue
+		}
+		if !tt.wantErr && (svc != tt.svc || fmt != tt.fmt) {
+			t.Errorf("parseStatusArgs(%v) = (%q, %q); want (%q, %q)",
+				tt.args, svc, fmt, tt.svc, tt.fmt)
+		}
+	}
+}
+
 func TestReloadCmd(t *testing.T) {
 	t.Parallel()
 	cs := newTestServer(t)

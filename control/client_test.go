@@ -90,6 +90,12 @@ func TestBuildClientCommandActionFirst(t *testing.T) {
 		// one-word commands
 		{[]string{"status"}, "status", false},
 		{[]string{"reload"}, "reload", false},
+		// status with -o json flag, in all three positional forms
+		{[]string{"status", "-o", "json"}, "status -o json", false},
+		{[]string{"status", "app", "-o", "json"}, "status app -o json", false},
+		{[]string{"app", "status", "-o", "json"}, "status app -o json", false},
+		// unknown format
+		{[]string{"status", "-o", "xml"}, "", true},
 		// invalid
 		{[]string{"haproxy", "badaction"}, "", true},
 		{[]string{}, "", true},

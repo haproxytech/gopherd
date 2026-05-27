@@ -46,6 +46,34 @@ type serviceStats struct {
 	Pending bool
 }
 
+// ServiceSnapshot is a machine-readable view of one service's stats, intended
+// for JSON output of `gopherd status -o json`.
+type ServiceSnapshot struct {
+	Name      string `json:"name"`
+	State     string `json:"state"` // up, stopped, disabled, pending
+	Pid       int    `json:"pid,omitempty"`
+	Uptime    int64  `json:"uptime_seconds,omitempty"`
+	Enabled   bool   `json:"enabled"`
+	Exits     int    `json:"exits"`
+	Restarts  int    `json:"restarts"`
+	Successes int    `json:"successes"`
+	Failures  int    `json:"failures"`
+}
+
+// CheckSnapshot mirrors ServiceSnapshot for health checks.
+type CheckSnapshot struct {
+	Name     string `json:"name"`
+	Healthy  bool   `json:"healthy"`
+	Failures int    `json:"failures"`
+}
+
+// Snapshot is the full view returned by Metrics.Snapshot. Empty slices
+// marshal to "[]" rather than null so consumers can iterate unconditionally.
+type Snapshot struct {
+	Services []ServiceSnapshot `json:"services"`
+	Checks   []CheckSnapshot   `json:"checks"`
+}
+
 type checkStats struct {
 	Failures int
 	Healthy  bool
@@ -141,6 +169,7 @@ func (m *Metrics) ServiceExited(name string, exitCode int) {
 	}
 	s.Up = false
 	s.Pid = 0
+	s.Pending = false
 	s.Exits++
 	if exitCode == 0 {
 		s.Successes++
@@ -177,6 +206,74 @@ func (m *Metrics) CheckResult(name string, healthy bool) {
 	if !healthy {
 		c.Failures++
 	}
+}
+
+// Snapshot returns a structured view of all services and checks, sorted by
+// name. Counters are copied so callers can use the result without holding
+// any lock.
+func (m *Metrics) Snapshot() Snapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	svcNames := make([]string, 0, len(m.services))
+	for name := range m.services {
+		svcNames = append(svcNames, name)
+	}
+	slices.Sort(svcNames)
+	svcs := make([]ServiceSnapshot, 0, len(svcNames))
+	for _, name := range svcNames {
+		svcs = append(svcs, m.serviceSnapshotLocked(name))
+	}
+
+	chkNames := make([]string, 0, len(m.checks))
+	for name := range m.checks {
+		chkNames = append(chkNames, name)
+	}
+	slices.Sort(chkNames)
+	chks := make([]CheckSnapshot, 0, len(chkNames))
+	for _, name := range chkNames {
+		c := m.checks[name]
+		chks = append(chks, CheckSnapshot{Name: name, Healthy: c.Healthy, Failures: c.Failures})
+	}
+
+	return Snapshot{Services: svcs, Checks: chks}
+}
+
+// ServiceSnapshot returns a structured view of one service. The second return
+// is false if no service with that name has been registered.
+func (m *Metrics) ServiceSnapshot(name string) (ServiceSnapshot, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.services[name]; !ok {
+		return ServiceSnapshot{}, false
+	}
+	return m.serviceSnapshotLocked(name), true
+}
+
+// serviceSnapshotLocked must be called with m.mu held.
+func (m *Metrics) serviceSnapshotLocked(name string) ServiceSnapshot {
+	s := m.services[name]
+	snap := ServiceSnapshot{
+		Name:      name,
+		Enabled:   s.Enabled,
+		Exits:     s.Exits,
+		Restarts:  s.Restarts,
+		Successes: s.Successes,
+		Failures:  s.Failures,
+	}
+	switch {
+	case s.Up:
+		snap.State = "up"
+		snap.Pid = s.Pid
+		snap.Uptime = int64(time.Since(s.StartedAt).Truncate(time.Second).Seconds())
+	case !s.Enabled:
+		snap.State = "disabled"
+	case s.Pending:
+		snap.State = "pending"
+	default:
+		snap.State = "stopped"
+	}
+	return snap
 }
 
 // Format returns a human-readable stats summary.

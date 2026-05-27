@@ -15,6 +15,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -789,6 +790,24 @@ func (d *daemon) setupControl() *control.Server {
 	ctrlServer := control.NewServer(d.cfg.Control)
 	ctrlServer.StatsFn = func() string {
 		return d.m.Format()
+	}
+	ctrlServer.StatsJSONFn = func() string {
+		buf, err := json.Marshal(d.m.Snapshot())
+		if err != nil {
+			return fmt.Sprintf("error: marshal: %v", err)
+		}
+		return string(buf)
+	}
+	ctrlServer.StatusJSONFn = func(name string) (string, error) {
+		snap, ok := d.m.ServiceSnapshot(name)
+		if !ok {
+			return "", fmt.Errorf("unknown service %q", name)
+		}
+		buf, err := json.Marshal(snap)
+		if err != nil {
+			return "", fmt.Errorf("marshal: %w", err)
+		}
+		return string(buf), nil
 	}
 	ctrlServer.StatusFn = func(name string) (string, error) {
 		d.mu.RLock()

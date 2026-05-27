@@ -92,6 +92,8 @@ When invoked with a known command, `gopherd` connects to the running daemon via 
 ./gopherd app restart                # restart a service
 ./gopherd app status                 # show one service's status
 ./gopherd status                     # overview of all services and checks
+./gopherd status -o json             # overview as JSON (pipe to jq, etc.)
+./gopherd status app -o json         # one service as JSON
 ./gopherd signal haproxy SIGUSR2     # send a signal to a running service (e.g. reload)
 ./gopherd logs app                   # show recent logs for a service
 ./gopherd logs app -f                # stream logs (follow mode, like tail -f)

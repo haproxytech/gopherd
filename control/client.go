@@ -92,8 +92,28 @@ func IsAlive(socketPath string) bool {
 
 // buildClientCommand translates CLI args into the wire command sent to the
 // daemon. It handles both "<service> <action>" and "<action> <service>" forms
-// for the two-argument service commands.
+// for the two-argument service commands. `status` accepts an optional
+// `-o <fmt>` flag which is passed through verbatim.
 func buildClientCommand(args []string) (string, error) {
+	// Separate any trailing `-o <fmt>` flag so the positional-arg cases below
+	// don't need to know about it. Only `status` consumes the flag server-
+	// side; passing it through with any other command would be an error
+	// caught later.
+	positional, flagSuffix, err := extractOutputFlag(args)
+	if err != nil {
+		return "", err
+	}
+	cmd, err := buildPositionalCommand(positional)
+	if err != nil {
+		return "", err
+	}
+	if flagSuffix != "" {
+		return cmd + " " + flagSuffix, nil
+	}
+	return cmd, nil
+}
+
+func buildPositionalCommand(args []string) (string, error) {
 	switch {
 	case len(args) == 1 && (args[0] == "status" || args[0] == "reload"):
 		return args[0], nil
@@ -105,7 +125,6 @@ func buildClientCommand(args []string) (string, error) {
 		// Support both "gopherd <service> <action>" and "gopherd <action> <service>".
 		action, svcName := args[1], args[0]
 		if serviceActions[args[0]] {
-			// action-first form: "gopherd restart haproxy"
 			action, svcName = args[0], args[1]
 		}
 		if !serviceActions[action] {
@@ -115,6 +134,25 @@ func buildClientCommand(args []string) (string, error) {
 	default:
 		return "", fmt.Errorf("usage: gopherd <service> <start|stop|restart|status>")
 	}
+}
+
+// extractOutputFlag pulls a trailing `-o <fmt>` out of args. Only `status` is
+// expected to use it; restricting recognition to a trailing position keeps
+// service names containing the literal string "-o" workable.
+func extractOutputFlag(args []string) (positional []string, flagSuffix string, err error) {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] != "-o" {
+			continue
+		}
+		fmtVal := args[i+1]
+		if fmtVal != "json" {
+			return nil, "", fmt.Errorf("unknown output format %q (try: json)", fmtVal)
+		}
+		positional = append([]string{}, args[:i]...)
+		positional = append(positional, args[i+2:]...)
+		return positional, "-o " + fmtVal, nil
+	}
+	return args, "", nil
 }
 
 // RunClient connects to the gopherd control socket and sends a command.

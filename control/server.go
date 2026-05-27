@@ -50,6 +50,10 @@ type Server struct {
 	SignalFn  func(name, signal string) (string, error)
 	ReloadFn  func() (string, error)
 	StatsFn   func() string
+	// JSON variants for `status -o json` and `status <svc> -o json`. Wired by
+	// the daemon; nil means JSON output is not supported by this server.
+	StatsJSONFn  func() string
+	StatusJSONFn func(name string) (string, error)
 	// LogsFn returns recent lines and a subscribe channel (nil if not follow mode).
 	// The unsubscribe func must be called when done.
 	LogsFn func(name string, follow bool) (recent [][]byte, ch <-chan []byte, unsub func(), err error)
@@ -258,6 +262,30 @@ func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 	fmt.Fprintf(conn, "%s\n", resp)
 }
 
+// parseStatusArgs extracts the optional service name and `-o <fmt>` flag from
+// the trailing arguments of a `status` command. Returns an error string (to
+// be returned to the client) on malformed input.
+func parseStatusArgs(args []string) (svcName, format, errMsg string) {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-o" {
+			if i+1 >= len(args) {
+				return "", "", "error: -o requires a format (try: json)"
+			}
+			if args[i+1] != "json" {
+				return "", "", fmt.Sprintf("error: unknown output format %q (try: json)", args[i+1])
+			}
+			format = "json"
+			i++
+			continue
+		}
+		if svcName != "" {
+			return "", "", fmt.Sprintf("error: status takes at most one service name, got extra %q", args[i])
+		}
+		svcName = args[i]
+	}
+	return svcName, format, ""
+}
+
 func (cs *Server) handleCommand(parts []string) string {
 	if len(parts) == 0 {
 		return "error: empty command"
@@ -268,17 +296,38 @@ func (cs *Server) handleCommand(parts []string) string {
 	switch cmd {
 	case "status":
 		// Bare "status" returns the overview table. With a service name it
-		// returns the single-service line.
-		if len(parts) < 2 {
+		// returns the single-service line. The optional `-o <fmt>` flag (only
+		// "json" today) switches the output to a machine-readable form.
+		svcName, format, perr := parseStatusArgs(parts[1:])
+		if perr != "" {
+			return perr
+		}
+		if svcName == "" {
+			if format == "json" {
+				if cs.StatsJSONFn == nil {
+					return "error: status -o json not supported"
+				}
+				return cs.StatsJSONFn()
+			}
 			if cs.StatsFn == nil {
 				return "error: status not supported"
 			}
 			return cs.StatsFn()
 		}
+		if format == "json" {
+			if cs.StatusJSONFn == nil {
+				return "error: status -o json not supported"
+			}
+			msg, err := cs.StatusJSONFn(svcName)
+			if err != nil {
+				return fmt.Sprintf("error: %v", err)
+			}
+			return msg
+		}
 		if cs.StatusFn == nil {
 			return "error: status not supported"
 		}
-		msg, err := cs.StatusFn(parts[1])
+		msg, err := cs.StatusFn(svcName)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err)
 		}
