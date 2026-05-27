@@ -26,7 +26,7 @@ import (
 
 // ClientCommands lists valid client-mode commands for disambiguation with passthrough.
 var ClientCommands = map[string]bool{
-	"list": true, "stats": true, "start": true, "stop": true, "restart": true,
+	"start": true, "stop": true, "restart": true,
 	"status": true, "signal": true, "logs": true, "reload": true,
 }
 
@@ -95,7 +95,7 @@ func IsAlive(socketPath string) bool {
 // for the two-argument service commands.
 func buildClientCommand(args []string) (string, error) {
 	switch {
-	case len(args) == 1 && (args[0] == "list" || args[0] == "stats" || args[0] == "reload"):
+	case len(args) == 1 && (args[0] == "status" || args[0] == "reload"):
 		return args[0], nil
 	case len(args) == 3 && args[0] == "signal":
 		return "signal " + args[1] + " " + args[2], nil
@@ -130,8 +130,7 @@ func RunClient(args []string) {
 		fmt.Fprintf(os.Stderr, "       gopherd signal <service> <signal-name>\n")
 		fmt.Fprintf(os.Stderr, "       gopherd logs <service> [-f]\n")
 		fmt.Fprintf(os.Stderr, "       gopherd reload\n")
-		fmt.Fprintf(os.Stderr, "       gopherd stats\n")
-		fmt.Fprintf(os.Stderr, "       gopherd list\n")
+		fmt.Fprintf(os.Stderr, "       gopherd status [service]\n")
 		os.Exit(1)
 	}
 

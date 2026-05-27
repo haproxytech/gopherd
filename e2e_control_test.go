@@ -120,7 +120,7 @@ processes:
 	// A control-socket restart counts as one `restarts +1` and must NOT bump
 	// `exits` or `ok`/`fail` — operator-initiated restarts are accounted as a
 	// single restart event rather than exit-and-start.
-	resp = td.sendCommand("stats")
+	resp = td.sendCommand("status")
 	if !strings.Contains(resp, "restarts=1") {
 		t.Errorf("expected restarts=1, got: %s", resp)
 	}

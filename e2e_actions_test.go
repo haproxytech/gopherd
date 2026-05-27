@@ -60,7 +60,7 @@ processes:
 	time.Sleep(2 * time.Second)
 
 	// Verify stats show restarts.
-	resp := td.sendCommand("stats")
+	resp := td.sendCommand("status")
 	if !strings.Contains(resp, "restarter") {
 		t.Fatalf("expected restarter in stats, got: %s", resp)
 	}
@@ -90,7 +90,7 @@ processes:
 	// Wait for a few restarts.
 	time.Sleep(2 * time.Second)
 
-	resp := td.sendCommand("stats")
+	resp := td.sendCommand("status")
 	if !strings.Contains(resp, "flaky") {
 		t.Fatalf("expected flaky in stats, got: %s", resp)
 	}

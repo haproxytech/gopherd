@@ -29,8 +29,7 @@ func TestIsClientCommand(t *testing.T) {
 		want bool
 	}{
 		{nil, false},
-		{[]string{"list"}, true},
-		{[]string{"stats"}, true},
+		{[]string{"status"}, true},
 		{[]string{"reload"}, true},
 		{[]string{"restart", "haproxy"}, true},
 		{[]string{"haproxy", "restart"}, true},
@@ -89,8 +88,7 @@ func TestBuildClientCommandActionFirst(t *testing.T) {
 		{[]string{"stop", "haproxy"}, "stop haproxy", false},
 		{[]string{"status", "haproxy"}, "status haproxy", false},
 		// one-word commands
-		{[]string{"list"}, "list", false},
-		{[]string{"stats"}, "stats", false},
+		{[]string{"status"}, "status", false},
 		{[]string{"reload"}, "reload", false},
 		// invalid
 		{[]string{"haproxy", "badaction"}, "", true},

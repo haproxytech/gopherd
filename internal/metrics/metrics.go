@@ -32,11 +32,13 @@ type Metrics struct {
 
 type serviceStats struct {
 	StartedAt time.Time
+	Pid       int
 	Restarts  int
 	Exits     int
 	Failures  int
 	Successes int
 	Up        bool
+	Enabled   bool
 }
 
 type checkStats struct {
@@ -52,10 +54,14 @@ func New() *Metrics {
 	}
 }
 
-func (m *Metrics) svc(name string) *serviceStats {
+// svcRegister returns the entry for name, creating it if absent. Used only
+// by RegisterService — event methods (Started/Exited/Restarted) must not
+// create entries, otherwise a service unregistered by reload would be
+// resurrected by its own late exit event.
+func (m *Metrics) svcRegister(name string) *serviceStats {
 	s, ok := m.services[name]
 	if !ok {
-		s = &serviceStats{}
+		s = &serviceStats{Enabled: true}
 		m.services[name] = s
 	}
 	return s
@@ -70,21 +76,50 @@ func (m *Metrics) chk(name string) *checkStats {
 	return c
 }
 
-// ServiceStarted records that a service has started.
-func (m *Metrics) ServiceStarted(name string) {
+// RegisterService seeds a service in the metrics map so it appears in stats
+// before its first run. Idempotent: re-registering updates Enabled (so a
+// reload that toggles startup:disabled is reflected) but preserves counters.
+func (m *Metrics) RegisterService(name string, enabled bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s := m.svc(name)
+	s := m.svcRegister(name)
+	s.Enabled = enabled
+}
+
+// UnregisterService removes a service entry, e.g. after a reload drops it
+// from the config. Counters for a service that no longer exists would be
+// misleading in stats output.
+func (m *Metrics) UnregisterService(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.services, name)
+}
+
+// ServiceStarted records that a service has started. A no-op if name was
+// never registered (e.g. unregistered by a reload before the event landed).
+func (m *Metrics) ServiceStarted(name string, pid int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.services[name]
+	if !ok {
+		return
+	}
 	s.Up = true
+	s.Pid = pid
 	s.StartedAt = time.Now()
 }
 
-// ServiceExited records that a service has exited.
+// ServiceExited records that a service has exited. A no-op if name was
+// never registered.
 func (m *Metrics) ServiceExited(name string, exitCode int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s := m.svc(name)
+	s, ok := m.services[name]
+	if !ok {
+		return
+	}
 	s.Up = false
+	s.Pid = 0
 	s.Exits++
 	if exitCode == 0 {
 		s.Successes++
@@ -93,11 +128,14 @@ func (m *Metrics) ServiceExited(name string, exitCode int) {
 	}
 }
 
-// ServiceRestarted records a service restart.
+// ServiceRestarted records a service restart. A no-op if name was never
+// registered.
 func (m *Metrics) ServiceRestarted(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.svc(name).Restarts++
+	if s, ok := m.services[name]; ok {
+		s.Restarts++
+	}
 }
 
 // RegisterCheck seeds a check in the metrics map so it appears in stats
@@ -136,10 +174,15 @@ func (m *Metrics) Format() string {
 		slices.Sort(svcNames)
 		for _, name := range svcNames {
 			s := m.services[name]
-			state := "stopped"
-			if s.Up {
+			var state string
+			switch {
+			case s.Up:
 				uptime := time.Since(s.StartedAt).Truncate(time.Second)
-				state = fmt.Sprintf("up %s", uptime)
+				state = fmt.Sprintf("up %s pid=%d", uptime, s.Pid)
+			case !s.Enabled:
+				state = "disabled"
+			default:
+				state = "stopped"
 			}
 			fmt.Fprintf(&b, "  %-20s %s  exits=%d restarts=%d ok=%d fail=%d\n",
 				name, state, s.Exits, s.Restarts, s.Successes, s.Failures)

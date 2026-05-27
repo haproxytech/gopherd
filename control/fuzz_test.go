@@ -29,8 +29,7 @@ func FuzzHandleCommand(f *testing.F) {
 		"",
 		" ",
 		"\t\t\t",
-		"list",
-		"stats",
+		"status",
 		"start",
 		"start svc",
 		"stop svc",
@@ -66,7 +65,6 @@ func FuzzHandleCommand(f *testing.F) {
 		SignalFn:  func(name, sig string) (string, error) { return "signaled " + name + " " + sig, nil },
 		ReloadFn:  func() (string, error) { return "reloaded", nil },
 		StatsFn:   func() string { return "stats" },
-		ListFn:    func() string { return "list" },
 	}
 
 	f.Fuzz(func(t *testing.T, line string) {

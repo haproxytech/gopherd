@@ -250,14 +250,8 @@ func TestSetupControl(t *testing.T) {
 
 	// Test StatsFn.
 	stats := ctrl.StatsFn()
-	if stats == "" {
-		t.Error("StatsFn returned empty string")
-	}
-
-	// Test ListFn.
-	list := ctrl.ListFn()
-	if !strings.Contains(list, "app") {
-		t.Errorf("ListFn should list 'app', got %q", list)
+	if !strings.Contains(stats, "app") {
+		t.Errorf("StatsFn should include 'app', got %q", stats)
 	}
 
 	// Test StatusFn for existing service.
@@ -297,13 +291,13 @@ func TestSetupControl(t *testing.T) {
 	}
 }
 
-func TestSetupControlListEmpty(t *testing.T) {
+func TestSetupControlStatsEmpty(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemon(nil)
 	ctrl := d.setupControl()
-	list := ctrl.ListFn()
-	if list != "no services" {
-		t.Errorf("expected 'no services', got %q", list)
+	stats := ctrl.StatsFn()
+	if stats != "no stats" {
+		t.Errorf("expected 'no stats', got %q", stats)
 	}
 }
 

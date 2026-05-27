@@ -50,7 +50,6 @@ type Server struct {
 	SignalFn  func(name, signal string) (string, error)
 	ReloadFn  func() (string, error)
 	StatsFn   func() string
-	ListFn    func() string
 	// LogsFn returns recent lines and a subscribe channel (nil if not follow mode).
 	// The unsubscribe func must be called when done.
 	LogsFn func(name string, follow bool) (recent [][]byte, ch <-chan []byte, unsub func(), err error)
@@ -267,19 +266,25 @@ func (cs *Server) handleCommand(parts []string) string {
 	cmd := parts[0]
 
 	switch cmd {
-	case "list":
-		if cs.ListFn == nil {
-			return "error: list not supported"
+	case "status":
+		// Bare "status" returns the overview table. With a service name it
+		// returns the single-service line.
+		if len(parts) < 2 {
+			if cs.StatsFn == nil {
+				return "error: status not supported"
+			}
+			return cs.StatsFn()
 		}
-		return cs.ListFn()
-
-	case "stats":
-		if cs.StatsFn == nil {
-			return "error: stats not supported"
+		if cs.StatusFn == nil {
+			return "error: status not supported"
 		}
-		return cs.StatsFn()
+		msg, err := cs.StatusFn(parts[1])
+		if err != nil {
+			return fmt.Sprintf("error: %v", err)
+		}
+		return msg
 
-	case "start", "stop", "restart", "status":
+	case "start", "stop", "restart":
 		if len(parts) < 2 {
 			return fmt.Sprintf("error: %s requires a service name", cmd)
 		}
@@ -292,8 +297,6 @@ func (cs *Server) handleCommand(parts []string) string {
 			fn = cs.StopFn
 		case "restart":
 			fn = cs.RestartFn
-		case "status":
-			fn = cs.StatusFn
 		}
 		if fn == nil {
 			return fmt.Sprintf("error: %s not supported", cmd)
@@ -328,7 +331,7 @@ func (cs *Server) handleCommand(parts []string) string {
 		return msg
 
 	default:
-		return fmt.Sprintf("error: unknown command %q (try: list, stats, start, stop, restart, status, signal, logs, reload)", cmd)
+		return fmt.Sprintf("error: unknown command %q (try: start, stop, restart, status, signal, logs, reload)", cmd)
 	}
 }
 

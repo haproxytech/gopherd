@@ -80,11 +80,12 @@ func run(entrypointArgs []string) int {
 		fmt.Fprintf(os.Stderr, "  gopherd signal <service> <signal-name>\n")
 		fmt.Fprintf(os.Stderr, "  gopherd logs <service> [-f]\n")
 		fmt.Fprintf(os.Stderr, "  gopherd reload\n")
-		fmt.Fprintf(os.Stderr, "  gopherd stats\n")
-		fmt.Fprintf(os.Stderr, "  gopherd list\n")
-		fmt.Fprintf(os.Stderr, "\ncurrent stats:\n")
+		fmt.Fprintf(os.Stderr, "  gopherd status                 # overview of all services and checks\n")
+		fmt.Fprintf(os.Stderr, "  gopherd version\n")
+		fmt.Fprintf(os.Stderr, "  gopherd tag\n")
+		fmt.Fprintf(os.Stderr, "\ncurrent status:\n")
 		os.Setenv("GOPHERD_SOCKET", socketPath)
-		control.RunClient([]string{"stats"})
+		control.RunClient([]string{"status"})
 		return 1
 	}
 
@@ -531,7 +532,7 @@ func runLayerOneshots(d *daemon, layer []string) {
 			log.Fatalf("oneshot %s: %v", svc.Name, err)
 		}
 		log.Printf("started oneshot %s (pid %d)", svc.Name, pid)
-		d.m.ServiceStarted(svc.Name)
+		d.m.ServiceStarted(svc.Name, pid)
 		procs = append(procs, started{svc: svc, pid: pid})
 	}
 	if len(procs) == 0 {

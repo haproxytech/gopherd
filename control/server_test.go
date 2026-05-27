@@ -33,7 +33,6 @@ func testSocket(t *testing.T) string {
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	cs := NewServer(Config{SocketPath: testSocket(t)})
-	cs.ListFn = func() string { return "svc1 running\nsvc2 stopped" }
 	cs.StatusFn = func(name string) (string, error) {
 		if name == "svc1" {
 			return "svc1: running (pid 42)", nil
@@ -105,15 +104,6 @@ func sendCommand(t *testing.T, socketPath, cmd string) string {
 		lines = append(lines, scanner.Text())
 	}
 	return strings.Join(lines, "\n")
-}
-
-func TestList(t *testing.T) {
-	t.Parallel()
-	cs := newTestServer(t)
-	resp := sendCommand(t, cs.SocketPath, "list")
-	if !strings.Contains(resp, "svc1") || !strings.Contains(resp, "svc2") {
-		t.Errorf("unexpected: %q", resp)
-	}
 }
 
 func TestStatus(t *testing.T) {
@@ -210,7 +200,6 @@ func TestSocketCleanup(t *testing.T) {
 	t.Parallel()
 	path := testSocket(t)
 	cs := NewServer(Config{SocketPath: path})
-	cs.ListFn = func() string { return "" }
 	cs.StatusFn = func(string) (string, error) { return "", nil }
 	cs.StartFn = func(string) (string, error) { return "", nil }
 	cs.StopFn = func(string) (string, error) { return "", nil }
@@ -229,12 +218,12 @@ func TestSocketCleanup(t *testing.T) {
 	}
 }
 
-func TestStatsCmd(t *testing.T) {
+func TestStatusOverviewCmd(t *testing.T) {
 	t.Parallel()
 	cs := newTestServer(t)
-	resp := sendCommand(t, cs.SocketPath, "stats")
+	resp := sendCommand(t, cs.SocketPath, "status")
 	if !strings.Contains(resp, "svc1") {
-		t.Errorf("expected svc1 in stats, got: %q", resp)
+		t.Errorf("expected svc1 in overview, got: %q", resp)
 	}
 }
 
@@ -335,7 +324,7 @@ func TestLogsFollowUnblocksOnStop(t *testing.T) {
 
 func TestClientCommands(t *testing.T) {
 	t.Parallel()
-	for _, cmd := range []string{"list", "stats", "start", "stop", "restart", "status", "signal", "logs", "reload"} {
+	for _, cmd := range []string{"start", "stop", "restart", "status", "signal", "logs", "reload"} {
 		if !ClientCommands[cmd] {
 			t.Errorf("expected %q to be a client command", cmd)
 		}

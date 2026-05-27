@@ -27,7 +27,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Readiness gates** — block dependent services until a health check passes or the service writes `READY=1` to `$NOTIFY_SOCKET` (systemd-compatible sd_notify)
 - **Log prefixing** — service name and timestamp on every output line (configurable format)
 - **Log targets** — forward logs to syslog (UDP/TCP) or files
-- **Stats tracking** — service uptime, restarts, exits, and health check results via `gopherd stats`
+- **Status reporting** — service uptime, restarts, exits, and health check results via `gopherd status`
 - **Control socket** — start/stop/restart/status/signal/reload/stats/logs services at runtime via Unix socket
 - **Log streaming** — `gopherd logs <service> -f` for live log tailing via control socket
 - **Hot reload** — `gopherd reload` or SIGHUP to re-read config and reconcile services without restart
@@ -87,17 +87,20 @@ Default config path: `/etc/gopherd/gopherd.yml` (override via `GOPHERD_CONFIG` e
 When invoked with a known command, `gopherd` connects to the running daemon via Unix socket:
 
 ```bash
-./gopherd list                       # list all services and their status
 ./gopherd app start                  # start a stopped service
 ./gopherd app stop                   # stop a running service
 ./gopherd app restart                # restart a service
-./gopherd app status                 # show service status
+./gopherd app status                 # show one service's status
+./gopherd status                     # overview of all services and checks
 ./gopherd signal haproxy SIGUSR2     # send a signal to a running service (e.g. reload)
 ./gopherd logs app                   # show recent logs for a service
 ./gopherd logs app -f                # stream logs (follow mode, like tail -f)
-./gopherd stats                      # show service and check statistics
 ./gopherd reload                     # hot-reload config (add/remove/update services)
+./gopherd version                    # print version, repo, and commit date
+./gopherd tag                        # print just the version tag (handy for CI scripts)
 ```
+
+The `start`/`stop`/`restart`/`status` actions accept either order: `gopherd app stop` and `gopherd stop app` are equivalent.
 
 Override socket path with `GOPHERD_SOCKET` env var (default: `/run/gopherd.sock`).
 
@@ -110,7 +113,7 @@ docker run myimage /bin/sh           # drops into a shell, bypasses init
 docker run myimage ls -la /etc       # runs ls, exits
 ```
 
-Known client commands (`list`, `stats`, `start`, `stop`, `restart`, `status`, `signal`, `logs`, `reload`) still go to client mode.
+Known client commands (`start`, `stop`, `restart`, `status`, `signal`, `logs`, `reload`) still go to client mode.
 
 #### Entrypoint extra args
 

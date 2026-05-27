@@ -39,10 +39,10 @@ processes:
 		t.Fatalf("expected sleeper running, got: %s", resp)
 	}
 
-	// Verify list shows the service.
-	resp = td.sendCommand("list")
+	// Verify stats shows the service.
+	resp = td.sendCommand("status")
 	if !strings.Contains(resp, "sleeper") {
-		t.Fatalf("expected sleeper in list, got: %s", resp)
+		t.Fatalf("expected sleeper in stats, got: %s", resp)
 	}
 
 	// SIGTERM should shut down cleanly.
@@ -133,7 +133,7 @@ processes:
 `)
 	defer td.kill()
 
-	resp := td.sendCommand("stats")
+	resp := td.sendCommand("status")
 	if !strings.Contains(resp, "web") {
 		t.Errorf("expected 'web' in stats, got: %s", resp)
 	}

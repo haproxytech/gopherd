@@ -21,7 +21,6 @@ import (
 	"maps"
 	"os"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -266,7 +265,7 @@ func (d *daemon) startService(svc *service.Service) (int, error) {
 	// reaped (which calls ServiceExited) before we have recorded the start.
 	// With the call outside the lock the metrics could show exits > starts
 	// transiently, which is misleading in "stats" output.
-	d.m.ServiceStarted(svc.Name)
+	d.m.ServiceStarted(svc.Name, pid)
 	d.mu.Unlock()
 	log.Printf("started %s (pid %d)", svc.Name, pid)
 	return pid, nil
@@ -470,6 +469,7 @@ func (d *daemon) buildServices() error {
 			return err
 		}
 		d.services[svc.Name] = svc
+		d.m.RegisterService(svc.Name, svc.Enabled)
 		for _, lt := range d.logTargets {
 			if lt.AppliesTo(svc.Name) {
 				svc.Stdout.AddTarget(lt.Writer)
@@ -681,6 +681,15 @@ func (d *daemon) reload() (string, error) {
 		return "", fmt.Errorf("reload: %w", err)
 	}
 
+	// Drop metrics entries for services that were removed from the config so
+	// stale counters don't linger in the stats output. Services still in the
+	// new config were just re-registered by buildServices().
+	for name := range oldServices {
+		if _, exists := d.services[name]; !exists {
+			d.m.UnregisterService(name)
+		}
+	}
+
 	// Preserve running state: if a service was running and its process config
 	// is unchanged, keep the existing service wrapper. If any field that
 	// affects the running process changed, stop the old instance so the new
@@ -780,28 +789,6 @@ func (d *daemon) setupControl() *control.Server {
 	ctrlServer := control.NewServer(d.cfg.Control)
 	ctrlServer.StatsFn = func() string {
 		return d.m.Format()
-	}
-	ctrlServer.ListFn = func() string {
-		d.mu.RLock()
-		defer d.mu.RUnlock()
-		var lines []string
-		for _, svc := range d.services {
-			var state string
-			switch {
-			case svc.IsRunning():
-				state = fmt.Sprintf("running (pid %d)", int(svc.Pid.Load()))
-			case !svc.Enabled:
-				state = "disabled"
-			default:
-				state = "stopped"
-			}
-			lines = append(lines, fmt.Sprintf("%-20s %s", svc.Name, state))
-		}
-		if len(lines) == 0 {
-			return "no services"
-		}
-		slices.Sort(lines)
-		return strings.Join(lines, "\n")
 	}
 	ctrlServer.StatusFn = func(name string) (string, error) {
 		d.mu.RLock()

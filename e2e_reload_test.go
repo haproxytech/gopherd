@@ -42,7 +42,7 @@ processes:
 	defer td.kill()
 
 	// Both should be running.
-	resp := td.sendCommand("list")
+	resp := td.sendCommand("status")
 	if !strings.Contains(resp, "svc-a") || !strings.Contains(resp, "svc-b") {
 		t.Fatalf("expected both services in list, got: %s", resp)
 	}
@@ -71,7 +71,7 @@ processes:
 	time.Sleep(1 * time.Second)
 
 	// svc-a should still be running, svc-c should be running, svc-b should be gone.
-	resp = td.sendCommand("list")
+	resp = td.sendCommand("status")
 	if !strings.Contains(resp, "svc-a") {
 		t.Errorf("expected svc-a in list after reload, got: %s", resp)
 	}
@@ -188,7 +188,7 @@ processes:
 	td.signal(syscall.SIGHUP)
 	time.Sleep(2 * time.Second)
 
-	resp := td.sendCommand("list")
+	resp := td.sendCommand("status")
 	if !strings.Contains(resp, "added") {
 		t.Errorf("expected 'added' service after SIGHUP reload, got: %s", resp)
 	}

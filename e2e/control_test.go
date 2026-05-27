@@ -92,15 +92,10 @@ status=$(/usr/local/bin/gopherd keeper status 2>&1)
 echo "status: $status"
 echo "$status" | grep -q "running" || { echo "FAIL: keeper not running"; exit 1; }
 
-# List command
-list=$(/usr/local/bin/gopherd list 2>&1)
-echo "list: $list"
-echo "$list" | grep -q "keeper" || { echo "FAIL: keeper not in list"; exit 1; }
-
-# Stats command
-stats=$(/usr/local/bin/gopherd stats 2>&1)
-echo "stats: $stats"
-echo "$stats" | grep -q "keeper" || { echo "FAIL: keeper not in stats"; exit 1; }
+# Bare status: overview of all services
+overview=$(/usr/local/bin/gopherd status 2>&1)
+echo "overview: $overview"
+echo "$overview" | grep -q "keeper" || { echo "FAIL: keeper not in overview"; exit 1; }
 
 echo "PASS"
 `,
@@ -157,17 +152,17 @@ processes:
 	time.Sleep(1 * time.Second)
 
 	// Verify svc-b appeared.
-	listOut, err := exec.Command("docker", "exec", dc.id,
-		"/usr/local/bin/gopherd", "list").CombinedOutput()
+	statsOut, err := exec.Command("docker", "exec", dc.id,
+		"/usr/local/bin/gopherd", "status").CombinedOutput()
 	if err != nil {
-		t.Fatalf("list command failed: %v\n%s", err, listOut)
+		t.Fatalf("stats command failed: %v\n%s", err, statsOut)
 	}
-	list := string(listOut)
-	if !strings.Contains(list, "svc-a") {
-		t.Errorf("expected svc-a in list: %s", list)
+	stats := string(statsOut)
+	if !strings.Contains(stats, "svc-a") {
+		t.Errorf("expected svc-a in stats: %s", stats)
 	}
-	if !strings.Contains(list, "svc-b") {
-		t.Errorf("expected svc-b in list after reload: %s", list)
+	if !strings.Contains(stats, "svc-b") {
+		t.Errorf("expected svc-b in stats after reload: %s", stats)
 	}
 
 	dc.signal("TERM")

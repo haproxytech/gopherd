@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-// Regression: a configured check must appear in `gopherd stats` immediately,
+// Regression: a configured check must appear in `gopherd status` immediately,
 // even before its initial-delay window elapses and its first probe runs.
 // Pre-fix, the checks map was populated lazily by the first CheckResult call,
 // so a check with initial-delay was invisible during the blind window.
@@ -46,7 +46,7 @@ checks:
 `)
 	defer td.kill()
 
-	resp := td.sendCommand("stats")
+	resp := td.sendCommand("status")
 	if !strings.Contains(resp, "slow") {
 		t.Errorf("expected check 'slow' in stats before first probe, got: %s", resp)
 	}
@@ -82,7 +82,7 @@ checks:
 	// Wait for the check to start passing.
 	time.Sleep(3 * time.Second)
 
-	resp := td.sendCommand("stats")
+	resp := td.sendCommand("status")
 	if !strings.Contains(resp, "app-health") {
 		t.Errorf("expected app-health in stats, got: %s", resp)
 	}

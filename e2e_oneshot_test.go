@@ -168,7 +168,7 @@ processes:
 }
 
 // Regression: oneshots that complete during startup must appear in
-// `gopherd stats`. Pre-fix, runLayerOneshots called svc.Start() directly,
+// `gopherd status`. Pre-fix, runLayerOneshots called svc.Start() directly,
 // bypassing the metrics map, so a oneshot was invisible in stats until
 // something else (a check-failure restart, a control restart) re-entered
 // startService.
@@ -189,7 +189,7 @@ processes:
 
 	time.Sleep(300 * time.Millisecond)
 
-	resp := td.sendCommand("stats")
+	resp := td.sendCommand("status")
 	if !strings.Contains(resp, "init-step") {
 		t.Errorf("expected init-step in stats, got: %s", resp)
 	}

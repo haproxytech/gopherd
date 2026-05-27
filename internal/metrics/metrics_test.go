@@ -22,17 +22,22 @@ import (
 func TestServiceStarted(t *testing.T) {
 	t.Parallel()
 	m := New()
-	m.ServiceStarted("app")
+	m.RegisterService("app", true)
+	m.ServiceStarted("app", 1234)
 	out := m.Format()
 	if !strings.Contains(out, "app") || !strings.Contains(out, "up") {
 		t.Errorf("expected app up, got:\n%s", out)
+	}
+	if !strings.Contains(out, "pid=1234") {
+		t.Errorf("expected pid=1234 in output, got:\n%s", out)
 	}
 }
 
 func TestServiceExited(t *testing.T) {
 	t.Parallel()
 	m := New()
-	m.ServiceStarted("app")
+	m.RegisterService("app", true)
+	m.ServiceStarted("app", 1234)
 	m.ServiceExited("app", 1)
 	out := m.Format()
 	if !strings.Contains(out, "stopped") {
@@ -46,6 +51,7 @@ func TestServiceExited(t *testing.T) {
 func TestServiceExitedSuccess(t *testing.T) {
 	t.Parallel()
 	m := New()
+	m.RegisterService("app", true)
 	m.ServiceExited("app", 0)
 	out := m.Format()
 	if !strings.Contains(out, "ok=1") {
@@ -56,11 +62,34 @@ func TestServiceExitedSuccess(t *testing.T) {
 func TestServiceRestarted(t *testing.T) {
 	t.Parallel()
 	m := New()
+	m.RegisterService("app", true)
 	m.ServiceRestarted("app")
 	m.ServiceRestarted("app")
 	out := m.Format()
 	if !strings.Contains(out, "restarts=2") {
 		t.Errorf("expected restarts=2, got:\n%s", out)
+	}
+}
+
+func TestServiceDisabled(t *testing.T) {
+	t.Parallel()
+	m := New()
+	m.RegisterService("app", false)
+	out := m.Format()
+	if !strings.Contains(out, "disabled") {
+		t.Errorf("expected disabled, got:\n%s", out)
+	}
+}
+
+func TestUnregisterServiceSuppressesLateExit(t *testing.T) {
+	t.Parallel()
+	m := New()
+	m.RegisterService("app", true)
+	m.UnregisterService("app")
+	m.ServiceExited("app", 0)
+	out := m.Format()
+	if strings.Contains(out, "app") {
+		t.Errorf("unregistered service must not reappear after late exit, got:\n%s", out)
 	}
 }
 
