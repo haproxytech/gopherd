@@ -39,6 +39,9 @@ var exprRe = regexp.MustCompile(
 func Eval(expr string, totalCPUs int) (int, error) {
 	expr = trimSpace(expr)
 	if expr == "" {
+		if totalCPUs < 1 {
+			return 1, nil
+		}
 		return totalCPUs, nil
 	}
 
