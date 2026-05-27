@@ -21,6 +21,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -179,6 +181,18 @@ func (td *testDaemon) kill() {
 func (td *testDaemon) stop() int {
 	td.signal(syscall.SIGTERM)
 	return td.wait(10 * time.Second)
+}
+
+// daemonAlive returns true if the control socket still accepts a connection.
+// Checking td.cmd.ProcessState would be misleading here because ProcessState
+// is only populated after Wait() is called.
+func (td *testDaemon) daemonAlive() bool {
+	conn, err := net.DialTimeout("unix", td.socketPath, 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
 
 // updateConfig writes a new config to the daemon's config file (for reload tests).
@@ -439,6 +453,63 @@ processes:
 	}
 }
 
+// TestE2EOneshotStartupTimeout verifies that a oneshot which hangs past its
+// startup-timeout is killed and treated as a fatal startup failure. Without
+// this, a wedged init step would block the daemon indefinitely before any
+// dependent service could be started.
+func TestE2EOneshotStartupTimeout(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "gopherd.yml")
+	sockPath := filepath.Join(dir, "gopherd.sock")
+
+	config := fmt.Sprintf(`no-logo: true
+control:
+  socket: %s
+
+processes:
+  - name: hung-init
+    command: sleep
+    args: ["300"]
+    startup: oneshot
+    startup-timeout: 500ms
+
+  - name: app
+    command: sleep
+    args: ["300"]
+    after: [hung-init]
+`, sockPath)
+	os.WriteFile(cfgPath, []byte(config), 0o644)
+
+	cmd := exec.Command(testBinary)
+	cmd.Env = append(os.Environ(), "GOPHERD_CONFIG="+cfgPath, "GOPHERD_SOCKET="+sockPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	start := time.Now()
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() {
+		cmd.Process.Signal(syscall.SIGKILL)
+		cmd.Wait()
+	}()
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected non-zero exit for timed-out oneshot")
+		}
+		// Generous upper bound: the timeout is 500ms; allow startup overhead
+		// but ensure we did not wait anywhere near the sleep 300 horizon.
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Errorf("daemon took %s to exit after 500ms timeout — startup-timeout did not fire", elapsed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon did not exit after oneshot startup-timeout")
+	}
+}
+
 func TestE2EDisabledService(t *testing.T) {
 	td := startDaemon(t, `
 processes:
@@ -559,7 +630,7 @@ processes:
 
 	time.Sleep(1500 * time.Millisecond)
 
-	if td.cmd.ProcessState != nil {
+	if !td.daemonAlive() {
 		t.Fatalf("daemon exited unexpectedly after restart")
 	}
 	resp = td.sendCommand("status svc")
@@ -855,6 +926,78 @@ processes:
 	}
 	if strings.Contains(resp, "svc-b") {
 		t.Errorf("svc-b should be removed after reload, got: %s", resp)
+	}
+
+	td.stop()
+}
+
+// TestE2EHotReloadOnFailureInPlace verifies that a reload which only changes
+// `on-failure` mutates the running service's policy in place — no restart —
+// and that the new policy applies to the next crash. Pre-reload semantics
+// would shut the daemon down on the crash; post-reload semantics ignore it.
+func TestE2EHotReloadOnFailureInPlace(t *testing.T) {
+	td := startDaemon(t, `
+processes:
+  - name: keeper
+    command: sleep
+    args: ["300"]
+    on-failure: shutdown
+
+  - name: crasher
+    command: sleep
+    args: ["300"]
+    on-failure: shutdown
+    on-success: ignore
+`)
+	defer td.kill()
+
+	resp := td.sendCommand("status crasher")
+	if !strings.Contains(resp, "running") {
+		t.Fatalf("expected crasher running, got: %s", resp)
+	}
+
+	// Reload with on-failure flipped to ignore. Same command + args so no
+	// restart is required; only policy fields mutate in place.
+	td.updateConfig(`
+processes:
+  - name: keeper
+    command: sleep
+    args: ["300"]
+    on-failure: shutdown
+
+  - name: crasher
+    command: sleep
+    args: ["300"]
+    on-failure: ignore
+    on-success: ignore
+`)
+	resp = td.sendCommand("reload")
+	if strings.Contains(resp, "error") {
+		t.Fatalf("reload failed: %s", resp)
+	}
+
+	// Confirm crasher was NOT restarted by the reload (in-place policy update).
+	resp = td.sendCommand("status crasher")
+	if !strings.Contains(resp, "running") {
+		t.Fatalf("crasher should still be running after policy-only reload, got: %s", resp)
+	}
+
+	// Crash the service via a real signal (not Stop()), so WasStopped() stays
+	// false and the reap loop dispatches the OnFailure action. With the new
+	// policy that action is Ignore; the daemon must stay alive.
+	resp = td.sendCommand("signal crasher SIGKILL")
+	if strings.Contains(resp, "error") {
+		t.Fatalf("signal failed: %s", resp)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	if !td.daemonAlive() {
+		t.Fatalf("daemon exited unexpectedly after reloaded on-failure: ignore should have suppressed shutdown")
+	}
+	resp = td.sendCommand("status crasher")
+	if !strings.Contains(resp, "stopped") {
+		t.Errorf("expected crasher stopped, got: %s", resp)
 	}
 
 	td.stop()
@@ -1165,6 +1308,391 @@ processes:
 	if code != 0 {
 		t.Errorf("expected exit code 0, got %d", code)
 	}
+}
+
+// TestE2EShutdownOrderReverseDep asserts the default `reverse-dep` shutdown
+// order: dependents stop before their dependencies. With C `after: [B]` and
+// B `after: [A]`, the stop order must be C, B, A.
+func TestE2EShutdownOrderReverseDep(t *testing.T) {
+	dir := t.TempDir()
+	order := filepath.Join(dir, "shutdown-order")
+	td := startDaemon(t, fmt.Sprintf(`
+shutdown-order: reverse-dep
+processes:
+  - name: a
+    command: /bin/sh
+    args: ["-c", "trap 'echo a >> %[1]s; exit 0' TERM; while true; do sleep 0.1; done"]
+    on-failure: shutdown
+    on-success: ignore
+    kill-delay: 5s
+  - name: b
+    command: /bin/sh
+    args: ["-c", "trap 'echo b >> %[1]s; exit 0' TERM; while true; do sleep 0.1; done"]
+    after: [a]
+    on-failure: shutdown
+    on-success: ignore
+    kill-delay: 5s
+  - name: c
+    command: /bin/sh
+    args: ["-c", "trap 'echo c >> %[1]s; exit 0' TERM; while true; do sleep 0.1; done"]
+    after: [b]
+    on-failure: shutdown
+    on-success: ignore
+    kill-delay: 5s
+`, order))
+	defer td.kill()
+
+	time.Sleep(500 * time.Millisecond)
+	if code := td.stop(); code != 0 {
+		t.Errorf("exit code: %d", code)
+	}
+
+	want := []string{"c", "b", "a"}
+	got := readShutdownOrder(t, order)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("shutdown order = %v, want %v", got, want)
+	}
+}
+
+// TestE2EShutdownOrderDep asserts `shutdown-order: dep` stops dependencies
+// before dependents: A, B, C.
+func TestE2EShutdownOrderDep(t *testing.T) {
+	dir := t.TempDir()
+	order := filepath.Join(dir, "shutdown-order")
+	td := startDaemon(t, fmt.Sprintf(`
+shutdown-order: dep
+processes:
+  - name: a
+    command: /bin/sh
+    args: ["-c", "trap 'echo a >> %[1]s; exit 0' TERM; while true; do sleep 0.1; done"]
+    on-failure: shutdown
+    on-success: ignore
+    kill-delay: 5s
+  - name: b
+    command: /bin/sh
+    args: ["-c", "trap 'echo b >> %[1]s; exit 0' TERM; while true; do sleep 0.1; done"]
+    after: [a]
+    on-failure: shutdown
+    on-success: ignore
+    kill-delay: 5s
+  - name: c
+    command: /bin/sh
+    args: ["-c", "trap 'echo c >> %[1]s; exit 0' TERM; while true; do sleep 0.1; done"]
+    after: [b]
+    on-failure: shutdown
+    on-success: ignore
+    kill-delay: 5s
+`, order))
+	defer td.kill()
+
+	time.Sleep(500 * time.Millisecond)
+	if code := td.stop(); code != 0 {
+		t.Errorf("exit code: %d", code)
+	}
+
+	want := []string{"a", "b", "c"}
+	got := readShutdownOrder(t, order)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("shutdown order = %v, want %v", got, want)
+	}
+}
+
+// TestE2EShutdownOrderSimultaneous asserts that `simultaneous` mode signals
+// all services together. We can't pin a strict order — only that every
+// service got the signal and recorded its exit.
+func TestE2EShutdownOrderSimultaneous(t *testing.T) {
+	dir := t.TempDir()
+	order := filepath.Join(dir, "shutdown-order")
+	td := startDaemon(t, fmt.Sprintf(`
+shutdown-order: simultaneous
+processes:
+  - name: a
+    command: /bin/sh
+    args: ["-c", "trap 'echo a >> %[1]s; exit 0' TERM; while true; do sleep 0.1; done"]
+    on-failure: shutdown
+    on-success: ignore
+  - name: b
+    command: /bin/sh
+    args: ["-c", "trap 'echo b >> %[1]s; exit 0' TERM; while true; do sleep 0.1; done"]
+    after: [a]
+    on-failure: shutdown
+    on-success: ignore
+  - name: c
+    command: /bin/sh
+    args: ["-c", "trap 'echo c >> %[1]s; exit 0' TERM; while true; do sleep 0.1; done"]
+    after: [b]
+    on-failure: shutdown
+    on-success: ignore
+`, order))
+	defer td.kill()
+
+	time.Sleep(500 * time.Millisecond)
+	if code := td.stop(); code != 0 {
+		t.Errorf("exit code: %d", code)
+	}
+
+	got := readShutdownOrder(t, order)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 services to record shutdown, got %d (%v)", len(got), got)
+	}
+	for _, name := range []string{"a", "b", "c"} {
+		if !slices.Contains(got, name) {
+			t.Errorf("missing %s in shutdown record %v", name, got)
+		}
+	}
+}
+
+// TestE2EControlStartOneshot verifies a oneshot can be re-triggered via the
+// control socket after startup and that the daemon stays alive afterward —
+// the reap loop's oneshot branch must take ActionIgnore on a successful
+// post-startup exit rather than dispatching the default OnSuccess=Shutdown.
+func TestE2EControlStartOneshot(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	td := startDaemon(t, fmt.Sprintf(`
+processes:
+  - name: task
+    command: /bin/sh
+    args: ["-c", "echo run >> %s"]
+    startup: oneshot
+  - name: keeper
+    command: sleep
+    args: ["300"]
+    after: [task]
+    on-failure: shutdown
+`, marker))
+	defer td.kill()
+
+	// Oneshot ran once during startup.
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("marker not created during startup: %v", err)
+	}
+	if got := strings.Count(string(data), "run"); got != 1 {
+		t.Fatalf("expected 1 startup run, got %d (%q)", got, data)
+	}
+
+	// Re-trigger the oneshot via the control socket. This exercises the
+	// post-startup oneshot path in the reap loop.
+	resp := td.sendCommand("start task")
+	if strings.Contains(resp, "error") {
+		t.Fatalf("start failed: %s", resp)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	if !td.daemonAlive() {
+		t.Fatalf("daemon exited unexpectedly after control-triggered oneshot")
+	}
+	data, err = os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read marker after second run: %v", err)
+	}
+	if got := strings.Count(string(data), "run"); got != 2 {
+		t.Errorf("expected 2 runs after control start, got %d (%q)", got, data)
+	}
+
+	td.stop()
+}
+
+// TestE2EReadyCheckTimeout verifies that a ready-check which never passes
+// causes the daemon to log.Fatalf and exit non-zero within bounded time
+// (ready-timeout). Pre-fix there was no e2e proof that the timeout path
+// fires at all.
+func TestE2EReadyCheckTimeout(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "gopherd.yml")
+	sockPath := filepath.Join(dir, "gopherd.sock")
+
+	config := fmt.Sprintf(`no-logo: true
+control:
+  socket: %s
+
+checks:
+  never-ready:
+    exec:
+      command: /bin/sh
+      args: ["-c", "exit 1"]
+    period: 100ms
+    timeout: 100ms
+    threshold: 1
+    initial-delay: 0s
+
+processes:
+  - name: app
+    command: sleep
+    args: ["300"]
+    ready-check: never-ready
+    ready-timeout: 500ms
+`, sockPath)
+	os.WriteFile(cfgPath, []byte(config), 0o644)
+
+	cmd := exec.Command(testBinary)
+	cmd.Env = append(os.Environ(), "GOPHERD_CONFIG="+cfgPath, "GOPHERD_SOCKET="+sockPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	start := time.Now()
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() {
+		cmd.Process.Signal(syscall.SIGKILL)
+		cmd.Wait()
+	}()
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected non-zero exit when ready-check times out")
+		}
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Errorf("daemon took %s — ready-timeout did not fire promptly", elapsed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon did not exit after ready-check timeout")
+	}
+}
+
+// TestE2ESDNotifyTimeout verifies that a service with sd-notify: true that
+// never writes READY=1 trips sd-notify-timeout and the daemon exits non-zero
+// within bounded time.
+func TestE2ESDNotifyTimeout(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "gopherd.yml")
+	sockPath := filepath.Join(dir, "gopherd.sock")
+
+	config := fmt.Sprintf(`no-logo: true
+control:
+  socket: %s
+
+processes:
+  - name: silent
+    command: sleep
+    args: ["300"]
+    sd-notify: true
+    sd-notify-timeout: 500ms
+`, sockPath)
+	os.WriteFile(cfgPath, []byte(config), 0o644)
+
+	cmd := exec.Command(testBinary)
+	cmd.Env = append(os.Environ(), "GOPHERD_CONFIG="+cfgPath, "GOPHERD_SOCKET="+sockPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	start := time.Now()
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() {
+		cmd.Process.Signal(syscall.SIGKILL)
+		cmd.Wait()
+	}()
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected non-zero exit when sd-notify times out")
+		}
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Errorf("daemon took %s — sd-notify-timeout did not fire promptly", elapsed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon did not exit after sd-notify timeout")
+	}
+}
+
+// TestE2ECheckThresholdEdgeTriggered asserts that a check with threshold N
+// fires its action exactly once after N consecutive failures (edge-triggered
+// healthy→unhealthy), and not on each subsequent failure. We use shutdown
+// as the action and time the daemon exit: it must take at least
+// (threshold-1) × period before firing.
+func TestE2ECheckThresholdEdgeTriggered(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "gopherd.yml")
+	sockPath := filepath.Join(dir, "gopherd.sock")
+
+	const period = 200 * time.Millisecond
+	const threshold = 3
+
+	config := fmt.Sprintf(`no-logo: true
+control:
+  socket: %s
+
+checks:
+  flaky:
+    exec:
+      command: /bin/sh
+      args: ["-c", "exit 1"]
+    period: %s
+    timeout: 100ms
+    threshold: %d
+    initial-delay: 0s
+
+processes:
+  - name: keeper
+    command: sleep
+    args: ["300"]
+    on-failure: shutdown
+    on-check-failure:
+      flaky: shutdown
+`, sockPath, period, threshold)
+	os.WriteFile(cfgPath, []byte(config), 0o644)
+
+	cmd := exec.Command(testBinary)
+	cmd.Env = append(os.Environ(), "GOPHERD_CONFIG="+cfgPath, "GOPHERD_SOCKET="+sockPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	start := time.Now()
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() {
+		cmd.Process.Signal(syscall.SIGKILL)
+		cmd.Wait()
+	}()
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected non-zero exit from check-driven shutdown")
+		}
+		elapsed := time.Since(start)
+		// Action fires only on the Nth failure. With threshold=3 and period=200ms
+		// the earliest plausible action time is ~2× period after the first probe
+		// (probe 1 immediate, probe 2 at ~200ms, probe 3 at ~400ms).
+		minWait := time.Duration(threshold-1) * period
+		if elapsed < minWait {
+			t.Errorf("daemon exited in %s, expected at least %s for threshold=%d", elapsed, minWait, threshold)
+		}
+		if elapsed > 5*time.Second {
+			t.Errorf("daemon took %s — check-driven shutdown did not fire", elapsed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon did not exit after threshold breaches")
+	}
+}
+
+// readShutdownOrder reads the trap-recorded shutdown-order file and returns
+// the names in the order they were written. Whitespace and blank lines are
+// ignored. Used by the shutdown-order e2e tests.
+func readShutdownOrder(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var out []string
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func TestE2EPassthrough(t *testing.T) {
