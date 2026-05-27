@@ -111,6 +111,76 @@ tasks:
     cmds:
       - go test -bench=. -benchmem -count={{.COUNT}} -benchtime={{.TIME}} {{.PKG}}
 
+  fuzz-yml-parse:
+    desc: "fuzz the YAML parser (yml.Parse); override duration with TIME=30s"
+    vars:
+      TIME: '{{default "10m" .TIME}}'
+    cmds:
+      - go test ./yml/ -run='^$' -fuzz='^FuzzParse$' -fuzztime={{.TIME}}
+
+  fuzz-yml-unmarshal:
+    desc: "fuzz the YAML config decoder (yml.Unmarshal); override duration with TIME=30s"
+    vars:
+      TIME: '{{default "10m" .TIME}}'
+    cmds:
+      - go test ./yml/ -run='^$' -fuzz='^FuzzUnmarshal$' -fuzztime={{.TIME}}
+
+  fuzz-memory-eval:
+    desc: "fuzz the memory expression evaluator (memory.Eval); override duration with TIME=30s"
+    vars:
+      TIME: '{{default "10m" .TIME}}'
+    cmds:
+      - go test ./memory/ -run='^$' -fuzz='^FuzzEval$' -fuzztime={{.TIME}}
+
+  fuzz-cpu-eval:
+    desc: "fuzz the CPU expression evaluator (cpu.Eval); override duration with TIME=30s"
+    vars:
+      TIME: '{{default "10m" .TIME}}'
+    cmds:
+      - go test ./cpu/ -run='^$' -fuzz='^FuzzEval$' -fuzztime={{.TIME}}
+
+  fuzz-service-env-refs:
+    desc: 'fuzz {{".VAR"}} env-ref expansion (service.ExpandEnvRefs); override duration with TIME=30s'
+    vars:
+      TIME: '{{default "10m" .TIME}}'
+    cmds:
+      - go test ./service/ -run='^$' -fuzz='^FuzzExpandEnvRefs$' -fuzztime={{.TIME}}
+
+  fuzz-service-file-refs:
+    desc: 'fuzz {{file "..."}} expansion (service.ExpandFileRefs); override duration with TIME=30s'
+    vars:
+      TIME: '{{default "10m" .TIME}}'
+    cmds:
+      - go test ./service/ -run='^$' -fuzz='^FuzzExpandFileRefs$' -fuzztime={{.TIME}}
+
+  fuzz-service-parse-signal:
+    desc: "fuzz the signal-name parser (service.ParseSignal); override duration with TIME=30s"
+    vars:
+      TIME: '{{default "10m" .TIME}}'
+    cmds:
+      - go test ./service/ -run='^$' -fuzz='^FuzzParseSignal$' -fuzztime={{.TIME}}
+
+  fuzz-control-handle-command:
+    desc: "fuzz the control-socket command parser (control.handleCommand); override duration with TIME=30s"
+    vars:
+      TIME: '{{default "10m" .TIME}}'
+    cmds:
+      - go test ./control/ -run='^$' -fuzz='^FuzzHandleCommand$' -fuzztime={{.TIME}}
+
+  fuzz:
+    desc: "run every fuzz target sequentially; per-target TIME defaults to 30s (override with TIME=10s)"
+    vars:
+      TIME: '{{default "30s" .TIME}}'
+    cmds:
+      - go test ./yml/     -run='^$' -fuzz='^FuzzParse$'           -fuzztime={{.TIME}}
+      - go test ./yml/     -run='^$' -fuzz='^FuzzUnmarshal$'       -fuzztime={{.TIME}}
+      - go test ./memory/  -run='^$' -fuzz='^FuzzEval$'            -fuzztime={{.TIME}}
+      - go test ./cpu/     -run='^$' -fuzz='^FuzzEval$'            -fuzztime={{.TIME}}
+      - go test ./service/ -run='^$' -fuzz='^FuzzExpandEnvRefs$'   -fuzztime={{.TIME}}
+      - go test ./service/ -run='^$' -fuzz='^FuzzExpandFileRefs$'  -fuzztime={{.TIME}}
+      - go test ./service/ -run='^$' -fuzz='^FuzzParseSignal$'     -fuzztime={{.TIME}}
+      - go test ./control/ -run='^$' -fuzz='^FuzzHandleCommand$'   -fuzztime={{.TIME}}
+
   tidy:
     desc: "run Go mod tidy"
     cmds:
