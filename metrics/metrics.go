@@ -100,6 +100,15 @@ func (m *Metrics) ServiceRestarted(name string) {
 	m.svc(name).Restarts++
 }
 
+// RegisterCheck seeds a check in the metrics map so it appears in stats
+// before its first probe runs. Healthy=true and failures=0 are the natural
+// initial state; the first CheckResult call updates them.
+func (m *Metrics) RegisterCheck(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.chk(name)
+}
+
 // CheckResult records a health check result.
 func (m *Metrics) CheckResult(name string, healthy bool) {
 	m.mu.Lock()

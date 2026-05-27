@@ -535,6 +535,7 @@ func (d *daemon) startChecks() {
 			}
 		}
 		d.checkers = append(d.checkers, c)
+		d.m.RegisterCheck(name)
 		c.Run()
 		log.Printf("started check %s", name)
 	}

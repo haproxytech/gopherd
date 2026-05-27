@@ -581,6 +581,65 @@ processes:
 	td.stop()
 }
 
+// Regression: a configured check must appear in `gopherd stats` immediately,
+// even before its initial-delay window elapses and its first probe runs.
+// Pre-fix, the checks map was populated lazily by the first CheckResult call,
+// so a check with initial-delay was invisible during the blind window.
+func TestE2ECheckInStatsBeforeFirstProbe(t *testing.T) {
+	td := startDaemon(t, `
+processes:
+  - name: keeper
+    command: sleep
+    args: ["300"]
+    on-failure: shutdown
+
+checks:
+  slow:
+    exec:
+      command: /bin/true
+    period: 60s
+    initial-delay: 60s
+`)
+	defer td.kill()
+
+	resp := td.sendCommand("stats")
+	if !strings.Contains(resp, "slow") {
+		t.Errorf("expected check 'slow' in stats before first probe, got: %s", resp)
+	}
+
+	td.stop()
+}
+
+// Regression: oneshots that complete during startup must appear in
+// `gopherd stats`. Pre-fix, runLayerOneshots called svc.Start() directly,
+// bypassing the metrics map, so a oneshot was invisible in stats until
+// something else (a check-failure restart, a control restart) re-entered
+// startService.
+func TestE2EOneshotInStats(t *testing.T) {
+	td := startDaemon(t, `
+processes:
+  - name: init-step
+    command: /bin/sh
+    args: ["-c", "true"]
+    startup: oneshot
+  - name: keeper
+    command: sleep
+    args: ["300"]
+    after: [init-step]
+    on-failure: shutdown
+`)
+	defer td.kill()
+
+	time.Sleep(300 * time.Millisecond)
+
+	resp := td.sendCommand("stats")
+	if !strings.Contains(resp, "init-step") {
+		t.Errorf("expected init-step in stats, got: %s", resp)
+	}
+
+	td.stop()
+}
+
 func TestE2EControlStartDisabled(t *testing.T) {
 	td := startDaemon(t, `
 processes:

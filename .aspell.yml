@@ -8,3 +8,5 @@ allowed:
   - oom
   - subreaper
   - topo
+  - oneshot
+  - oneshots

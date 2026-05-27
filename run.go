@@ -531,6 +531,7 @@ func runLayerOneshots(d *daemon, layer []string) {
 			log.Fatalf("oneshot %s: %v", svc.Name, err)
 		}
 		log.Printf("started oneshot %s (pid %d)", svc.Name, pid)
+		d.m.ServiceStarted(svc.Name)
 		procs = append(procs, started{svc: svc, pid: pid})
 	}
 	if len(procs) == 0 {
@@ -560,6 +561,10 @@ func runLayerOneshots(d *daemon, layer []string) {
 		r := <-results
 		svc := d.services[r.name]
 		if r.err != nil {
+			// Wait failed (typically startup-timeout). Record a non-zero exit
+			// so stats reflect that the oneshot didn't complete cleanly, even
+			// though log.Fatalf below will terminate the daemon shortly.
+			d.m.ServiceExited(r.name, 1)
 			if fatalErr == nil {
 				rc := r
 				fatalErr = &rc
@@ -567,6 +572,7 @@ func runLayerOneshots(d *daemon, layer []string) {
 			continue
 		}
 		svc.MarkExited()
+		d.m.ServiceExited(r.name, r.code)
 		if r.code != 0 {
 			if svc.OnFailure == service.ActionIgnore {
 				log.Printf("oneshot %s exited with status %d (ignored)", r.name, r.code)
