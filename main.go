@@ -79,8 +79,8 @@ func main() {
 		// Passthrough: exec the command directly, replacing this process.
 		path, err := exec.LookPath(first)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "gopherd: %q not found (not a client command and not on PATH)\n", first)
-			fmt.Fprintf(os.Stderr, "Client commands: %s\n", strings.Join(control.ClientCommandList(), ", "))
+			fmt.Fprintf(os.Stderr, "gopherd: %q not found (not a known command and not on PATH)\n", first)
+			fmt.Fprintf(os.Stderr, "Known commands: %s, version, tag\n", strings.Join(control.ClientCommandList(), ", "))
 			os.Exit(1)
 		}
 		// Re-append entrypoint args for passthrough.

@@ -259,8 +259,8 @@ func TestSetupControl(t *testing.T) {
 	if err != nil {
 		t.Errorf("StatusFn(app): %v", err)
 	}
-	if !strings.Contains(status, "stopped") {
-		t.Errorf("expected stopped status, got %q", status)
+	if !strings.Contains(status, "pending") {
+		t.Errorf("expected pending status for enabled-but-not-yet-started service, got %q", status)
 	}
 
 	// Test StatusFn for unknown service.

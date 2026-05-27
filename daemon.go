@@ -802,6 +802,8 @@ func (d *daemon) setupControl() *control.Server {
 			return fmt.Sprintf("%s: running (pid %d)", name, int(svc.Pid.Load())), nil
 		case !svc.Enabled:
 			return fmt.Sprintf("%s: disabled", name), nil
+		case d.m.IsPending(name):
+			return fmt.Sprintf("%s: pending", name), nil
 		default:
 			return fmt.Sprintf("%s: stopped", name), nil
 		}

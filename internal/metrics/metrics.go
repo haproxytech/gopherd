@@ -39,6 +39,11 @@ type serviceStats struct {
 	Successes int
 	Up        bool
 	Enabled   bool
+	// Pending means the service is enabled and configured but the startup
+	// loop has not attempted to fork it yet. Set by RegisterService for
+	// enabled services and cleared by ServiceStarted. Surfaces "pending"
+	// in stats output during the brief startup window.
+	Pending bool
 }
 
 type checkStats struct {
@@ -84,6 +89,21 @@ func (m *Metrics) RegisterService(name string, enabled bool) {
 	defer m.mu.Unlock()
 	s := m.svcRegister(name)
 	s.Enabled = enabled
+	// Re-registering an already-started service (reload path) must not
+	// resurrect Pending — only mark pending if the service has never run.
+	if enabled && s.StartedAt.IsZero() && s.Exits == 0 {
+		s.Pending = true
+	}
+}
+
+// IsPending reports whether the service is registered, enabled, and has not
+// yet been started — i.e. waiting for the startup loop or a control-socket
+// start command.
+func (m *Metrics) IsPending(name string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	s, ok := m.services[name]
+	return ok && s.Pending
 }
 
 // UnregisterService removes a service entry, e.g. after a reload drops it
@@ -106,6 +126,7 @@ func (m *Metrics) ServiceStarted(name string, pid int) {
 	}
 	s.Up = true
 	s.Pid = pid
+	s.Pending = false
 	s.StartedAt = time.Now()
 }
 
@@ -181,6 +202,8 @@ func (m *Metrics) Format() string {
 				state = fmt.Sprintf("up %s pid=%d", uptime, s.Pid)
 			case !s.Enabled:
 				state = "disabled"
+			case s.Pending:
+				state = "pending"
 			default:
 				state = "stopped"
 			}
