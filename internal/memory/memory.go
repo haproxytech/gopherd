@@ -24,7 +24,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/haproxytech/gopherd/cgroup"
+	"github.com/haproxytech/gopherd/internal/cgroup"
 )
 
 // File paths are variables so tests can override them.

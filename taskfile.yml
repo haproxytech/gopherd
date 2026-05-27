@@ -107,7 +107,7 @@ tasks:
     vars:
       COUNT: '{{default "3" .COUNT}}'
       TIME: '{{default "2s" .TIME}}'
-      PKG: '{{default "./logger/" .PKG}}'
+      PKG: '{{default "./internal/logger/" .PKG}}'
     cmds:
       - go test -bench=. -benchmem -count={{.COUNT}} -benchtime={{.TIME}} {{.PKG}}
 
@@ -116,28 +116,28 @@ tasks:
     vars:
       TIME: '{{default "10m" .TIME}}'
     cmds:
-      - go test ./yml/ -run='^$' -fuzz='^FuzzParse$' -fuzztime={{.TIME}}
+      - go test ./internal/yml/ -run='^$' -fuzz='^FuzzParse$' -fuzztime={{.TIME}}
 
   fuzz-yml-unmarshal:
     desc: "fuzz the YAML config decoder (yml.Unmarshal); override duration with TIME=30s"
     vars:
       TIME: '{{default "10m" .TIME}}'
     cmds:
-      - go test ./yml/ -run='^$' -fuzz='^FuzzUnmarshal$' -fuzztime={{.TIME}}
+      - go test ./internal/yml/ -run='^$' -fuzz='^FuzzUnmarshal$' -fuzztime={{.TIME}}
 
   fuzz-memory-eval:
     desc: "fuzz the memory expression evaluator (memory.Eval); override duration with TIME=30s"
     vars:
       TIME: '{{default "10m" .TIME}}'
     cmds:
-      - go test ./memory/ -run='^$' -fuzz='^FuzzEval$' -fuzztime={{.TIME}}
+      - go test ./internal/memory/ -run='^$' -fuzz='^FuzzEval$' -fuzztime={{.TIME}}
 
   fuzz-cpu-eval:
     desc: "fuzz the CPU expression evaluator (cpu.Eval); override duration with TIME=30s"
     vars:
       TIME: '{{default "10m" .TIME}}'
     cmds:
-      - go test ./cpu/ -run='^$' -fuzz='^FuzzEval$' -fuzztime={{.TIME}}
+      - go test ./internal/cpu/ -run='^$' -fuzz='^FuzzEval$' -fuzztime={{.TIME}}
 
   fuzz-service-env-refs:
     desc: 'fuzz {{".VAR"}} env-ref expansion (service.ExpandEnvRefs); override duration with TIME=30s'
@@ -172,10 +172,10 @@ tasks:
     vars:
       TIME: '{{default "30s" .TIME}}'
     cmds:
-      - go test ./yml/     -run='^$' -fuzz='^FuzzParse$'           -fuzztime={{.TIME}}
-      - go test ./yml/     -run='^$' -fuzz='^FuzzUnmarshal$'       -fuzztime={{.TIME}}
-      - go test ./memory/  -run='^$' -fuzz='^FuzzEval$'            -fuzztime={{.TIME}}
-      - go test ./cpu/     -run='^$' -fuzz='^FuzzEval$'            -fuzztime={{.TIME}}
+      - go test ./internal/yml/     -run='^$' -fuzz='^FuzzParse$'           -fuzztime={{.TIME}}
+      - go test ./internal/yml/     -run='^$' -fuzz='^FuzzUnmarshal$'       -fuzztime={{.TIME}}
+      - go test ./internal/memory/  -run='^$' -fuzz='^FuzzEval$'            -fuzztime={{.TIME}}
+      - go test ./internal/cpu/     -run='^$' -fuzz='^FuzzEval$'            -fuzztime={{.TIME}}
       - go test ./service/ -run='^$' -fuzz='^FuzzExpandEnvRefs$'   -fuzztime={{.TIME}}
       - go test ./service/ -run='^$' -fuzz='^FuzzExpandFileRefs$'  -fuzztime={{.TIME}}
       - go test ./service/ -run='^$' -fuzz='^FuzzParseSignal$'     -fuzztime={{.TIME}}

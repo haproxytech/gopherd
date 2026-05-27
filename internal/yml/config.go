@@ -24,7 +24,7 @@ import (
 
 	"github.com/haproxytech/gopherd/check"
 	"github.com/haproxytech/gopherd/control"
-	"github.com/haproxytech/gopherd/logger"
+	"github.com/haproxytech/gopherd/internal/logger"
 	"github.com/haproxytech/gopherd/service"
 )
 

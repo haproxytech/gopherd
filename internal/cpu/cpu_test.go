@@ -20,7 +20,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/haproxytech/gopherd/cgroup"
+	"github.com/haproxytech/gopherd/internal/cgroup"
 )
 
 func setupFakeFS(t *testing.T) string {

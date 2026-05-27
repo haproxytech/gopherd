@@ -27,11 +27,11 @@ import (
 
 	"github.com/haproxytech/gopherd/check"
 	"github.com/haproxytech/gopherd/control"
-	"github.com/haproxytech/gopherd/metrics"
-	"github.com/haproxytech/gopherd/order"
+	"github.com/haproxytech/gopherd/internal/metrics"
+	"github.com/haproxytech/gopherd/internal/order"
+	"github.com/haproxytech/gopherd/internal/yml"
 	"github.com/haproxytech/gopherd/service"
 	"github.com/haproxytech/gopherd/version"
-	"github.com/haproxytech/gopherd/yml"
 )
 
 // run is the main daemon entry point. It returns the exit code.

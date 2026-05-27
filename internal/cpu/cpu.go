@@ -24,7 +24,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/haproxytech/gopherd/cgroup"
+	"github.com/haproxytech/gopherd/internal/cgroup"
 )
 
 // Cgroup root paths — variables so tests can override them.

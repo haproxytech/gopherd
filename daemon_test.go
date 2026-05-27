@@ -24,9 +24,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/haproxytech/gopherd/metrics"
+	"github.com/haproxytech/gopherd/internal/metrics"
+	"github.com/haproxytech/gopherd/internal/yml"
 	"github.com/haproxytech/gopherd/service"
-	"github.com/haproxytech/gopherd/yml"
 )
 
 func newTestDaemon(procs []service.Process) *daemon {

@@ -32,11 +32,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/haproxytech/gopherd/backoff"
-	"github.com/haproxytech/gopherd/cpu"
-	"github.com/haproxytech/gopherd/logger"
-	"github.com/haproxytech/gopherd/memory"
-	"github.com/haproxytech/gopherd/sdnotify"
+	"github.com/haproxytech/gopherd/internal/backoff"
+	"github.com/haproxytech/gopherd/internal/cpu"
+	"github.com/haproxytech/gopherd/internal/logger"
+	"github.com/haproxytech/gopherd/internal/memory"
+	"github.com/haproxytech/gopherd/internal/sdnotify"
 )
 
 // ExitAction defines what to do when a process exits.

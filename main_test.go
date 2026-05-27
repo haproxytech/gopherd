@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/haproxytech/gopherd/yml"
+	"github.com/haproxytech/gopherd/internal/yml"
 )
 
 func TestLoadConfigValid(t *testing.T) {
