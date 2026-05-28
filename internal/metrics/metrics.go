@@ -290,22 +290,32 @@ func (m *Metrics) Format() string {
 			svcNames = append(svcNames, name)
 		}
 		slices.Sort(svcNames)
-		for _, name := range svcNames {
+		states := make([]string, len(svcNames))
+		maxState := 0
+		for i, name := range svcNames {
 			s := m.services[name]
-			var state string
 			switch {
 			case s.Up:
-				uptime := time.Since(s.StartedAt).Truncate(time.Second)
-				state = fmt.Sprintf("up %s pid=%d", uptime, s.Pid)
+				states[i] = time.Since(s.StartedAt).Truncate(time.Second).String()
 			case !s.Enabled:
-				state = "disabled"
+				states[i] = "disabled"
 			case s.Pending:
-				state = "pending"
+				states[i] = "pending"
 			default:
-				state = "stopped"
+				states[i] = "stopped"
 			}
-			fmt.Fprintf(&b, "  %-20s %s  exits=%d restarts=%d ok=%d fail=%d\n",
-				name, state, s.Exits, s.Restarts, s.Successes, s.Failures)
+			if len(states[i]) > maxState {
+				maxState = len(states[i])
+			}
+		}
+		for i, name := range svcNames {
+			s := m.services[name]
+			fmt.Fprintf(&b, "  %-20s %-*s exits=%d restarts=%d ok=%d fail=%d",
+				name, maxState, states[i], s.Exits, s.Restarts, s.Successes, s.Failures)
+			if s.Up {
+				fmt.Fprintf(&b, " pid=%d", s.Pid)
+			}
+			b.WriteByte('\n')
 		}
 	}
 

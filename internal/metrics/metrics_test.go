@@ -25,11 +25,8 @@ func TestServiceStarted(t *testing.T) {
 	m.RegisterService("app", true)
 	m.ServiceStarted("app", 1234)
 	out := m.Format()
-	if !strings.Contains(out, "app") || !strings.Contains(out, "up") {
-		t.Errorf("expected app up, got:\n%s", out)
-	}
-	if !strings.Contains(out, "pid=1234") {
-		t.Errorf("expected pid=1234 in output, got:\n%s", out)
+	if !strings.Contains(out, "app") || !strings.Contains(out, "pid=1234") {
+		t.Errorf("expected app up with pid=1234, got:\n%s", out)
 	}
 }
 
