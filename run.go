@@ -115,6 +115,7 @@ func run(entrypointArgs []string) int {
 		restartCh:      make(chan restartReq, 64),
 		restartPending: make(map[string]bool),
 		shutdownCh:     make(chan struct{}),
+		childStarted:   make(chan struct{}, 1),
 	}
 
 	// Initialize stats tracking.
@@ -235,6 +236,10 @@ func run(entrypointArgs []string) int {
 		}
 	}()
 
+	// Subreaper is applied once at startup and never changes on reload; capture
+	// it so the reap loop's idle path reads no shared (reloadable) config.
+	subreaper := cfg.Subreaper
+
 	// Single reap loop: handles managed children and orphaned zombies.
 	for {
 		var ws syscall.WaitStatus
@@ -243,11 +248,39 @@ func run(entrypointArgs []string) int {
 			if err == syscall.EINTR {
 				continue
 			}
-			// ECHILD with a restart in flight is transient: the restart
-			// handler is about to fork the replacement child. Sleep briefly
-			// and retry so a single-service daemon survives stop/restart.
-			if err == syscall.ECHILD && d.pendingRestarts.Load() > 0 && !d.shuttingDown.Load() {
-				time.Sleep(10 * time.Millisecond)
+			if err == syscall.ECHILD {
+				// Shutting down with no children left: the daemon is done.
+				if d.shuttingDown.Load() {
+					break
+				}
+				// A restart is in flight: the handler is about to fork the
+				// replacement child. Sleep briefly and retry so a single-service
+				// daemon survives stop/restart.
+				if d.pendingRestarts.Load() > 0 {
+					time.Sleep(10 * time.Millisecond)
+					continue
+				}
+				// No children and not shutting down: idle as a live supervisor
+				// rather than exiting. Stopping the last service (control-socket
+				// stop, ignored exit) must not take gopherd down — it stays up so
+				// the service can be started again. Block until a new child is
+				// forked or shutdown begins. As subreaper, also wake periodically
+				// so reparented orphans are reaped promptly (without subreaper,
+				// orphans go to the real PID 1, so no poll is needed).
+				var poll <-chan time.Time
+				var timer *time.Timer
+				if subreaper {
+					timer = time.NewTimer(time.Second)
+					poll = timer.C
+				}
+				select {
+				case <-d.childStarted:
+				case <-d.shutdownCh:
+				case <-poll:
+				}
+				if timer != nil {
+					timer.Stop()
+				}
 				continue
 			}
 			break

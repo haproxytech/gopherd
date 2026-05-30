@@ -308,8 +308,8 @@ processes:
   - name: stopper
     command: /test/stop.sh
     after: [trapper]
-    on-success: ignore
-    on-failure: ignore
+    on-success: success-shutdown
+    on-failure: failure-shutdown
 `,
 		"stop.sh": `#!/bin/sh
 sleep 1

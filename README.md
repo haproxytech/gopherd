@@ -537,6 +537,11 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `failure-shutdown` | Exit gopherd with the service's actual exit code |
 | `ignore` | Leave process stopped, don't trigger shutdown |
 
+gopherd does not exit just because no services are running. When the last
+service stops (via `stop` on the control socket, or an `ignore` exit), gopherd
+stays alive and idle so the service can be started again. It exits only when a
+service triggers a shutdown action or it receives an `init-stop-signal`.
+
 #### Health check types
 
 | Type | Fields | Description |
@@ -568,6 +573,7 @@ Core design:
 - YAML config defines processes, checks, log targets, and control socket
 - Zero external dependencies — built-in YAML parser, no protobuf/prometheus
 - Single `Wait4(-1)` reap loop handles both managed children and orphaned zombies (no separate reaper goroutine — avoids race with `cmd.Wait()`)
+- When no children remain and no shutdown is in progress, the reap loop idles (stays a live supervisor) rather than exiting, so stopping the last service does not take gopherd down
 - Graceful shutdown ordering is configurable: `reverse-dep` (dependents first, default), `dep` (dependencies first), or `simultaneous` (all at once)
 - Forwards SIGTERM/SIGINT to all children using per-service stop signals; SIGHUP triggers reload. Other received signals (SIGUSR1/SIGUSR2/etc.) are forwarded to a service **only if** that service declares a `signal-rewrite` entry for them (opt-in)
 - Each child gets its own process group (`Setpgid`)

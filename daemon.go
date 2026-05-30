@@ -130,6 +130,12 @@ type daemon struct {
 	// on this channel. A closed channel broadcasts to all receivers at once.
 	shutdownCh chan struct{}
 
+	// childStarted wakes the reap loop out of its idle wait when a new child is
+	// forked (e.g. a control-socket start after every service was stopped).
+	// Buffered so startService never blocks; a non-blocking send is enough
+	// because the reap loop re-checks for children via Wait4 once woken.
+	childStarted chan struct{}
+
 	// restartPending marks services whose next observed exit is part of a
 	// restart cycle (control-socket restart or check-failure restart). The reap
 	// loop uses this to suppress the ServiceExited metric so a restart counts
@@ -268,6 +274,13 @@ func (d *daemon) startService(svc *service.Service) (int, error) {
 	// transiently, which is misleading in "stats" output.
 	d.m.ServiceStarted(svc.Name, pid)
 	d.mu.Unlock()
+	// Wake the reap loop if it is idling with no children (all services were
+	// previously stopped). Non-blocking: a full buffer already means a wake is
+	// pending.
+	select {
+	case d.childStarted <- struct{}{}:
+	default:
+	}
 	log.Printf("started %s (pid %d)", svc.Name, pid)
 	return pid, nil
 }

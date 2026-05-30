@@ -131,6 +131,52 @@ processes:
 	td.stop()
 }
 
+// Regression: stopping the only running service must NOT take gopherd down.
+// Pre-fix, the reap loop hit Wait4 ECHILD with no children and broke out,
+// exiting the daemon. As a live supervisor it must idle instead, so the
+// service can be started again.
+func TestE2EControlStopLastServiceStaysAlive(t *testing.T) {
+	td := startDaemon(t, `
+processes:
+  - name: svc
+    command: sleep
+    args: ["300"]
+    on-failure: ignore
+    on-success: ignore
+`)
+	defer td.kill()
+
+	resp := td.sendCommand("stop svc")
+	if strings.Contains(resp, "error") {
+		t.Fatalf("stop failed: %s", resp)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	if !td.daemonAlive() {
+		t.Fatalf("daemon exited after stopping the last service; expected it to idle")
+	}
+	resp = td.sendCommand("status svc")
+	if !strings.Contains(resp, "stopped") {
+		t.Fatalf("expected stopped, got: %s", resp)
+	}
+
+	// The idling daemon must still accept a start and bring the service back.
+	resp = td.sendCommand("start svc")
+	if strings.Contains(resp, "error") {
+		t.Fatalf("start failed: %s", resp)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	resp = td.sendCommand("status svc")
+	if !strings.Contains(resp, "running") {
+		t.Fatalf("expected running after restart from idle, got: %s", resp)
+	}
+
+	td.stop()
+}
+
 func TestE2EControlStartDisabled(t *testing.T) {
 	td := startDaemon(t, `
 processes:
