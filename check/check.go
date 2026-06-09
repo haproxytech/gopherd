@@ -329,9 +329,12 @@ func (c *Checker) checkTCP(ctx context.Context) error {
 
 func (c *Checker) checkExec(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, c.cfg.Exec.Command, c.cfg.Exec.Args...)
-	// Always place the check process in its own process group so that a
-	// context-cancel SIGKILL targets only the check, not the parent group (I2).
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Setsid puts the check in its own session: it leads a fresh process group
+	// (pgid == pid) so a context-cancel SIGKILL via Kill(-pid) targets only the
+	// check and its descendants, not the parent group (I2); and it detaches the
+	// check from gopherd's controlling terminal so a privilege-dropped check
+	// cannot TIOCSTI-inject into gopherd's session.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if c.credential != nil {
 		cmd.SysProcAttr.Credential = c.credential
 	}

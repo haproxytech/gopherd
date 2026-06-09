@@ -462,7 +462,7 @@ func TestSignalUsesProcessGroup(t *testing.T) {
 	t.Parallel()
 	pidFile := t.TempDir() + "/child.pid"
 
-	// The parent sh (in its own process group via Setpgid) forks a background
+	// The parent sh (leads its own process group via Setsid) forks a background
 	// sleep and records the child PID. On SIGUSR1 (default=Terminate), both the
 	// sh and the background sleep should exit when the whole group is signalled.
 	// With process-only signalling, only sh exits; sleep survives as an orphan.

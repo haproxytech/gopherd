@@ -720,7 +720,13 @@ func (s *Service) Start() (pid int, err error) {
 	cmd.Stdout = s.Stdout
 	cmd.Stderr = s.Stderr
 	cmd.Stdin = nil // each child gets /dev/null as stdin (exec.Cmd default)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Setsid puts the child in a new session: it becomes leader of a fresh
+	// process group (pgid == pid, so Kill(-pid) still targets the whole group)
+	// and, crucially, is detached from gopherd's controlling terminal. Without
+	// that, a privilege-dropped child sharing gopherd's TTY (interactive
+	// `gopherd -t`) could push characters into the terminal input queue with
+	// the TIOCSTI ioctl and have them run in gopherd's more-privileged session.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	// Parent-death signal: the kernel delivers sig to the child when its
 	// parent thread terminates, so children do not linger after gopherd is
@@ -864,8 +870,9 @@ func (s *Service) Stop() {
 }
 
 // Signal sends an arbitrary signal to the entire process group. The service is
-// started with Setpgid=true so -pid addresses all processes in the group, not
-// just the process leader. This matches the behaviour of Stop().
+// started with Setsid so it leads its own process group (pgid == pid); -pid
+// then addresses all processes in the group, not just the leader. This matches
+// the behaviour of Stop().
 func (s *Service) Signal(sig os.Signal) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
