@@ -137,10 +137,7 @@ processes:
     on-success: ignore
     on-failure: shutdown
 `
-	os.WriteFile(filepath.Join(dc.dir, "gopherd.yml"), []byte(newCfg), 0o644)
-
-	// Fix ownership: bind-mounted files have host UID; chown to root inside container.
-	exec.Command("docker", "exec", dc.id, "chown", "root:root", "/test/gopherd.yml").Run()
+	dc.writeConfig(newCfg)
 
 	// Send reload command via docker exec.
 	out, err := exec.Command("docker", "exec", dc.id,

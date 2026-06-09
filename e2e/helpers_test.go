@@ -240,6 +240,18 @@ func (dc *detachedContainer) remove() {
 	exec.Command("docker", "rm", "-f", dc.id).Run()
 }
 
+// writeConfig rewrites the bind-mounted config from inside the container so the
+// write runs as root. Writing from the host fails when fixTestFileOwnership has
+// chowned the file to root (i.e. when the host UID is non-root).
+func (dc *detachedContainer) writeConfig(content string) {
+	dc.t.Helper()
+	cmd := exec.Command("docker", "exec", "-i", dc.id, "tee", "/test/gopherd.yml")
+	cmd.Stdin = strings.NewReader(content)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		dc.t.Fatalf("writeConfig: %v\n%s", err, out)
+	}
+}
+
 func sanitize(s string) string {
 	r := strings.NewReplacer("/", "-", " ", "-")
 	return strings.ToLower(r.Replace(s))

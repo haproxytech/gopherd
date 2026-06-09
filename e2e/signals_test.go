@@ -96,10 +96,7 @@ processes:
     on-success: ignore
     on-failure: shutdown
 `
-	os.WriteFile(filepath.Join(dc.dir, "gopherd.yml"), []byte(newCfg), 0o644)
-
-	// Fix ownership: bind-mounted files have host UID; chown to root inside container.
-	exec.Command("docker", "exec", dc.id, "chown", "root:root", "/test/gopherd.yml").Run()
+	dc.writeConfig(newCfg)
 
 	dc.signal("HUP")
 	time.Sleep(2 * time.Second)
@@ -107,6 +104,16 @@ processes:
 	logs := dc.logs()
 	if !strings.Contains(logs, "reload: ok") {
 		t.Errorf("expected 'reload: ok' in logs after SIGHUP:\n%s", logs)
+	}
+	// Assert the reload actually applied the new config (regression guard:
+	// a dropped host-side write would leave 'reload: ok' but no new service).
+	status, err := exec.Command("docker", "exec", dc.id,
+		"/usr/local/bin/gopherd", "status").CombinedOutput()
+	if err != nil {
+		t.Fatalf("status command failed: %v\n%s", err, status)
+	}
+	if !strings.Contains(string(status), "added") {
+		t.Errorf("expected 'added' service in status after reload:\n%s", status)
 	}
 
 	dc.signal("TERM")
