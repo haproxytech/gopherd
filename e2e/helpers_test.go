@@ -108,7 +108,46 @@ func fixTestFileOwnership(t *testing.T, dir string) {
 
 type containerOpts struct {
 	user      string // --user flag (e.g. "1234:1234" for non-root)
+	socket    string // GOPHERD_SOCKET (daemon + client); for rootless, a writable path
 	extraArgs []string
+}
+
+// Default UID:GID and control socket used when running the suite rootless.
+// /run is root-owned so the socket must live on the writable /test mount.
+const (
+	defaultRootlessUser   = "1234:1234"
+	defaultRootlessSocket = "/test/gopherd.sock"
+)
+
+// rootlessMode reports whether the whole suite is being re-run as a non-root
+// UID (GOPHERD_E2E_ROOTLESS=1). The CI test matrix sets it for the rootless leg.
+func rootlessMode() bool {
+	return os.Getenv("GOPHERD_E2E_ROOTLESS") == "1"
+}
+
+// requireRoot skips a test that genuinely needs UID 0 (e.g. privilege
+// dropping) when the suite runs rootless.
+func requireRoot(t *testing.T) {
+	t.Helper()
+	if rootlessMode() {
+		t.Skip("requires gopherd running as root; skipped in rootless mode")
+	}
+}
+
+// applyRootless fills in user/socket defaults when the suite runs rootless and
+// the test did not already pin them. A test that sets its own values (the
+// dedicated rootless tests) is left untouched.
+func applyRootless(o containerOpts) containerOpts {
+	if !rootlessMode() {
+		return o
+	}
+	if o.user == "" {
+		o.user = defaultRootlessUser
+	}
+	if o.socket == "" {
+		o.socket = defaultRootlessSocket
+	}
+	return o
 }
 
 // runContainer runs gopherd as PID 1 in Docker. If files contains "run.sh",
@@ -122,17 +161,24 @@ func runContainer(t *testing.T, files map[string]string, timeout time.Duration, 
 
 	fixTestFileOwnership(t, dir)
 
+	var o containerOpts
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	o = applyRootless(o)
+
 	args := []string{
 		"run", "--rm",
 		"-v", dir + ":/test",
 		"-e", "GOPHERD_CONFIG=/test/gopherd.yml",
 	}
-	if len(opts) > 0 && opts[0].user != "" {
-		args = append(args, "--user", opts[0].user)
+	if o.user != "" {
+		args = append(args, "--user", o.user)
 	}
-	if len(opts) > 0 {
-		args = append(args, opts[0].extraArgs...)
+	if o.socket != "" {
+		args = append(args, "-e", "GOPHERD_SOCKET="+o.socket)
 	}
+	args = append(args, o.extraArgs...)
 	if _, ok := files["run.sh"]; ok {
 		args = append(args, "--entrypoint", "/test/run.sh")
 	}
@@ -171,9 +217,10 @@ func runGopherdCmd(t *testing.T, args ...string) (int, string) {
 
 // detachedContainer wraps a background Docker container for signal tests.
 type detachedContainer struct {
-	id  string
-	dir string
-	t   *testing.T
+	id     string
+	dir    string
+	socket string // GOPHERD_SOCKET for client exec calls; empty uses the default
+	t      *testing.T
 }
 
 func runDetached(t *testing.T, files map[string]string, opts ...containerOpts) *detachedContainer {
@@ -188,12 +235,19 @@ func runDetached(t *testing.T, files map[string]string, opts ...containerOpts) *
 		"-v", dir + ":/test",
 		"-e", "GOPHERD_CONFIG=/test/gopherd.yml",
 	}
-	if len(opts) > 0 && opts[0].user != "" {
-		args = append(args, "--user", opts[0].user)
-	}
+	var o containerOpts
 	if len(opts) > 0 {
-		args = append(args, opts[0].extraArgs...)
+		o = opts[0]
 	}
+	o = applyRootless(o)
+	socket := o.socket
+	if o.user != "" {
+		args = append(args, "--user", o.user)
+	}
+	if socket != "" {
+		args = append(args, "-e", "GOPHERD_SOCKET="+socket)
+	}
+	args = append(args, o.extraArgs...)
 	if _, ok := files["run.sh"]; ok {
 		args = append(args, "--entrypoint", "/test/run.sh")
 	}
@@ -205,10 +259,26 @@ func runDetached(t *testing.T, files map[string]string, opts ...containerOpts) *
 		t.Fatalf("docker run -d: %v\n%s", err, out)
 	}
 	return &detachedContainer{
-		id:  strings.TrimSpace(string(out)),
-		dir: dir,
-		t:   t,
+		id:     strings.TrimSpace(string(out)),
+		dir:    dir,
+		socket: socket,
+		t:      t,
 	}
+}
+
+// exec runs a gopherd client command inside the container, propagating the
+// container's GOPHERD_SOCKET (docker exec starts a fresh process that does not
+// inherit the daemon's env).
+func (dc *detachedContainer) exec(args ...string) (string, error) {
+	dc.t.Helper()
+	full := []string{"exec"}
+	if dc.socket != "" {
+		full = append(full, "-e", "GOPHERD_SOCKET="+dc.socket)
+	}
+	full = append(full, dc.id, "/usr/local/bin/gopherd")
+	full = append(full, args...)
+	out, err := exec.Command("docker", full...).CombinedOutput()
+	return string(out), err
 }
 
 func (dc *detachedContainer) signal(sig string) {

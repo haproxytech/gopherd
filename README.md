@@ -103,7 +103,7 @@ When invoked with a known command, `gopherd` connects to the running daemon via 
 
 The `start`/`stop`/`restart`/`status` actions accept either order: `gopherd app stop` and `gopherd stop app` are equivalent.
 
-Override socket path with `GOPHERD_SOCKET` env var (default: `/run/gopherd.sock`).
+Override the control socket path with the `GOPHERD_SOCKET` env var (default: `/run/gopherd.sock`). It applies to both the daemon and the client, and takes precedence over `control: socket:` in the config — handy for rootless deployments where `/run` is not writable (point it at a writable path).
 
 #### Entrypoint passthrough
 

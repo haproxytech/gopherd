@@ -72,9 +72,13 @@ jobs:
       - name: Lint
         run: task lint
   test:
-    name: test
+    name: test (${{ matrix.mode }})
     needs: ["lint"]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [root, rootless]
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -87,8 +91,11 @@ jobs:
         with:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # rootless: e2e runs gopherd as a non-root UID (GOPHERD_E2E_ROOTLESS=1).
       - name: Test
         run: task test COUNT=1
+        env:
+          GOPHERD_E2E_ROOTLESS: ${{ matrix.mode == 'rootless' && '1' || '' }}
   build:
     name: build
     needs: ["test"]

@@ -24,6 +24,7 @@ import (
 // to exercise credential switching (user/group).
 
 func TestRootUserGroupByName(t *testing.T) {
+	requireRoot(t)
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
 no-logo: true
@@ -55,6 +56,7 @@ processes:
 }
 
 func TestRootUserGroupByID(t *testing.T) {
+	requireRoot(t)
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
 no-logo: true
@@ -86,6 +88,7 @@ processes:
 }
 
 func TestRootUserOnlyGroupInherited(t *testing.T) {
+	requireRoot(t)
 	// When only user is specified (no group), the user's primary group
 	// should be used automatically.
 	_, code, out := runContainer(t, map[string]string{
@@ -119,6 +122,7 @@ processes:
 }
 
 func TestRootGroupOnlyUIDPreserved(t *testing.T) {
+	requireRoot(t)
 	// When only group is specified (no user), the current UID (root=0)
 	// should be preserved, but GID should change.
 	_, code, out := runContainer(t, map[string]string{
@@ -151,6 +155,7 @@ processes:
 }
 
 func TestRootOneshotAsUser(t *testing.T) {
+	requireRoot(t)
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
 no-logo: true
@@ -178,6 +183,7 @@ processes:
 }
 
 func TestRootMixedUserServices(t *testing.T) {
+	requireRoot(t)
 	// Different services run as different users within the same daemon.
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
@@ -220,6 +226,7 @@ processes:
 }
 
 func TestRootFileOwnership(t *testing.T) {
+	requireRoot(t)
 	// Service running as testuser writes a file; verify it's owned by testuser.
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
@@ -251,6 +258,7 @@ processes:
 }
 
 func TestRootWriteToRootPath(t *testing.T) {
+	requireRoot(t)
 	// Root service can write to /etc, non-root service cannot.
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
@@ -289,6 +297,7 @@ processes:
 }
 
 func TestRootPrivilegedPort(t *testing.T) {
+	requireRoot(t)
 	// Only root can bind to port 80. Verify a root service can do this.
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `

@@ -51,6 +51,13 @@ func run(entrypointArgs []string) int {
 		log.Fatalf("config: %v", err)
 	}
 
+	// GOPHERD_SOCKET overrides the configured control socket so a deployment
+	// can relocate it (e.g. to a writable path when running rootless) without
+	// editing the config. The client already honors this var.
+	if v := os.Getenv("GOPHERD_SOCKET"); v != "" {
+		cfg.Control.SocketPath = v
+	}
+
 	if !cfg.NoLogo {
 		fmt.Print(version.Logo)
 	}
