@@ -46,7 +46,6 @@ Via `go install` (builds from source, requires Go toolchain):
 ```bash
 go install -trimpath -ldflags="-s" github.com/haproxytech/gopherd@latest     # latest tagged release
 go install -trimpath -ldflags="-s" github.com/haproxytech/gopherd@v1.2.3     # specific version
-go install -trimpath -ldflags="-s" github.com/haproxytech/gopherd@main       # tip of main branch
 ```
 
 `-trimpath -ldflags="-s"` strips symbol tables and local paths for a ~30% smaller binary. Omit them if you need DWARF for profiling/debugging.
@@ -237,6 +236,8 @@ processes:
 ```
 
 On a container with a 3 GiB cgroup limit, this resolves to `-m 2048` and `GOMEMLIMIT=1024MiB`.
+
+> **Always use `MiB` as the literal suffix.** `{{mem ...}}` emits a bare number in MiB, so a different suffix mislabels it: `}}GiB` inflates the value 1024×, and `}}MB` is rejected outright by the Go runtime (`GOMEMLIMIT` only accepts `B`, `KiB`, `MiB`, `GiB`, `TiB`).
 
 #### CPU-aware templates
 

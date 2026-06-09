@@ -11,3 +11,4 @@ allowed:
   - oneshot
   - oneshots
   - doctest
+  - mem
