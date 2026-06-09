@@ -110,6 +110,41 @@ processes:
 	}
 }
 
+// TestE2EOneshotExitCodeMap verifies that exit-code-map is applied to oneshots
+// that run during the startup sequence, just like the reap loop applies it to
+// long-running services. A oneshot exiting 17 with exit-code-map {17: 0} must
+// be treated as success: the daemon survives startup and dependents proceed.
+func TestE2EOneshotExitCodeMap(t *testing.T) {
+	// startDaemon waits for the control socket; if the remapped-to-0 oneshot
+	// were still treated as a failure it would fatal the daemon during startup
+	// and the socket would never come up, failing this call.
+	td := startDaemon(t, `
+processes:
+  - name: migrate
+    command: /bin/sh
+    args: ["-c", "exit 17"]
+    startup: oneshot
+    on-failure: shutdown
+    exit-code-map:
+      17: 0
+
+  - name: app
+    command: sleep
+    args: ["300"]
+    after: [migrate]
+    on-failure: shutdown
+`)
+	defer td.kill()
+
+	// The dependent only starts if the oneshot was treated as completed.
+	resp := td.sendCommand("status app")
+	if !strings.Contains(resp, "running") {
+		t.Fatalf("expected app running after remapped oneshot, got: %s", resp)
+	}
+
+	td.stop()
+}
+
 // TestE2EOneshotStartupTimeout verifies that a oneshot which hangs past its
 // startup-timeout is killed and treated as a fatal startup failure. Without
 // this, a wedged init step would block the daemon indefinitely before any

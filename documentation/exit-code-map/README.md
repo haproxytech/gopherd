@@ -40,11 +40,10 @@ SIGTERM then yields a clean exit 0.
 
 ## Note on oneshots
 
-`exit-code-map` is applied by the reap loop, which covers long-running services
-and oneshots started via the control socket after startup. It is **not** applied
-to oneshots that run during the initial startup sequence — a startup oneshot
-exiting non-zero fails the start before the remap. Use a regular (non-oneshot)
-service, as above, when you need the remap to take effect.
+`exit-code-map` applies to long-running services, control-socket-started
+oneshots, and oneshots that run during the initial startup sequence alike. A
+startup oneshot exiting a remapped-to-0 code is treated as completed, so
+dependents proceed instead of the start failing.
 
 ```bash
 go test ./documentation/exit-code-map/ -v

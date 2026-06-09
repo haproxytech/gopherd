@@ -638,14 +638,22 @@ func runLayerOneshots(d *daemon, layer []string) {
 			continue
 		}
 		svc.MarkExited()
-		d.m.ServiceExited(r.name, r.code)
-		if r.code != 0 {
+		// Apply exit-code-map before success/failure evaluation, matching the
+		// reap loop (RemapExitCode) so a startup oneshot honors the same
+		// mapping a long-running service would.
+		code := svc.RemapExitCode(r.code)
+		if code != r.code {
+			log.Printf("oneshot %s exited (status %d, remapped to %d)", r.name, r.code, code)
+		}
+		d.m.ServiceExited(r.name, code)
+		if code != 0 {
 			if svc.OnFailure == service.ActionIgnore {
-				log.Printf("oneshot %s exited with status %d (ignored)", r.name, r.code)
+				log.Printf("oneshot %s exited with status %d (ignored)", r.name, code)
 				continue
 			}
 			if fatalErr == nil {
 				rc := r
+				rc.code = code
 				fatalErr = &rc
 			}
 			continue
