@@ -17,9 +17,14 @@
 // exposes Ready/Stopping/Status signals parsed from newline-separated
 // key=value records. The socket is bound in the Linux abstract namespace so
 // there is no filesystem to clean up and rootless permission issues are
-// avoided. Any process in the same network namespace (i.e. the container)
-// can send to the socket, which matches the intended single-container
-// deployment model.
+// avoided.
+//
+// Abstract-namespace sockets have no filesystem permissions, so without
+// further checks any process in the network namespace (the whole container)
+// could send READY=1 and prematurely release services gated on a sibling's
+// readiness. To prevent that, the listener enables SO_PASSCRED and accepts
+// records only from a datagram whose sender uid matches the supervised
+// child's resolved uid (or root); datagrams from any other uid are dropped.
 package sdnotify
 
 import (
@@ -46,6 +51,8 @@ type Listener struct {
 	name    string
 	path    string
 
+	allowedUID int
+
 	ready    atomic.Bool
 	stopping atomic.Bool
 	closed   atomic.Bool
@@ -55,18 +62,30 @@ type Listener struct {
 // Listen creates a datagram socket at @gopherd-sd-notify-<pid>-<name> and
 // begins reading. The name should be a stable service identifier; pid
 // disambiguates concurrent gopherd instances in the same container.
-func Listen(name string, pid int) (*Listener, error) {
+//
+// allowedUID is the uid the supervised child runs as (its resolved
+// credential, or gopherd's own euid when no privilege drop applies). On Linux
+// the listener verifies each datagram's sender via SO_PASSCRED and accepts
+// records only from allowedUID or root (uid 0); datagrams from any other uid
+// are dropped. On non-Linux platforms credentials are unavailable and all
+// datagrams are accepted (filesystem-permission fallback, as elsewhere).
+func Listen(name string, pid, allowedUID int) (*Listener, error) {
 	path := fmt.Sprintf("@gopherd-sd-notify-%d-%s", pid, name)
 	addr := &net.UnixAddr{Net: "unixgram", Name: path}
 	conn, err := net.ListenUnixgram("unixgram", addr)
 	if err != nil {
 		return nil, fmt.Errorf("sd_notify listen %s: %w", name, err)
 	}
+	if err := enablePassCred(conn); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("sd_notify listen %s: SO_PASSCRED: %w", name, err)
+	}
 	n := &Listener{
-		conn:    conn,
-		name:    name,
-		path:    path,
-		readyCh: make(chan struct{}),
+		conn:       conn,
+		name:       name,
+		path:       path,
+		allowedUID: allowedUID,
+		readyCh:    make(chan struct{}),
 	}
 	n.status.Store("")
 	n.wg.Add(1)
@@ -119,8 +138,9 @@ func (n *Listener) Close() error {
 func (n *Listener) readLoop() {
 	defer n.wg.Done()
 	buf := make([]byte, readBufSize)
+	oob := make([]byte, oobSize)
 	for {
-		nb, _, err := n.conn.ReadFromUnix(buf)
+		nb, oobn, _, _, err := n.conn.ReadMsgUnix(buf, oob)
 		if err != nil {
 			if n.closed.Load() {
 				return
@@ -132,8 +152,32 @@ func (n *Listener) readLoop() {
 			log.Printf("sd_notify %s: read: %v", n.name, err)
 			return
 		}
+		if !n.authorized(oob[:oobn]) {
+			continue
+		}
 		n.parse(buf[:nb])
 	}
+}
+
+// authorized reports whether a datagram with the given ancillary data came
+// from a uid permitted to drive this listener's state. On Linux a datagram is
+// accepted only from the supervised child's uid or root; an unattributable
+// datagram (no credentials) is dropped. On platforms without SO_PASSCRED the
+// check is skipped and all datagrams are accepted.
+func (n *Listener) authorized(oob []byte) bool {
+	if !credEnabled {
+		return true
+	}
+	uid, ok := parseSenderUID(oob)
+	if !ok {
+		log.Printf("sd_notify %s: dropping datagram with no sender credentials", n.name)
+		return false
+	}
+	if uid != n.allowedUID && uid != 0 {
+		log.Printf("sd_notify %s: dropping datagram from uid %d (expected %d or root)", n.name, uid, n.allowedUID)
+		return false
+	}
+	return true
 }
 
 // parse processes a single datagram. Records are separated by \n; each is

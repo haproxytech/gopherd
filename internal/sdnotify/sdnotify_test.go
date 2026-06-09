@@ -40,7 +40,7 @@ func dialAndSend(t *testing.T, path, payload string) {
 
 func TestListenerPathFormat(t *testing.T) {
 	t.Parallel()
-	n, err := Listen("svc", 42)
+	n, err := Listen("svc", 42, os.Getuid())
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestListenerPathFormat(t *testing.T) {
 
 func TestListenerReady(t *testing.T) {
 	t.Parallel()
-	n, err := Listen("ready", os.Getpid())
+	n, err := Listen("ready", os.Getpid(), os.Getuid())
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestListenerReadyIdempotent(t *testing.T) {
 	t.Parallel()
 	// Second READY=1 must not panic (closing an already-closed channel
 	// would). The atomic CompareAndSwap in parse() guards this.
-	n, err := Listen("ready-idem", os.Getpid())
+	n, err := Listen("ready-idem", os.Getpid(), os.Getuid())
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestListenerReadyIdempotent(t *testing.T) {
 
 func TestListenerStopping(t *testing.T) {
 	t.Parallel()
-	n, err := Listen("stopping", os.Getpid())
+	n, err := Listen("stopping", os.Getpid(), os.Getuid())
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestListenerStopping(t *testing.T) {
 
 func TestListenerStatus(t *testing.T) {
 	t.Parallel()
-	n, err := Listen("status", os.Getpid())
+	n, err := Listen("status", os.Getpid(), os.Getuid())
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestListenerStatus(t *testing.T) {
 
 func TestListenerWaitReadyContextCancel(t *testing.T) {
 	t.Parallel()
-	n, err := Listen("ctx", os.Getpid())
+	n, err := Listen("ctx", os.Getpid(), os.Getuid())
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestListenerWaitReadyContextCancel(t *testing.T) {
 
 func TestListenerCloseIdempotent(t *testing.T) {
 	t.Parallel()
-	n, err := Listen("close", os.Getpid())
+	n, err := Listen("close", os.Getpid(), os.Getuid())
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestListenerCloseIdempotent(t *testing.T) {
 
 func TestListenerIgnoresUnknownKeys(t *testing.T) {
 	t.Parallel()
-	n, err := Listen("unknown", os.Getpid())
+	n, err := Listen("unknown", os.Getpid(), os.Getuid())
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestListenerIgnoresUnknownKeys(t *testing.T) {
 
 func TestListenerMalformedLines(t *testing.T) {
 	t.Parallel()
-	n, err := Listen("malformed", os.Getpid())
+	n, err := Listen("malformed", os.Getpid(), os.Getuid())
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}

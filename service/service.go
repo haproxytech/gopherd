@@ -666,6 +666,15 @@ func (s *Service) Start() (pid int, err error) {
 		delete(userKeys, k)
 	}
 
+	// Resolve the privilege-drop credential up front: the sd_notify listener
+	// needs the child's uid to authenticate READY datagrams, and it is also
+	// applied to SysProcAttr below. Pure function, no side effects, so hoisting
+	// it before the listener allocation is safe.
+	cred, err := ResolveCredential(s.Proc.User, s.Proc.Group, s.Proc.UserID, s.Proc.GroupID)
+	if err != nil {
+		return 0, err
+	}
+
 	// Allocate the sd_notify listener before exec so NOTIFY_SOCKET is set
 	// in the child env. A pre-existing listener (restart path) is replaced
 	// because the old socket may still hold stale READY state from the
@@ -676,7 +685,13 @@ func (s *Service) Start() (pid int, err error) {
 			_ = s.sdNotifyListener.Close()
 			s.sdNotifyListener = nil
 		}
-		l, lerr := sdnotify.Listen(s.Name, os.Getpid())
+		// The child sends READY=1 from its resolved uid (or gopherd's own euid
+		// when no privilege drop applies); only that uid or root is trusted.
+		allowedUID := os.Geteuid()
+		if cred != nil {
+			allowedUID = int(cred.Uid)
+		}
+		l, lerr := sdnotify.Listen(s.Name, os.Getpid(), allowedUID)
 		if lerr != nil {
 			return 0, fmt.Errorf("sd_notify: %w", lerr)
 		}
@@ -772,10 +787,6 @@ func (s *Service) Start() (pid int, err error) {
 		}
 	}
 
-	cred, err := ResolveCredential(s.Proc.User, s.Proc.Group, s.Proc.UserID, s.Proc.GroupID)
-	if err != nil {
-		return 0, err
-	}
 	if cred != nil {
 		cmd.SysProcAttr.Credential = cred
 	}
