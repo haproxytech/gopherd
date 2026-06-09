@@ -1,0 +1,9 @@
+# File-inclusion template: {{file "/path" trim}} reads file contents at
+# expansion time (Docker/K8s secret mounts). `trim` strips trailing newline.
+processes:
+  - name: app
+    command: /bin/sh
+    args: ["-c", "test \"$TOKEN\" = s3cr3t && sleep 300 || exit 9"]
+    environment:
+      TOKEN: '{{file "SECRETFILE" trim}}'
+    on-failure: shutdown

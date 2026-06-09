@@ -73,7 +73,7 @@ processes:
 
 	// Start a second instance with the same socket — it should detect the running daemon and exit.
 	cmd := exec.Command(testBinary)
-	cmd.Env = append(os.Environ(), "GOPHERD_CONFIG="+td.configPath, "GOPHERD_SOCKET="+td.socketPath)
+	cmd.Env = append(os.Environ(), "GOPHERD_CONFIG="+td.ConfigPath(), "GOPHERD_SOCKET="+td.SocketPath())
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	err := cmd.Run()
 	if err == nil {

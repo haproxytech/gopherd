@@ -1,0 +1,8 @@
+# Reserve memory headroom: percentage minus a fixed amount.
+# {{mem PCT% - NUNIT}} subtracts a fixed size from the percentage result, so the
+# app leaves room below the cgroup limit before the kernel OOM-kills it.
+processes:
+  - name: app
+    command: /usr/local/bin/app
+    args: ["--cache", "{{mem 100% - 64MiB}}"]
+    on-failure: shutdown

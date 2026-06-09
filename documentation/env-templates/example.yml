@@ -1,0 +1,9 @@
+# Environment-variable templates: {{.VAR}} and {{.VAR:-default}} expansion.
+processes:
+  - name: app
+    command: /bin/sh
+    args: ["-c", "test \"$GREETING\" = hello-world && sleep 300 || exit 9"]
+    environment:
+      GREETING: "{{.WORD:-hello}}-world"
+    pass-env: true
+    on-failure: shutdown

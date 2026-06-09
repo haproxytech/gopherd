@@ -1,0 +1,23 @@
+# Readiness gate: hold a dependent until a check passes.
+processes:
+  - name: db
+    command: /usr/local/bin/db
+    args: ["300"]
+    on-failure: shutdown
+
+  - name: app
+    command: /usr/local/bin/app
+    args: ["300"]
+    after: [db]
+    ready-check: db-ready
+    ready-timeout: 10s
+    on-failure: shutdown
+
+checks:
+  db-ready:
+    exec:
+      command: /bin/true
+      args: []
+    period: 300ms
+    threshold: 1
+    level: ready

@@ -1,0 +1,8 @@
+# Subreaper mode for non-PID-1 deployments, plus parent-death cleanup.
+subreaper: true
+processes:
+  - name: app
+    command: /usr/local/bin/app
+    args: ["300"]
+    parent-death-signal: SIGTERM
+    on-failure: shutdown

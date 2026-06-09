@@ -1,0 +1,8 @@
+# init-stop-signal: top-level list overriding which signals trigger gopherd's
+# own graceful shutdown. Setting it replaces the default [SIGTERM, SIGINT].
+init-stop-signal: [SIGUSR2]
+processes:
+  - name: app
+    command: /usr/local/bin/app
+    args: ["300"]
+    on-failure: shutdown

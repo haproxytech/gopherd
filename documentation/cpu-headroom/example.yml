@@ -1,0 +1,8 @@
+# Reserve CPU headroom: percentage minus a fixed count.
+# {{cpu PCT% - N}} subtracts N from the percentage result (min 1), so the app
+# leaves a core free for sidecars, the init process, or system tasks.
+processes:
+  - name: app
+    command: /usr/local/bin/app
+    args: ["--workers", "{{cpu 100% - 1}}"]
+    on-failure: shutdown

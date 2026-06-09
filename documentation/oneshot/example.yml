@@ -1,0 +1,11 @@
+# Run a oneshot migration to completion before the app starts.
+processes:
+  - name: migrate
+    command: /usr/local/bin/migrate
+    args: ["-c", "echo migrated; exit 0"]
+    startup: oneshot
+  - name: app
+    command: /usr/local/bin/app
+    args: ["300"]
+    after: [migrate]
+    on-failure: shutdown

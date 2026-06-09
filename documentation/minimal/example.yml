@@ -1,0 +1,6 @@
+# Minimal gopherd config: supervise a single long-running process.
+processes:
+  - name: app
+    command: /usr/local/bin/myapp
+    args: ["300"]
+    on-failure: shutdown

@@ -10,3 +10,4 @@ allowed:
   - topo
   - oneshot
   - oneshots
+  - doctest

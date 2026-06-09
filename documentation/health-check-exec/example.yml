@@ -1,0 +1,14 @@
+# Exec health check: run a command periodically to probe a service.
+processes:
+  - name: svc
+    command: /usr/local/bin/svc
+    args: ["300"]
+    on-failure: shutdown
+
+checks:
+  svc-alive:
+    exec:
+      command: /bin/true
+      args: []
+    period: 300ms
+    threshold: 1

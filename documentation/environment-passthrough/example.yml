@@ -1,0 +1,7 @@
+# Forward gopherd's own environment to child services.
+pass-env: true
+processes:
+  - name: printer
+    command: /bin/sh
+    args: ["-c", "test -n \"$DEMO_TOKEN\" && sleep 300 || exit 7"]
+    on-failure: shutdown

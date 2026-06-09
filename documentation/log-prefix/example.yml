@@ -1,0 +1,8 @@
+# Global log prefix: each child log line is tagged with the configured tokens.
+# Tokens (space-separated, applied in order): "timestamp", "service", "none".
+prefix: "timestamp service"
+processes:
+  - name: app
+    command: /bin/sh
+    args: ["-c", "echo hello-from-app; sleep 300"]
+    on-failure: shutdown

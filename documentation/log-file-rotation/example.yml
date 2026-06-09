@@ -1,0 +1,14 @@
+# File log target with size-based rotation and retention.
+processes:
+  - name: app
+    command: /usr/local/bin/app
+    args: ["300"]
+    on-failure: shutdown
+log-targets:
+  app-file:
+    type: file
+    location: /var/log/app.log
+    services: [app]
+    max-size: 10MiB
+    max-files: 5
+    compress: true

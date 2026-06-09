@@ -1,0 +1,11 @@
+# Per-process exit-code remap: an observed exit code is rewritten before
+# on-success/on-failure evaluation and exit-code propagation. Here a service
+# exiting 17 is treated as success (0), so on-failure: shutdown never fires.
+processes:
+  - name: task
+    command: /bin/sh
+    args: ["-c", "sleep 1; exit 17"]
+    on-success: ignore
+    on-failure: shutdown
+    exit-code-map:
+      17: 0

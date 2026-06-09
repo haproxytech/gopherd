@@ -1,0 +1,13 @@
+# Graceful shutdown ordering. With reverse-dep (the default), dependents
+# stop before the dependencies they rely on.
+shutdown-order: reverse-dep
+processes:
+  - name: db
+    command: /bin/sh
+    args: ["-c", "trap 'echo db >> STOPLOG; exit 0' TERM; while true; do sleep 0.2; done"]
+    on-failure: shutdown
+  - name: app
+    command: /bin/sh
+    args: ["-c", "trap 'echo app >> STOPLOG; exit 0' TERM; while true; do sleep 0.2; done"]
+    after: [db]
+    on-failure: shutdown

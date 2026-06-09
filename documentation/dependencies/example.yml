@@ -1,0 +1,11 @@
+# Order startup with `after`: `first` runs before `second`.
+processes:
+  - name: second
+    command: /bin/sh
+    args: ["-c", "echo second >> ORDERLOG && sleep 300"]
+    after: [first]
+    on-failure: shutdown
+  - name: first
+    command: /bin/sh
+    args: ["-c", "echo first >> ORDERLOG && sleep 300"]
+    on-failure: shutdown

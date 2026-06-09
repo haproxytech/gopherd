@@ -1,0 +1,10 @@
+# Per-process signal rewrite: forward an arbitrary signal as a different one.
+# Here SIGUSR1 sent to gopherd is delivered to the service as SIGTERM.
+processes:
+  - name: app
+    command: /bin/sh
+    args: ["-c", "trap 'exit 0' TERM; while true; do sleep 0.2; done"]
+    on-success: ignore
+    on-failure: ignore
+    signal-rewrite:
+      USR1: TERM

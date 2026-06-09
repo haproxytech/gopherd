@@ -1,0 +1,10 @@
+# Supervise two independent long-running services.
+processes:
+  - name: web
+    command: /usr/local/bin/web
+    args: ["300"]
+    on-failure: shutdown
+  - name: worker
+    command: /usr/local/bin/worker
+    args: ["300"]
+    on-failure: shutdown

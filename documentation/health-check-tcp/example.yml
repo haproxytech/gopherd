@@ -1,0 +1,14 @@
+# TCP health check: probe a service by opening a TCP connection to its port.
+processes:
+  - name: svc
+    command: /bin/sh
+    args: ["-c", "exec nc -lk 127.0.0.1 PORT"]
+    on-failure: shutdown
+
+checks:
+  svc-tcp:
+    tcp:
+      host: 127.0.0.1
+      port: PORT
+    period: 300ms
+    threshold: 1

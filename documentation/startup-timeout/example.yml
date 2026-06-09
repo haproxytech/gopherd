@@ -1,0 +1,7 @@
+# Bound a oneshot's runtime so a wedged init step can't hang startup.
+processes:
+  - name: slow
+    command: /usr/local/bin/slow
+    args: ["30"]
+    startup: oneshot
+    startup-timeout: 1s
