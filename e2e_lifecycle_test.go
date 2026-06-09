@@ -87,36 +87,59 @@ func TestE2EMultipleServicesOrdering(t *testing.T) {
 	dir := t.TempDir()
 	logFile := filepath.Join(dir, "order.log")
 
+	// `first` is a oneshot: the startup sequencer waits for it to exit cleanly
+	// before starting the next layer, so `second` (after: [first]) cannot run
+	// its echo until `first`'s echo has completed. With two long-running
+	// services, `after` only sequences the supervisor's exec calls — the two
+	// shells then race to write, so the ordering would not be guaranteed.
 	td := startDaemon(t, fmt.Sprintf(`
 processes:
+  - name: first
+    command: /bin/sh
+    args: ["-c", "echo first >> %s"]
+    startup: oneshot
+
   - name: second
     command: /bin/sh
     args: ["-c", "echo second >> %s && sleep 300"]
     after: [first]
     on-failure: shutdown
-
-  - name: first
-    command: /bin/sh
-    args: ["-c", "echo first >> %s && sleep 300"]
-    on-failure: shutdown
 `, logFile, logFile))
 	defer td.kill()
 
-	time.Sleep(1 * time.Second)
-
-	data, err := os.ReadFile(logFile)
-	if err != nil {
-		t.Fatalf("read order log: %v", err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("expected 2 lines, got %d: %q", len(lines), string(data))
-	}
+	// Poll for both lines rather than guessing a fixed delay: the shell writes
+	// happen asynchronously after the supervisor forks each child.
+	lines := waitForLines(t, logFile, 2, 5*time.Second)
 	if lines[0] != "first" || lines[1] != "second" {
 		t.Errorf("expected [first, second], got %v", lines)
 	}
 
 	td.stop()
+}
+
+// waitForLines polls path until it contains at least n non-empty lines or the
+// timeout elapses, then returns the lines. Fails the test on timeout.
+func waitForLines(t *testing.T, path string, n int, timeout time.Duration) []string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			trimmed := strings.TrimSpace(string(data))
+			if trimmed != "" {
+				lines := strings.Split(trimmed, "\n")
+				if len(lines) >= n {
+					return lines
+				}
+			}
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d lines in %s; have: %q", n, path, string(data))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestE2EMultipleServicesStats(t *testing.T) {
