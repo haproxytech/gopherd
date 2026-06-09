@@ -15,7 +15,9 @@
 package yml
 
 import (
+	"bytes"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -742,6 +744,43 @@ processes:
 `))
 	if err == nil {
 		t.Error("expected error for named process with no command field")
+	}
+}
+
+// TestUnmarshalWarnsFileInArgs verifies a {{file}} reference inside args emits
+// a world-readable-cmdline warning, and that {{file}} in environment does not.
+// Not parallel: log.SetOutput mutates global state.
+func TestUnmarshalWarnsFileInArgs(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	_, err := Unmarshal([]byte(`
+processes:
+  - name: app
+    command: /bin/app
+    args: ["--token={{file \"/run/secrets/token\"}}"]
+`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !strings.Contains(buf.String(), "cmdline") {
+		t.Errorf("expected cmdline warning for {{file}} in args, got: %q", buf.String())
+	}
+
+	buf.Reset()
+	_, err = Unmarshal([]byte(`
+processes:
+  - name: app
+    command: /bin/app
+    environment:
+      TOKEN: '{{file "/run/secrets/token"}}'
+`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if strings.Contains(buf.String(), "cmdline") {
+		t.Errorf("did not expect warning for {{file}} in environment, got: %q", buf.String())
 	}
 }
 

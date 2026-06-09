@@ -16,6 +16,7 @@ package yml
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -435,6 +436,19 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		p.BackoffFactor = v
 	}
 	p.Prefix = n.Get("prefix").String()
+	// {{file}} in args ends up in the child's argv, exposed world-readably via
+	// /proc/<pid>/cmdline — strictly weaker than the owner-only /proc/<pid>/environ
+	// the feature is meant to improve on. Warn so secrets move to environment:.
+	for _, a := range p.Args {
+		if strings.Contains(a, "{{file") {
+			name := p.Name
+			if name == "" {
+				name = p.Command
+			}
+			log.Printf("warning: process %q uses {{file}} in args; argv is world-readable via /proc/<pid>/cmdline — use environment: for secrets", name)
+			break
+		}
+	}
 	return p, nil
 }
 

@@ -299,6 +299,15 @@ Supported forms:
 
 Where it works: `args`, `environment` values, and `startup`. Paths must be absolute.
 
+> **Security note — do not put secrets in `args`.** A value expanded into `args`
+> becomes part of the child's argv, which is world-readable via
+> `/proc/<pid>/cmdline` and `ps`. That is *strictly weaker* than the
+> `/proc/<pid>/environ` exposure (owner-and-root only) this feature is meant to
+> avoid, so `{{file}}` in `args` defeats its own purpose for secret material.
+> Keep secrets in `environment:` values; reserve `{{file}}` in `args` for
+> non-sensitive content (version strings, feature flags, public config). gopherd
+> logs a warning at config load when it sees `{{file}}` inside `args`.
+
 When the file is read:
 
 - `startup`: at config-load time (once per `gopherd reload` / SIGHUP).
@@ -321,7 +330,9 @@ processes:
       DB_PASSWORD: '{{file "/run/secrets/db_password" trim}}'
       API_TOKEN:   '{{file "/run/secrets/api_token" trim}}'
       LICENSE:     '{{file "/etc/license.key":-no-license}}'
-    args: ["--cert={{file \"/run/secrets/tls.crt\"}}"]
+      TLS_CERT:    '{{file "/run/secrets/tls.crt"}}'  # secrets go in env, never args
+    # args: only non-sensitive content — argv is world-readable via /proc/<pid>/cmdline
+    args: ["--build={{file \"/etc/build-id\" trim}}"]
 ```
 
 #### Docker
