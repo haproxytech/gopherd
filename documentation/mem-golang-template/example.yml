@@ -1,0 +1,11 @@
+# GOMEMLIMIT for a Go app, sized from detected RAM + cgroup limits.
+# {{mem EXPR}} expands to a bare integer count of MiB, so the "MiB" suffix is
+# appended in the string — GOMEMLIMIT reads a bare number as BYTES.
+processes:
+  - name: app
+    command: /usr/local/bin/app
+    environment:
+      # Soft heap target at 90% of the budget, reserving 64 MiB headroom so the
+      # GC reclaims before the cgroup hard limit OOM-kills the process.
+      GOMEMLIMIT: "{{mem 90% - 64MiB}}MiB"
+    on-failure: shutdown
