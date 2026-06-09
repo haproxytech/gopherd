@@ -129,6 +129,45 @@ func TestExpandFileRefsReadErrorEvenWithDefault(t *testing.T) {
 	}
 }
 
+func TestExpandFileRefsRejectsSymlink(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	target := filepath.Join(dir, "secret")
+	if err := os.WriteFile(target, []byte("topsecret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink leaf must be rejected even when its target is a regular file,
+	// and must not fall back to the default.
+	if _, err := ExpandFileRefs(`{{file "` + link + `":-fallback}}`); err == nil {
+		t.Fatalf("expected error for symlinked leaf, got nil")
+	}
+}
+
+func TestExpandFileRefsRejectsSymlinkedAncestor(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	realDir := filepath.Join(dir, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(realDir, "secret")
+	if err := os.WriteFile(secret, []byte("topsecret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(dir, "link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	// Path reaches a regular file, but through a symlinked ancestor directory.
+	if _, err := ExpandFileRefs(`{{file "` + filepath.Join(linkDir, "secret") + `"}}`); err == nil {
+		t.Fatalf("expected error for symlinked ancestor, got nil")
+	}
+}
+
 func BenchmarkExpandFileRefsLiteral(b *testing.B) {
 	for b.Loop() {
 		_, _ = ExpandFileRefs("no placeholders here")

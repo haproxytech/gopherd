@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 )
 
 // fileRe matches {{file "/abs/path"}}, {{file "/abs/path" trim}},
@@ -80,8 +81,20 @@ func readFileTemplate(path string, doTrim, hasDefault bool, defaultVal string) (
 	if !filepath.IsAbs(path) {
 		return "", fmt.Errorf("{{file %q}}: path must be absolute", path)
 	}
-	f, err := os.Open(path)
+	// gopherd often runs as root PID 1 and substitutes the contents into a
+	// child's argv/env. Walk the ancestor directories and open with
+	// O_NOFOLLOW so a sibling with write access to the secret directory cannot
+	// swap the path (or an intermediate component) for a symlink pointing at a
+	// root-only file and have us read it on their behalf.
+	clean := filepath.Clean(path)
+	if err := checkAncestorsNotSymlinked(clean); err != nil {
+		return "", fmt.Errorf("{{file %q}}: %w", path, err)
+	}
+	fd, err := syscall.Open(clean, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
+		if err == syscall.ELOOP {
+			return "", fmt.Errorf("{{file %q}}: is a symlink; refusing to open", path)
+		}
 		// ENOENT with a default falls back to the literal default text.
 		// Any other open error (EACCES, EISDIR, ...) is a hard error even
 		// with a default: a present-but-unreadable file is an operator
@@ -91,6 +104,7 @@ func readFileTemplate(path string, doTrim, hasDefault bool, defaultVal string) (
 		}
 		return "", fmt.Errorf("{{file %q}}: %w", path, err)
 	}
+	f := os.NewFile(uintptr(fd), clean)
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
