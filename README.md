@@ -28,7 +28,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Log prefixing** — service name and timestamp on every output line (configurable format)
 - **Log targets** — forward logs to syslog (UDP/TCP) or files
 - **Status reporting** — service uptime, restarts, exits, and health check results via `gopherd status`
-- **Control socket** — start/stop/restart/status/signal/reload/stats/logs services at runtime via Unix socket
+- **Control socket** — start/stop/restart/status/signal/reload/logs services at runtime via Unix socket
 - **Log streaming** — `gopherd logs <service> -f` for live log tailing via control socket
 - **Hot reload** — `gopherd reload` or SIGHUP to re-read config and reconcile services without restart
 - **Exit code propagation** — gopherd exits with the actual exit code of the service that triggered shutdown
@@ -318,6 +318,8 @@ Error behavior:
 - Missing file with no `:-default` is a hard error.
 - Missing file with `:-default` expands to the literal default text. Same `${VAR:-default}` semantics as env-var templates.
 - A present-but-unreadable file (permission denied, path-is-a-directory, etc.) is a hard error even with `:-default` — that is an operator misconfiguration, not a fallback case.
+- Symlinks are refused (the file itself and every ancestor directory): gopherd may run as root, and a symlink could redirect the read to a root-only file. Point `{{file}}` at the real path.
+- Only regular files are read — FIFOs, devices, and files containing NUL bytes are hard errors (NUL cannot survive argv/env).
 - 1 MiB size cap per file to make `{{file "/var/log/huge.log"}}` fail loudly. Secrets and license keys are well under this.
 
 Example consuming a Docker/K8s secret mount:
@@ -359,7 +361,7 @@ init-stop-signal: [SIGTERM, SIGINT, SIGQUIT]
 
 ### Configuration
 
-Configuration is a single YAML file (no external YAML library — built-in parser). See the [example/](example/) directory for ready-to-use configs including a minimal setup, HAProxy ingress pattern, and a comprehensive all-options reference.
+Configuration is a single YAML file (no external YAML library — built-in parser). See the [example/](example/) directory for ready-to-use configs including a minimal setup, HAProxy ingress pattern, and a comprehensive all-options reference. The [documentation/](documentation/) directory contains examples — one folder per feature, each with a runnable config, a README, and a Go test proving the documented behavior.
 
 Below is a full example showing all available options:
 
@@ -384,6 +386,7 @@ Below is a full example showing all available options:
 # Control socket
 control:
   socket: /run/gopherd.sock          # Unix socket path for runtime control
+  socket-mode: "0600"                # socket file permissions, octal (default: 0600)
 
 # Processes
 processes:
@@ -436,7 +439,6 @@ checks:
     timeout: 3s
     threshold: 3
     initial-delay: 30s               # wait before first check (default: 1x period)
-    level: alive
 
   # Health check over Unix socket
   haproxy-health:
@@ -514,6 +516,7 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `group` | string | inherited | Run as group (name) |
 | `user-id` | int | inherited | Run as user (numeric, takes precedence) |
 | `group-id` | int | inherited | Run as group (numeric, takes precedence) |
+| `strict-groups` | bool | `false` | When an explicit group is set, drop the named user's supplementary groups instead of keeping full membership |
 | `pass-env` | bool | global default | Forward gopherd's OS environment to this service (false = empty env + only dotenv/environment vars) |
 | `remove-env` | list | `[]` | Env keys to delete from the final child environment, regardless of source (OS env / dotenv / `environment:`) |
 | `startup` | string | `"enabled"` | `"enabled"`, `"disabled"`, or `"oneshot"`. Supports `{{.VAR}}` / `{{.VAR:-default}}` and `{{file "/path"}}`; empty after expansion → disabled. Oneshots with no `after`/`requires` edge between them run concurrently; dependents wait for all oneshots in the prior layer to exit cleanly |
@@ -567,18 +570,19 @@ service triggers a shutdown action or it receives an `init-stop-signal`.
 | Package | Purpose |
 |:--------|:--------|
 | `main` | Daemon entry point, reap loop, lifecycle orchestration |
-| `yml/` | Built-in YAML parser and config loader (no external deps) |
 | `service/` | Service lifecycle, signal parsing, user/group resolution |
-| `backoff/` | Exponential backoff with jitter for restarts |
-| `cgroup/` | Shared cgroup v1/v2 helpers (path discovery, safe file reads, walk-up) |
 | `check/` | Health checks (HTTP, TCP, exec), unix socket transport, readiness gates |
 | `control/` | Unix socket control server + CLI client |
-| `cpu/` | System and cgroup CPU detection, CPU expression parser |
-| `logger/` | Line-buffered prefix writer, syslog and file log target forwarding |
-| `memory/` | System and cgroup memory detection, memory expression parser |
-| `metrics/` | In-memory service and check statistics |
-| `order/` | Topological sort for service dependencies |
 | `version/` | Build version from Go's embedded VCS metadata |
+| `internal/yml/` | Built-in YAML parser and config loader (no external deps) |
+| `internal/backoff/` | Exponential backoff with jitter for restarts |
+| `internal/cgroup/` | Shared cgroup v1/v2 helpers (path discovery, safe file reads, walk-up) |
+| `internal/cpu/` | System and cgroup CPU detection, CPU expression parser |
+| `internal/logger/` | Line-buffered prefix writer, syslog and file log target forwarding |
+| `internal/memory/` | System and cgroup memory detection, memory expression parser |
+| `internal/metrics/` | In-memory service and check statistics |
+| `internal/order/` | Topological sort for service dependencies |
+| `internal/sdnotify/` | systemd sd_notify readiness listener (abstract-namespace datagram socket) |
 
 Core design:
 
