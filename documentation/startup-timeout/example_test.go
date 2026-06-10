@@ -23,7 +23,7 @@ import (
 
 func TestStartupTimeoutExample(t *testing.T) {
 	d := doctest.RunFile(t, "example.yml", doctest.Options{
-		Commands: map[string]string{"/usr/local/bin/slow": "/usr/bin/sleep"},
+		Commands: map[string]string{"/usr/local/bin/slow": "sleep"},
 	})
 
 	// The hung oneshot is killed at startup-timeout; that failure is fatal,

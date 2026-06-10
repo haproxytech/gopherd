@@ -15,8 +15,8 @@
 package envtemplates
 
 import (
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/haproxytech/gopherd/internal/doctest"
 )
@@ -27,9 +27,8 @@ import (
 func TestEnvTemplateDefault(t *testing.T) {
 	d := doctest.RunFile(t, "example.yml", doctest.Options{})
 
-	if resp := d.Command("status app"); !strings.Contains(resp, "running") {
-		t.Fatalf("expected app running (GREETING=hello-world), got: %s", resp)
-	}
+	// running proves GREETING expanded to hello-world (else app exits 9)
+	d.WaitRunning("app", 5*time.Second)
 	if code := d.Stop(); code != 0 {
 		t.Errorf("expected clean exit 0, got %d", code)
 	}

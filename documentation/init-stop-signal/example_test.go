@@ -15,7 +15,6 @@
 package initstopsignal
 
 import (
-	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -27,12 +26,10 @@ import (
 // trigger, replacing the default [SIGTERM, SIGINT]. SIGUSR2 is normally NOT a
 // stop signal, so a clean shutdown on SIGUSR2 proves the override took effect.
 func TestInitStopSignalExample(t *testing.T) {
-	opts := doctest.Options{Commands: map[string]string{"/usr/local/bin/app": "/usr/bin/sleep"}}
+	opts := doctest.Options{Commands: map[string]string{"/usr/local/bin/app": "sleep"}}
 
 	d := doctest.RunFile(t, "example.yml", opts)
-	if resp := d.Command("status app"); !strings.Contains(resp, "running") {
-		t.Fatalf("expected app running, got: %s", resp)
-	}
+	d.WaitRunning("app", 5*time.Second)
 
 	// SIGUSR2 triggers gopherd's graceful shutdown: it stops app cleanly and
 	// exits 0. Without the override, SIGUSR2 would be dropped (unmapped) and

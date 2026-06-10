@@ -28,7 +28,7 @@ func TestSDNotifyExample(t *testing.T) {
 		t.Skip("python3 not available; sd-notify notifier unavailable")
 	}
 	d := doctest.RunFile(t, "example.yml", doctest.Options{
-		Commands: map[string]string{"/usr/local/bin/app": "/usr/bin/sleep"},
+		Commands: map[string]string{"/usr/local/bin/app": "sleep"},
 	})
 
 	// app gates on notifier writing READY=1; a running app proves the gate opened.

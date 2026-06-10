@@ -17,6 +17,7 @@ package multiservice
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/haproxytech/gopherd/internal/doctest"
 )
@@ -24,8 +25,8 @@ import (
 func TestMultiServiceExample(t *testing.T) {
 	d := doctest.RunFile(t, "example.yml", doctest.Options{
 		Commands: map[string]string{
-			"/usr/local/bin/web":    "/usr/bin/sleep",
-			"/usr/local/bin/worker": "/usr/bin/sleep",
+			"/usr/local/bin/web":    "sleep",
+			"/usr/local/bin/worker": "sleep",
 		},
 	})
 
@@ -34,12 +35,8 @@ func TestMultiServiceExample(t *testing.T) {
 		t.Fatalf("expected both services in status, got: %s", resp)
 	}
 
-	if r := d.Command("status web"); !strings.Contains(r, "running") {
-		t.Fatalf("expected web running, got: %s", r)
-	}
-	if r := d.Command("status worker"); !strings.Contains(r, "running") {
-		t.Fatalf("expected worker running, got: %s", r)
-	}
+	d.WaitRunning("web", 5*time.Second)
+	d.WaitRunning("worker", 5*time.Second)
 
 	if code := d.Stop(); code != 0 {
 		t.Errorf("expected clean exit 0, got %d", code)

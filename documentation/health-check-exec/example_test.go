@@ -34,12 +34,10 @@ func checkState(resp, name string) string {
 
 func TestHealthCheckExecExample(t *testing.T) {
 	d := doctest.RunFile(t, "example.yml", doctest.Options{
-		Commands: map[string]string{"/usr/local/bin/svc": "/usr/bin/sleep"},
+		Commands: map[string]string{"/usr/local/bin/svc": "sleep"},
 	})
 
-	if resp := d.Command("status svc"); !strings.Contains(resp, "running") {
-		t.Fatalf("expected svc running, got: %s", resp)
-	}
+	d.WaitRunning("svc", 5*time.Second)
 
 	// Wait for several check periods so the exec probe runs and reports healthy.
 	deadline := time.Now().Add(5 * time.Second)

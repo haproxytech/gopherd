@@ -63,9 +63,7 @@ func TestHealthCheckHTTPExample(t *testing.T) {
 
 	d := doctest.RunConfig(t, cfg, doctest.Options{})
 
-	if resp := d.Command("status web"); !strings.Contains(resp, "running") {
-		t.Fatalf("expected web running, got: %s", resp)
-	}
+	d.WaitRunning("web", 5*time.Second)
 
 	// Wait for the HTTP server to bind and the GET probe to return 2xx.
 	deadline := time.Now().Add(6 * time.Second)

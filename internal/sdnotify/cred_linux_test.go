@@ -29,6 +29,9 @@ import (
 // needing to actually run as another user.
 func TestListenerRejectsForeignUID(t *testing.T) {
 	t.Parallel()
+	if os.Getuid() == 0 {
+		t.Skip("root datagrams are always accepted; cannot fake a foreign uid as root")
+	}
 	foreign := os.Getuid() + 1 // never matches the test process's own uid
 	n, err := Listen("foreign-uid", os.Getpid(), foreign)
 	if err != nil {

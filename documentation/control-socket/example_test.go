@@ -24,7 +24,7 @@ import (
 
 func TestControlSocketExample(t *testing.T) {
 	d := doctest.RunFile(t, "example.yml", doctest.Options{
-		Commands: map[string]string{"/usr/local/bin/app": "/usr/bin/sleep"},
+		Commands: map[string]string{"/usr/local/bin/app": "sleep"},
 	})
 
 	// startup: disabled — app is not auto-started.
@@ -35,10 +35,7 @@ func TestControlSocketExample(t *testing.T) {
 	if resp := d.Command("start app"); strings.Contains(resp, "error") {
 		t.Fatalf("start app failed: %s", resp)
 	}
-	time.Sleep(500 * time.Millisecond)
-	if resp := d.Command("status app"); !strings.Contains(resp, "running") {
-		t.Fatalf("expected app running after start, got: %s", resp)
-	}
+	d.WaitRunning("app", 5*time.Second)
 
 	if resp := d.Command("stop app"); strings.Contains(resp, "error") {
 		t.Fatalf("stop app failed: %s", resp)

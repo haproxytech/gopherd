@@ -29,10 +29,12 @@ func TestEnvironmentPassthroughExample(t *testing.T) {
 	d := doctest.RunFile(t, "example.yml", doctest.Options{})
 
 	// Child sees DEMO_TOKEN and sleeps; without pass-env it would exit 7.
-	time.Sleep(500 * time.Millisecond)
+	d.WaitRunning("printer", 5*time.Second)
 
+	// Still running after a grace period: the child did not exit 7.
+	time.Sleep(500 * time.Millisecond)
 	if resp := d.Command("status printer"); !strings.Contains(resp, "running") {
-		t.Fatalf("expected printer running (child saw DEMO_TOKEN), got: %s", resp)
+		t.Fatalf("expected printer still running (child saw DEMO_TOKEN), got: %s", resp)
 	}
 
 	if code := d.Stop(); code != 0 {

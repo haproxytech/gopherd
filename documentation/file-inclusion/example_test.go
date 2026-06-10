@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/haproxytech/gopherd/internal/doctest"
 )
@@ -43,9 +44,8 @@ func TestFileInclusionExample(t *testing.T) {
 
 	d := doctest.RunConfig(t, cfg, doctest.Options{})
 
-	if resp := d.Command("status app"); !strings.Contains(resp, "running") {
-		t.Fatalf("expected app running (TOKEN read from file + trimmed), got: %s", resp)
-	}
+	// running proves TOKEN was read from the file and trimmed
+	d.WaitRunning("app", 5*time.Second)
 	if code := d.Stop(); code != 0 {
 		t.Errorf("expected clean exit 0, got %d", code)
 	}

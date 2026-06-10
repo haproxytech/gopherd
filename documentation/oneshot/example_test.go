@@ -17,6 +17,7 @@ package oneshot
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/haproxytech/gopherd/internal/doctest"
 )
@@ -25,14 +26,12 @@ func TestOneshotExample(t *testing.T) {
 	d := doctest.RunFile(t, "example.yml", doctest.Options{
 		Commands: map[string]string{
 			"/usr/local/bin/migrate": "/bin/sh",
-			"/usr/local/bin/app":     "/usr/bin/sleep",
+			"/usr/local/bin/app":     "sleep",
 		},
 	})
 
 	// app running proves migrate completed and the gate opened.
-	if resp := d.Command("status app"); !strings.Contains(resp, "running") {
-		t.Fatalf("expected app running, got: %s", resp)
-	}
+	d.WaitRunning("app", 5*time.Second)
 
 	// migrate exited during startup, so it is no longer running.
 	if resp := d.Command("status migrate"); strings.Contains(resp, "running") {

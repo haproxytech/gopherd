@@ -60,9 +60,7 @@ func TestHealthCheckTCPExample(t *testing.T) {
 
 	d := doctest.RunConfig(t, cfg, doctest.Options{})
 
-	if resp := d.Command("status svc"); !strings.Contains(resp, "running") {
-		t.Fatalf("expected svc running, got: %s", resp)
-	}
+	d.WaitRunning("svc", 5*time.Second)
 
 	// Wait for the listener to bind and the TCP probe to connect.
 	deadline := time.Now().Add(5 * time.Second)

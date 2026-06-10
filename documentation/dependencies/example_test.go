@@ -39,18 +39,19 @@ func TestDependenciesExample(t *testing.T) {
 
 	d := doctest.RunConfig(t, cfg, doctest.Options{})
 
-	time.Sleep(1 * time.Second)
+	// second running implies gopherd reached it in the start sequence.
+	d.WaitRunning("second", 5*time.Second)
 
-	data, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("read order log: %v", err)
+	// `after` guarantees gopherd's start order (fork/exec), not the order the
+	// two shells reach their echo, so assert on the daemon's own log.
+	out := d.Output()
+	fi := strings.Index(out, "started first")
+	si := strings.Index(out, "started second")
+	if fi == -1 || si == -1 {
+		t.Fatalf("expected both start lines in daemon output, got: %q", out)
 	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("expected 2 lines, got %d: %q", len(lines), string(data))
-	}
-	if lines[0] != "first" || lines[1] != "second" {
-		t.Errorf("expected [first, second], got %v", lines)
+	if fi > si {
+		t.Errorf("expected first started before second, got: %q", out)
 	}
 
 	d.Stop()

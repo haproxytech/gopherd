@@ -39,15 +39,10 @@ func TestShutdownOrderExample(t *testing.T) {
 
 	d := doctest.RunConfig(t, cfg, doctest.Options{})
 
-	// Wait for both services to be running and their signal traps installed.
+	d.WaitRunning("db", 5*time.Second)
+	d.WaitRunning("app", 5*time.Second)
+	// Give the shells a moment to install their signal traps.
 	time.Sleep(300 * time.Millisecond)
-
-	if r := d.Command("status db"); !strings.Contains(r, "running") {
-		t.Fatalf("expected db running, got: %s", r)
-	}
-	if r := d.Command("status app"); !strings.Contains(r, "running") {
-		t.Fatalf("expected app running, got: %s", r)
-	}
 
 	// reverse-dep stops app before db and waits for each exit before
 	// signaling the next, so log order is deterministic.

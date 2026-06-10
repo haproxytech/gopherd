@@ -19,7 +19,9 @@ package doctest
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -49,11 +51,34 @@ type Daemon struct {
 	waitErr    error // result of the one cmd.Wait()
 	cmd        *exec.Cmd
 	t          *testing.T
+	out        *syncBuffer // combined stdout+stderr capture
 	configPath string
 	socketPath string
 	dir        string
 	reapOnce   sync.Once // guards the single cmd.Wait()
 }
+
+// syncBuffer is a goroutine-safe buffer; the daemon's stdout and stderr pipes
+// write concurrently.
+type syncBuffer struct {
+	buf bytes.Buffer
+	mu  sync.Mutex
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// Output returns the daemon's combined stdout/stderr captured so far.
+func (d *Daemon) Output() string { return d.out.String() }
 
 // reap performs the single cmd.Wait() for the process and caches its result.
 // Safe to call repeatedly and from multiple goroutines: only the first call
@@ -185,17 +210,18 @@ func RunConfig(t *testing.T, config string, opts Options) *Daemon {
 		t.Fatalf("write config: %v", err)
 	}
 
+	out := &syncBuffer{}
 	cmd := exec.Command(binary(t), opts.ExtraArgs...)
 	cmd.Env = append(os.Environ(), "GOPHERD_CONFIG="+cfgPath, "GOPHERD_SOCKET="+sockPath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = io.MultiWriter(os.Stdout, out)
+	cmd.Stderr = io.MultiWriter(os.Stderr, out)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start daemon: %v", err)
 	}
 
-	d := &Daemon{cmd: cmd, configPath: cfgPath, socketPath: sockPath, dir: dir, t: t}
+	d := &Daemon{cmd: cmd, configPath: cfgPath, socketPath: sockPath, dir: dir, out: out, t: t}
 	t.Cleanup(d.Kill)
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -247,6 +273,24 @@ func (d *Daemon) Command(command string) string {
 		lines = append(lines, sc.Text())
 	}
 	return strings.Join(lines, "\n")
+}
+
+// WaitRunning polls until the service reports running, failing the test on
+// timeout. The control socket accepts connections before services start, so a
+// status query right after Run can observe a still-pending service.
+func (d *Daemon) WaitRunning(service string, timeout time.Duration) string {
+	d.t.Helper()
+	deadline := time.Now().Add(timeout)
+	var resp string
+	for time.Now().Before(deadline) {
+		resp = d.Command("status " + service)
+		if strings.Contains(resp, "running") {
+			return resp
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	d.t.Fatalf("service %s not running within %s, got: %s", service, timeout, resp)
+	return resp
 }
 
 // Signal sends a signal to the daemon process.

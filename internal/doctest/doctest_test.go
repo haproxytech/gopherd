@@ -15,8 +15,8 @@
 package doctest_test
 
 import (
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/haproxytech/gopherd/internal/doctest"
 )
@@ -29,13 +29,10 @@ processes:
     args: ["300"]
     on-failure: shutdown
 `, doctest.Options{Commands: map[string]string{
-		"/usr/local/bin/myapp": "/usr/bin/sleep",
+		"/usr/local/bin/myapp": "sleep",
 	}})
 
-	resp := d.Command("status sleeper")
-	if !strings.Contains(resp, "running") {
-		t.Fatalf("expected running, got: %s", resp)
-	}
+	d.WaitRunning("sleeper", 5*time.Second)
 	if code := d.Stop(); code != 0 {
 		t.Errorf("expected exit 0, got %d", code)
 	}

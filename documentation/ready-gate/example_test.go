@@ -15,8 +15,8 @@
 package readygate
 
 import (
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/haproxytech/gopherd/internal/doctest"
 )
@@ -24,19 +24,15 @@ import (
 func TestReadyGateExample(t *testing.T) {
 	d := doctest.RunFile(t, "example.yml", doctest.Options{
 		Commands: map[string]string{
-			"/usr/local/bin/db":  "/usr/bin/sleep",
-			"/usr/local/bin/app": "/usr/bin/sleep",
+			"/usr/local/bin/db":  "sleep",
+			"/usr/local/bin/app": "sleep",
 		},
 	})
 
 	// app has a ready-check gate; it reaches running only after db-ready passes,
 	// so a running app proves the gate opened.
-	if resp := d.Command("status app"); !strings.Contains(resp, "running") {
-		t.Fatalf("expected app running (gate opened), got: %s", resp)
-	}
-	if resp := d.Command("status db"); !strings.Contains(resp, "running") {
-		t.Fatalf("expected db running, got: %s", resp)
-	}
+	d.WaitRunning("app", 5*time.Second)
+	d.WaitRunning("db", 5*time.Second)
 
 	if code := d.Stop(); code != 0 {
 		t.Errorf("expected clean exit 0, got %d", code)

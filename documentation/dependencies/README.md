@@ -30,7 +30,7 @@ processes:
 
 ## Test
 
-`ORDERLOG` is replaced with a temp path via `RunConfig`. After startup the test reads the log and asserts the lines are `first` then `second`.
+`ORDERLOG` is replaced with a temp path via `RunConfig`. The test asserts gopherd starts `first` before `second` (the daemon's `started` lines). Note `after` orders gopherd's start calls; the echoes themselves run in separate shells, so use a `ready-check` when the dependent needs the dependency's work completed.
 
 ```bash
 go test ./documentation/dependencies/ -v

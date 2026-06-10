@@ -28,9 +28,7 @@ import (
 func TestExitCodeMapExample(t *testing.T) {
 	d := doctest.RunFile(t, "example.yml", doctest.Options{})
 
-	if resp := d.Command("status task"); !strings.Contains(resp, "running") {
-		t.Fatalf("expected task running, got: %s", resp)
-	}
+	d.WaitRunning("task", 5*time.Second)
 
 	// Wait past the sleep so task exits 17 (remapped to 0).
 	time.Sleep(2 * time.Second)

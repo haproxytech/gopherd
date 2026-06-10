@@ -28,9 +28,7 @@ import (
 func TestLogPrefixExample(t *testing.T) {
 	d := doctest.RunFile(t, "example.yml", doctest.Options{})
 
-	if resp := d.Command("status app"); !strings.Contains(resp, "running") {
-		t.Fatalf("expected app running, got: %s", resp)
-	}
+	d.WaitRunning("app", 5*time.Second)
 
 	// Give the service a moment to emit and the ring buffer to record it.
 	var logs string

@@ -15,20 +15,18 @@
 package minimal
 
 import (
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/haproxytech/gopherd/internal/doctest"
 )
 
 func TestMinimalExample(t *testing.T) {
 	d := doctest.RunFile(t, "example.yml", doctest.Options{
-		Commands: map[string]string{"/usr/local/bin/myapp": "/usr/bin/sleep"},
+		Commands: map[string]string{"/usr/local/bin/myapp": "sleep"},
 	})
 
-	if resp := d.Command("status app"); !strings.Contains(resp, "running") {
-		t.Fatalf("expected app running, got: %s", resp)
-	}
+	d.WaitRunning("app", 5*time.Second)
 	if code := d.Stop(); code != 0 {
 		t.Errorf("expected clean exit 0, got %d", code)
 	}
