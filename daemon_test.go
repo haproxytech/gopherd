@@ -655,6 +655,7 @@ processes:
 		shutdownCh: make(chan struct{}),
 	}
 	d.buildServices()
+	d.started.Store(true) // reload validation runs post-startup
 
 	_, err := d.reload()
 	if err == nil {
@@ -741,5 +742,27 @@ func TestAnyRunningCheckUsesPidMap(t *testing.T) {
 
 	if anyRunning {
 		t.Error("anyRunning should be false after all pidMap entries are removed")
+	}
+}
+
+// TestReloadBlockedDuringStartup verifies reload() refuses until d.started,
+// closing the startup-phase concurrent-map-write race on d.services.
+func TestReloadBlockedDuringStartup(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon([]service.Process{
+		{Name: "app", Command: "/bin/true"},
+	})
+
+	// started defaults false: reload must refuse before touching the map.
+	if _, err := d.reload(); err == nil {
+		t.Fatal("reload should be blocked before startup completes")
+	} else if !strings.Contains(err.Error(), "starting up") {
+		t.Errorf("expected a 'starting up' rejection, got: %v", err)
+	}
+
+	// Past the gate, reload fails on the missing config path instead.
+	d.started.Store(true)
+	if _, err := d.reload(); err == nil || strings.Contains(err.Error(), "starting up") {
+		t.Errorf("after started, reload must pass the gate; got: %v", err)
 	}
 }

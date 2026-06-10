@@ -174,6 +174,10 @@ type daemon struct {
 	// Use atomic types so they can be read without holding mu.
 	exitCode     atomic.Int32
 	shuttingDown atomic.Bool
+
+	// started gates reload(): the startup loop reads d.services without mu, so
+	// a concurrent reload before this is set would panic PID 1.
+	started atomic.Bool
 }
 
 type restartReq struct {
@@ -575,6 +579,11 @@ func (d *daemon) closeLogTargets() {
 
 // reload re-reads the config and reconciles services, checks, and log targets.
 func (d *daemon) reload() (string, error) {
+	// Refuse until startup finishes; see the started field.
+	if !d.started.Load() {
+		return "", fmt.Errorf("reload blocked: daemon still starting up")
+	}
+
 	// Serialize concurrent reloads (e.g., two rapid SIGHUPs) so they cannot
 	// race on d.checkers, d.cfg, or d.services.
 	d.reloadMu.Lock()

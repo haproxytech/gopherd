@@ -166,6 +166,9 @@ func run(entrypointArgs []string) int {
 	// Start health checks.
 	d.startChecks()
 
+	// Startup reads of d.services are done; reload() may now proceed.
+	d.started.Store(true)
+
 	// Signals that trigger gopherd's graceful shutdown. Driven entirely
 	// by `init-stop-signal` in config (defaults to {SIGTERM, SIGINT}).
 	shutdownSet := cfg.ShutdownSignals()
