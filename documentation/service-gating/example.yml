@@ -1,0 +1,15 @@
+# Service gating: `startup` accepts env-var templates, so a variable set at
+# container launch decides whether a service auto-starts. Unset or empty
+# expands to "disabled"; the service stays startable via the control socket.
+processes:
+  - name: app
+    command: /bin/sh
+    args: ["-c", "sleep 300"]
+    on-failure: shutdown
+
+  # ENABLE_SIDECAR=enabled (or oneshot) auto-starts it.
+  - name: sidecar
+    command: /bin/sh
+    args: ["-c", "sleep 300"]
+    startup: "{{.ENABLE_SIDECAR}}"
+    on-failure: shutdown

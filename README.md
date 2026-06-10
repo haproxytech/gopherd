@@ -180,6 +180,8 @@ Typos in `startup` (e.g. `enable` instead of `enabled`) now fail at config load.
 
 Hot reload (`SIGHUP` / `reload`) re-reads the config and picks up env-var changes; gopherd does not watch the environment for changes between reloads.
 
+A runnable example lives in [documentation/service-gating/](documentation/service-gating/).
+
 #### sd_notify readiness (systemd-compatible)
 
 Some services know exactly when they are ready to serve traffic — an HTTP health check can only approximate this with polling. For such services, set `sd-notify: true`:

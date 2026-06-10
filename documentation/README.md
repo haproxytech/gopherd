@@ -42,6 +42,7 @@ go test ./documentation/...
 ## Templating
 
 - [env-templates](env-templates/) — `{{.VAR}}` / `{{.VAR:-default}}`
+- [service-gating](service-gating/) — enable a service via env var (`startup: "{{.START_X}}"`)
 - [cpu-template](cpu-template/) — `{{cpu EXPR}}`
 - [cpu-headroom](cpu-headroom/) — `{{cpu 100% - 1}}` reserve a core
 - [mem-template](mem-template/) — `{{mem EXPR}}`
