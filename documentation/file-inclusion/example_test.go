@@ -33,18 +33,43 @@ func readExample(t *testing.T, path string) string {
 	return string(data)
 }
 
-// The secret file holds "s3cr3t\n"; `trim` strips the newline so TOKEN equals
-// "s3cr3t" exactly, the shell test passes, and the service keeps running.
+// k8sSecretMount builds the K8s secret-volume layout: key is a symlink into
+// ..data/, which itself is a symlink to a timestamped directory.
+func k8sSecretMount(t *testing.T, key, value string) string {
+	t.Helper()
+	mount := t.TempDir()
+	verDir := filepath.Join(mount, "..2026_06_10")
+	if err := os.Mkdir(verDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(verDir, key), []byte(value), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("..2026_06_10", filepath.Join(mount, "..data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..data", key), filepath.Join(mount, key)); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(mount, key)
+}
+
+// The plain secret file holds "s3cr3t\n"; `trim` strips the newline so TOKEN
+// equals "s3cr3t" exactly. The K8s-style secret is a symlink chain that only
+// `follow` permits. Both shell tests pass, so the service keeps running.
 func TestFileInclusionExample(t *testing.T) {
 	secret := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(secret, []byte("s3cr3t\n"), 0o600); err != nil {
 		t.Fatalf("write secret: %v", err)
 	}
-	cfg := strings.ReplaceAll(readExample(t, "example.yml"), "SECRETFILE", secret)
+	k8sSecret := k8sSecretMount(t, "token", "k8sv4lue\n")
+	cfg := strings.ReplaceAll(readExample(t, "example.yml"), "K8SSECRETFILE", k8sSecret)
+	cfg = strings.ReplaceAll(cfg, "SECRETFILE", secret)
 
 	d := doctest.RunConfig(t, cfg, doctest.Options{})
 
-	// running proves TOKEN was read from the file and trimmed
+	// running proves both files were read: the plain one trimmed, the
+	// symlinked one through follow
 	d.WaitRunning("app", 5*time.Second)
 	if code := d.Stop(); code != 0 {
 		t.Errorf("expected clean exit 0, got %d", code)

@@ -1,9 +1,12 @@
 # File-inclusion template: {{file "/path" trim}} reads file contents at
 # expansion time (Docker/K8s secret mounts). `trim` strips trailing newline.
+# K8s secret-volume keys are symlinks (key -> ..data/key); `follow` permits
+# them — without it gopherd refuses symlinks.
 processes:
   - name: app
     command: /bin/sh
-    args: ["-c", "test \"$TOKEN\" = s3cr3t && sleep 300 || exit 9"]
+    args: ["-c", "test \"$TOKEN\" = s3cr3t && test \"$K8S_TOKEN\" = k8sv4lue && sleep 300 || exit 9"]
     environment:
       TOKEN: '{{file "SECRETFILE" trim}}'
+      K8S_TOKEN: '{{file "K8SSECRETFILE" follow trim}}'
     on-failure: shutdown

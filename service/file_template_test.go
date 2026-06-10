@@ -168,6 +168,106 @@ func TestExpandFileRefsRejectsSymlinkedAncestor(t *testing.T) {
 	}
 }
 
+func TestExpandFileRefsFollow(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "secret")
+	if err := os.WriteFile(target, []byte("topsecret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	// K8s secret-volume layout: key -> ..data/key, ..data -> ..<timestamp>/.
+	mount := filepath.Join(dir, "mount")
+	verDir := filepath.Join(mount, "..2026_06_10")
+	if err := os.MkdirAll(verDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(verDir, "token"), []byte("k8svalue\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("..2026_06_10", filepath.Join(mount, "..data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..data", "token"), filepath.Join(mount, "token")); err != nil {
+		t.Fatal(err)
+	}
+	k8sKey := filepath.Join(mount, "token")
+
+	dangling := filepath.Join(dir, "dangling")
+	if err := os.Symlink(filepath.Join(dir, "gone"), dangling); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		in      string
+		wantOut string
+	}{
+		{"follow leaf symlink", `{{file "` + link + `" follow}}`, "topsecret\n"},
+		{"follow with trim", `{{file "` + link + `" follow trim}}`, "topsecret"},
+		{"trim follow order", `{{file "` + link + `" trim follow}}`, "topsecret"},
+		{"follow k8s secret layout", `{{file "` + k8sKey + `" follow trim}}`, "k8svalue"},
+		{"follow with default on existing", `{{file "` + link + `" follow trim:-fallback}}`, "topsecret"},
+		{"follow dangling symlink uses default", `{{file "` + dangling + `" follow:-fallback}}`, "fallback"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			out, err := ExpandFileRefs(tt.in)
+			if err != nil {
+				t.Fatalf("ExpandFileRefs(%q) returned error: %v", tt.in, err)
+			}
+			if out != tt.wantOut {
+				t.Errorf("output: got %q, want %q", out, tt.wantOut)
+			}
+		})
+	}
+}
+
+// follow opts out of symlink rejection only; a dangling symlink without a
+// default is still a hard error, and a symlinked directory target is still
+// not a regular file.
+func TestExpandFileRefsFollowErrors(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dangling := filepath.Join(dir, "dangling")
+	if err := os.Symlink(filepath.Join(dir, "gone"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	dirLink := filepath.Join(dir, "dirlink")
+	if err := os.Symlink(dir, dirLink); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		in      string
+		wantSub string
+	}{
+		{"dangling without default", `{{file "` + dangling + `" follow}}`, "no such file"},
+		{"symlink to directory", `{{file "` + dirLink + `" follow}}`, "not a regular file"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := ExpandFileRefs(tt.in)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantSub) {
+				t.Errorf("error %q does not contain %q", err, tt.wantSub)
+			}
+		})
+	}
+}
+
 func BenchmarkExpandFileRefsLiteral(b *testing.B) {
 	for b.Loop() {
 		_, _ = ExpandFileRefs("no placeholders here")

@@ -25,11 +25,11 @@ import (
 	"syscall"
 )
 
-// fileRe matches {{file "/abs/path"}}, {{file "/abs/path" trim}},
-// {{file "/abs/path":-default}}, and {{file "/abs/path" trim:-default}}.
-// Submatches: (1) absolute path, (2) " trim" if present, (3) default text.
+// fileRe matches {{file "/abs/path"}} with optional modifiers ("trim",
+// "follow", in any order) and an optional ":-default" suffix.
+// Submatches: (1) absolute path, (2) modifier words, (3) default text.
 // The default may not contain "}" because the closing "}}" cannot appear inside.
-var fileRe = regexp.MustCompile(`\{\{\s*file\s+"([^"]+)"(\s+trim)?(?::-([^}]*))?\s*\}\}`)
+var fileRe = regexp.MustCompile(`\{\{\s*file\s+"([^"]+)"((?:\s+(?:trim|follow))*)(?::-([^}]*))?\s*\}\}`)
 
 // maxFileSize caps how many bytes ExpandFileRefs will pull from any single
 // referenced file. Secrets and license keys are well under this; the cap
@@ -38,12 +38,14 @@ var fileRe = regexp.MustCompile(`\{\{\s*file\s+"([^"]+)"(\s+trim)?(?::-([^}]*))?
 const maxFileSize = 1 << 20
 
 // ExpandFileRefs replaces {{file "/path"}} placeholders in s with the file's
-// contents. Optional modifiers: " trim" right-trims trailing whitespace/
-// newline (common for Docker/K8s secret files); ":-default" supplies a
-// fallback when the file does not exist. A missing file with no default is a
-// hard error. Read errors other than ENOENT (permission denied, dir-not-file,
-// etc.) are hard errors even with a default — a present-but-unreadable file
-// is an operator mistake, not a fallback case.
+// contents. Optional modifiers: "trim" right-trims trailing whitespace/
+// newline (common for Docker/K8s secret files); "follow" permits symlinks
+// for this reference (K8s secret volumes deliver keys as symlinks into
+// ..data/); ":-default" supplies a fallback when the file does not exist.
+// A missing file with no default is a hard error. Read errors other than
+// ENOENT (permission denied, dir-not-file, etc.) are hard errors even with
+// a default — a present-but-unreadable file is an operator mistake, not a
+// fallback case.
 //
 // Runs before env-var expansion so file contents containing "{{...}}" are not
 // re-expanded.
@@ -60,13 +62,15 @@ func ExpandFileRefs(s string) (string, error) {
 	for _, loc := range locs {
 		b.WriteString(s[prev:loc[0]])
 		path := s[loc[2]:loc[3]]
-		doTrim := loc[4] >= 0
+		mods := s[loc[4]:loc[5]]
+		doTrim := strings.Contains(mods, "trim")
+		follow := strings.Contains(mods, "follow")
 		hasDefault := loc[6] >= 0
 		var defaultVal string
 		if hasDefault {
 			defaultVal = s[loc[6]:loc[7]]
 		}
-		val, err := readFileTemplate(path, doTrim, hasDefault, defaultVal)
+		val, err := readFileTemplate(path, doTrim, follow, hasDefault, defaultVal)
 		if err != nil {
 			return "", err
 		}
@@ -77,31 +81,44 @@ func ExpandFileRefs(s string) (string, error) {
 	return b.String(), nil
 }
 
-func readFileTemplate(path string, doTrim, hasDefault bool, defaultVal string) (string, error) {
-	if !filepath.IsAbs(path) {
-		return "", fmt.Errorf("{{file %q}}: path must be absolute", path)
+// openFileTemplate opens clean for reading. Without follow it rejects
+// symlinks (leaf and ancestors): running as root, the contents go into a
+// child's argv/env, and a symlink could redirect the read to a root-only
+// file. With follow the operator opts out of that hardening for this one
+// reference (K8s secret volumes deliver keys as symlinks into ..data/).
+func openFileTemplate(clean string, follow bool) (*os.File, error) {
+	if follow {
+		return os.Open(clean)
 	}
-	// Running as root, we read this into a child's argv/env: reject symlinks
-	// (leaf and ancestors) so a sibling can't redirect us to a root-only file.
-	clean := filepath.Clean(path)
 	if err := checkAncestorsNotSymlinked(clean); err != nil {
-		return "", fmt.Errorf("{{file %q}}: %w", path, err)
+		return nil, err
 	}
 	fd, err := syscall.Open(clean, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		if err == syscall.ELOOP {
-			return "", fmt.Errorf("{{file %q}}: is a symlink; refusing to open", path)
+			return nil, fmt.Errorf("is a symlink; refusing to open (add the follow modifier to permit)")
 		}
-		// ENOENT with a default falls back to the literal default text.
-		// Any other open error (EACCES, EISDIR, ...) is a hard error even
-		// with a default: a present-but-unreadable file is an operator
-		// mistake, not a fallback case.
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), clean), nil
+}
+
+func readFileTemplate(path string, doTrim, follow, hasDefault bool, defaultVal string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("{{file %q}}: path must be absolute", path)
+	}
+	f, err := openFileTemplate(filepath.Clean(path), follow)
+	if err != nil {
+		// ENOENT (including a dangling symlink with follow) with a default
+		// falls back to the literal default text. Any other open error
+		// (EACCES, ELOOP, ...) is a hard error even with a default: a
+		// present-but-unreadable file is an operator mistake, not a
+		// fallback case.
 		if os.IsNotExist(err) && hasDefault {
 			return defaultVal, nil
 		}
 		return "", fmt.Errorf("{{file %q}}: %w", path, err)
 	}
-	f := os.NewFile(uintptr(fd), clean)
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {

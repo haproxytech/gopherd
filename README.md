@@ -18,7 +18,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Template args** — `{{.VAR}}` and `{{.VAR:-default}}` placeholders in args, environment values, and `startup`, resolved from env vars and dotenv files
 - **Memory-aware templates** — `{{mem EXPR}}` expands to available memory in MiB (auto-detects system RAM and cgroup limits)
 - **CPU-aware templates** — `{{cpu EXPR}}` expands to available CPUs (auto-detects cgroup CFS quota and cpuset pinning)
-- **File-inclusion templates** — `{{file "/path"}}` reads a file's contents at expansion time; supports `trim` modifier and `:-default` fallback. Primary use: Docker/K8s/systemd secrets
+- **File-inclusion templates** — `{{file "/path"}}` reads a file's contents at expansion time; supports `trim` and `follow` modifiers and `:-default` fallback. Primary use: Docker/K8s/systemd secrets
 - **Restart policies** — configurable `on-success` / `on-failure` actions: `restart`, `shutdown`, `ignore`
 - **Exponential backoff** — configurable delay, factor, and limit for restart attempts
 - **Service dependencies** — `after`, `before`, `requires` with topological sort
@@ -294,8 +294,11 @@ Supported forms:
 |:-----------|:------------|
 | `{{file "/run/secrets/db_password"}}` | Raw file contents (includes trailing newline if present) |
 | `{{file "/run/secrets/db_password" trim}}` | Right-trims trailing whitespace and newlines |
+| `{{file "/var/run/secrets/app/token" follow}}` | Permits symlinks — required for K8s secret volume mounts, whose keys are symlinks into `..data/` |
 | `{{file "/etc/license.key":-no-license}}` | Falls back to literal `no-license` when the file does not exist |
 | `{{file "/run/secrets/api_token" trim:-anon}}` | Both: trim if found, fallback if missing |
+
+Modifiers combine in any order: `{{file "/path" follow trim:-default}}`.
 
 Where it works: `args`, `environment` values, and `startup`. Paths must be absolute.
 
@@ -313,12 +316,21 @@ When the file is read:
 - `startup`: at config-load time (once per `gopherd reload` / SIGHUP).
 - `args` and `environment`: at each service start, so a `gopherd <svc> restart` picks up a rotated secret without a config reload.
 
+> **K8s secrets rotate in place — gopherd does not watch them.** When a
+> Secret object changes, the kubelet swaps the `..data` symlink atomically
+> and the mounted value changes under the same path. A `{{file ... follow}}`
+> value is a snapshot taken at service start; a long-running service keeps
+> the old value until its next restart. This pattern therefore fits
+> short-lived processes (oneshots, batch jobs) best — for long-lived
+> services, restart on rotation or have the application read the file
+> itself.
+
 Error behavior:
 
 - Missing file with no `:-default` is a hard error.
 - Missing file with `:-default` expands to the literal default text. Same `${VAR:-default}` semantics as env-var templates.
 - A present-but-unreadable file (permission denied, path-is-a-directory, etc.) is a hard error even with `:-default` — that is an operator misconfiguration, not a fallback case.
-- Symlinks are refused (the file itself and every ancestor directory): gopherd may run as root, and a symlink could redirect the read to a root-only file. Point `{{file}}` at the real path.
+- Symlinks are refused (the file itself and every ancestor directory) unless the reference carries the `follow` modifier: gopherd may run as root, and a symlink could redirect the read to a root-only file. Kubernetes secret/configmap/projected volumes deliver each key as a symlink into `..data/`, so use `follow` for those mounts; Docker secrets are regular files and need no modifier. A dangling symlink with `follow` counts as missing (`:-default` applies).
 - Only regular files are read — FIFOs, devices, and files containing NUL bytes are hard errors (NUL cannot survive argv/env).
 - 1 MiB size cap per file to make `{{file "/var/log/huge.log"}}` fail loudly. Secrets and license keys are well under this.
 
@@ -329,8 +341,8 @@ processes:
   - name: api
     command: /usr/local/bin/api
     environment:
-      DB_PASSWORD: '{{file "/run/secrets/db_password" trim}}'
-      API_TOKEN:   '{{file "/run/secrets/api_token" trim}}'
+      DB_PASSWORD: '{{file "/run/secrets/db_password" trim}}'                    # Docker secret: regular file
+      API_TOKEN:   '{{file "/var/run/secrets/app/api_token" follow trim}}'       # K8s secret volume: keys are symlinks
       LICENSE:     '{{file "/etc/license.key":-no-license}}'
       TLS_CERT:    '{{file "/run/secrets/tls.crt"}}'  # secrets go in env, never args
     # args: only non-sensitive content — argv is world-readable via /proc/<pid>/cmdline
