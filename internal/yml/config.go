@@ -342,6 +342,7 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		OnCheckFailure:    n.Get("on-check-failure").StringMap(),
 		UserID:            n.Get("user-id").IntPtr(),
 		GroupID:           n.Get("group-id").IntPtr(),
+		StrictGroups:      n.Get("strict-groups").Bool(),
 		SDNotify:          n.Get("sd-notify").Bool(),
 		SDNotifyTimeout:   n.Get("sd-notify-timeout").String(),
 		ParentDeathSignal: n.Get("parent-death-signal").String(),

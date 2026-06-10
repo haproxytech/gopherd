@@ -234,6 +234,50 @@ func TestRotatingFileWriterSeedsSizeFromExisting(t *testing.T) {
 	}
 }
 
+// TestOpenFileRejectsWorldReadable verifies that a pre-existing log file with
+// world-accessible permissions is refused: service output may contain secrets,
+// so appending to a file other uids can read (or a sibling pre-seeded) must
+// fail rather than silently leak.
+func TestOpenFileRejectsWorldReadable(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "leaky.log")
+	// Pre-create world-readable (and -writable) before gopherd opens it.
+	if err := os.WriteFile(path, []byte("pre"), 0o666); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// WriteFile honours umask, so force the bits explicitly.
+	if err := os.Chmod(path, 0o666); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	_, err := openFile("file://"+path, TargetConfig{Type: "file", Location: path})
+	if err == nil {
+		t.Fatal("expected openFile to reject a world-accessible pre-existing file")
+	}
+	if !strings.Contains(err.Error(), "world-accessible") {
+		t.Errorf("error %q does not mention world-accessible", err.Error())
+	}
+}
+
+// TestOpenFileAcceptsOwnedRestricted is the positive control: a pre-existing
+// file owned by us with non-world-accessible mode opens fine.
+func TestOpenFileAcceptsOwnedRestricted(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ok.log")
+	if err := os.WriteFile(path, []byte("pre"), 0o640); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	w, err := openFile("file://"+path, TargetConfig{Type: "file", Location: path})
+	if err != nil {
+		t.Fatalf("openFile rejected an owned 0640 file: %v", err)
+	}
+	w.Close()
+}
+
 func TestRotatingFileWriterDefaultMaxFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

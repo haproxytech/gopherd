@@ -31,7 +31,10 @@ import (
 // a group is specified, the current process UID is preserved. When resolving
 // by username or by numeric uid with a passwd entry, supplementary groups are
 // populated automatically.
-func ResolveCredential(userName, groupName string, userID, groupID *int) (*syscall.Credential, error) {
+//
+// strictGroups drops the user's auto-inherited supplementary groups (docker,
+// wheel, ...) when an explicit group is also set, for least privilege.
+func ResolveCredential(userName, groupName string, userID, groupID *int, strictGroups bool) (*syscall.Credential, error) {
 	// Reject negative numeric IDs. A naive uint32(*userID) conversion on a
 	// negative value wraps to a large positive number; in particular -1 maps
 	// to (uid_t)-1, which setresuid(2) treats as "do not change this id".
@@ -134,6 +137,12 @@ func ResolveCredential(userName, groupName string, userID, groupID *int) (*sysca
 	// inherit the parent's supplementary groups (which may include root).
 	if !hasUser && hasGroup {
 		uid = uint32(os.Getuid())
+		groups = []uint32{gid}
+	}
+
+	// With an explicit group, strict mode keeps only that primary group.
+	explicitGroup := groupID != nil || groupName != ""
+	if strictGroups && hasUser && explicitGroup {
 		groups = []uint32{gid}
 	}
 

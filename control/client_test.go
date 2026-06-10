@@ -18,6 +18,8 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"net"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -134,5 +136,40 @@ func TestScannerErrDetectedOnReadError(t *testing.T) {
 	}
 	if scanner.Err() == nil {
 		t.Error("scanner.Err() must be non-nil when the underlying reader returns a non-EOF error")
+	}
+}
+
+// TestIsAlive verifies the startup probe: a reachable listener owned by our own
+// uid is treated as a running gopherd, while a non-existent socket is not. The
+// same-uid case exercises the SO_PEERCRED acceptance path added to defend
+// against a foreign-uid squatter blocking startup.
+func TestIsAlive(t *testing.T) {
+	t.Parallel()
+
+	if IsAlive(filepath.Join(t.TempDir(), "nonexistent.sock")) {
+		t.Error("IsAlive must be false for a non-existent socket path")
+	}
+
+	sockPath := filepath.Join(t.TempDir(), "alive.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+
+	// Listener is owned by the test process (our euid), so the peer-cred check
+	// accepts it. On non-Linux, peerUID is -1 and IsAlive falls back to
+	// reachability — true either way.
+	if !IsAlive(sockPath) {
+		t.Error("IsAlive must be true for a reachable listener owned by our own uid")
 	}
 }

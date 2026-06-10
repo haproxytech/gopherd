@@ -217,14 +217,18 @@ func cgroupV1CpusetCPUs() int {
 	return int(cgroup.WalkUpLimit(root, cgPath, "cpuset.cpus", parseCPUList))
 }
 
-// parseCPUList parses a CPU list in "0-3,5,7" format and returns the count.
-// Returns 0 on empty or malformed input.
+// maxCPUCount bounds the value a poisoned cpuset (e.g. "0-9999999999") can
+// inject into a {{cpu}} substitution. Generous for any real topology.
+var maxCPUCount = int64(runtime.NumCPU()) * 64
+
+// parseCPUList parses a CPU list in "0-3,5,7" format and returns the count,
+// clamped to maxCPUCount. Returns 0 on empty or malformed input.
 func parseCPUList(data []byte) int64 {
 	s := strings.TrimSpace(string(data))
 	if s == "" {
 		return 0
 	}
-	count := 0
+	var count int64
 	for part := range strings.SplitSeq(s, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -236,13 +240,16 @@ func parseCPUList(data []byte) int64 {
 			if err1 != nil || err2 != nil || hiN < loN {
 				continue
 			}
-			count += hiN - loN + 1
+			count += int64(hiN) - int64(loN) + 1
 		} else {
 			if _, err := strconv.Atoi(part); err != nil {
 				continue
 			}
 			count++
 		}
+		if count >= maxCPUCount {
+			return maxCPUCount
+		}
 	}
-	return int64(count)
+	return count
 }

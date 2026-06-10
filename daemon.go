@@ -541,7 +541,7 @@ func (d *daemon) startChecks() {
 			continue
 		}
 		if svc, ok := checkOwner[name]; ok && checkCfg.Exec != nil {
-			cred, err := service.ResolveCredential(svc.Proc.User, svc.Proc.Group, svc.Proc.UserID, svc.Proc.GroupID)
+			cred, err := service.ResolveCredential(svc.Proc.User, svc.Proc.Group, svc.Proc.UserID, svc.Proc.GroupID, svc.Proc.StrictGroups)
 			if err != nil {
 				log.Printf("warning: check %s: resolve credential: %v", name, err)
 			} else if cred != nil {
@@ -1012,6 +1012,11 @@ func processConfigChanged(oldp, newp service.Process) bool {
 		return true
 	}
 	if intPtrDiffers(oldp.UserID, newp.UserID) || intPtrDiffers(oldp.GroupID, newp.GroupID) {
+		return true
+	}
+	// strict-groups changes the resolved supplementary group set, applied at
+	// fork time — a change only takes effect on the next spawn.
+	if oldp.StrictGroups != newp.StrictGroups {
 		return true
 	}
 	if oldp.WorkingDir != newp.WorkingDir {

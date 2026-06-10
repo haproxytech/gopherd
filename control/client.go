@@ -77,17 +77,21 @@ const clientReadIdleTimeout = 10 * time.Minute
 // with a long stack trace or compact JSON still fit.
 const clientMaxLine = 1 << 20
 
-// IsAlive checks whether a gopherd daemon is reachable on the given socket path.
-// It dials and immediately closes without sending a command. The server holds a
-// connection slot for up to connReadTimeout (5s) per call — acceptable for the
-// startup probe use case where IsAlive is called once during initialisation.
+// IsAlive reports whether a trusted gopherd is reachable at socketPath. The
+// SO_PEERCRED check (root or our euid) stops a foreign-uid squatter from
+// blocking startup or capturing the proxied command. Non-Linux: peerUID is -1,
+// so any reachable listener counts (filesystem permissions are the only guard).
 func IsAlive(socketPath string) bool {
 	conn, err := net.DialTimeout("unix", socketPath, clientDialTimeout)
 	if err != nil {
 		return false
 	}
-	conn.Close()
-	return true
+	defer conn.Close()
+	uid := peerUID(conn)
+	if uid == -1 {
+		return true // non-Linux: no peer creds, fall back to reachability
+	}
+	return uid == 0 || uid == os.Geteuid()
 }
 
 // buildClientCommand translates CLI args into the wire command sent to the

@@ -541,7 +541,7 @@ func (d *daemon) startNonOneshot(cfg *yml.Config, svc *service.Service) {
 			log.Fatalf("%s: ready check: %v", svc.Name, err)
 		}
 		if checkCfg.Exec != nil {
-			cred, credErr := service.ResolveCredential(svc.Proc.User, svc.Proc.Group, svc.Proc.UserID, svc.Proc.GroupID)
+			cred, credErr := service.ResolveCredential(svc.Proc.User, svc.Proc.Group, svc.Proc.UserID, svc.Proc.GroupID, svc.Proc.StrictGroups)
 			if credErr != nil {
 				log.Printf("warning: %s: ready-check credential: %v", svc.Name, credErr)
 			} else if cred != nil {

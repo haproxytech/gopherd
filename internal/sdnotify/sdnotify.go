@@ -19,12 +19,9 @@
 // there is no filesystem to clean up and rootless permission issues are
 // avoided.
 //
-// Abstract-namespace sockets have no filesystem permissions, so without
-// further checks any process in the network namespace (the whole container)
-// could send READY=1 and prematurely release services gated on a sibling's
-// readiness. To prevent that, the listener enables SO_PASSCRED and accepts
-// records only from a datagram whose sender uid matches the supervised
-// child's resolved uid (or root); datagrams from any other uid are dropped.
+// Abstract sockets have no filesystem permissions, so any process in the
+// netns could otherwise spoof READY=1. The listener enables SO_PASSCRED and
+// accepts records only from the child's uid or root.
 package sdnotify
 
 import (
@@ -60,15 +57,11 @@ type Listener struct {
 }
 
 // Listen creates a datagram socket at @gopherd-sd-notify-<pid>-<name> and
-// begins reading. The name should be a stable service identifier; pid
-// disambiguates concurrent gopherd instances in the same container.
+// begins reading. name is a stable service identifier; pid disambiguates
+// concurrent gopherd instances.
 //
-// allowedUID is the uid the supervised child runs as (its resolved
-// credential, or gopherd's own euid when no privilege drop applies). On Linux
-// the listener verifies each datagram's sender via SO_PASSCRED and accepts
-// records only from allowedUID or root (uid 0); datagrams from any other uid
-// are dropped. On non-Linux platforms credentials are unavailable and all
-// datagrams are accepted (filesystem-permission fallback, as elsewhere).
+// On Linux, records are accepted only from sender uid allowedUID (the child's
+// uid) or root; other senders are dropped. Non-Linux accepts all (no creds).
 func Listen(name string, pid, allowedUID int) (*Listener, error) {
 	path := fmt.Sprintf("@gopherd-sd-notify-%d-%s", pid, name)
 	addr := &net.UnixAddr{Net: "unixgram", Name: path}
@@ -159,11 +152,8 @@ func (n *Listener) readLoop() {
 	}
 }
 
-// authorized reports whether a datagram with the given ancillary data came
-// from a uid permitted to drive this listener's state. On Linux a datagram is
-// accepted only from the supervised child's uid or root; an unattributable
-// datagram (no credentials) is dropped. On platforms without SO_PASSCRED the
-// check is skipped and all datagrams are accepted.
+// authorized reports whether the datagram's sender (from ancillary creds) may
+// drive state: the child's uid or root. Unattributable datagrams are dropped.
 func (n *Listener) authorized(oob []byte) bool {
 	if !credEnabled {
 		return true

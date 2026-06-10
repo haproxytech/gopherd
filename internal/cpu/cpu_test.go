@@ -382,6 +382,26 @@ func TestParseCPUList(t *testing.T) {
 	}
 }
 
+// TestParseCPUListClamp verifies a pathological range from a poisoned cpuset
+// pseudo-file cannot inject an absurd CPU count: the result is bounded by
+// maxCPUCount instead of overflowing or producing ~10^10.
+func TestParseCPUListClamp(t *testing.T) {
+	t.Parallel()
+	for _, in := range []string{
+		"0-9999999999",
+		"0-2147483647", // near int32 max
+		"0-100,0-9999999999,5",
+	} {
+		if got := parseCPUList([]byte(in)); got > maxCPUCount {
+			t.Errorf("parseCPUList(%q) = %d, exceeds clamp %d", in, got, maxCPUCount)
+		}
+	}
+	// A normal list well under the ceiling is unaffected.
+	if got := parseCPUList([]byte("0-3")); got != 4 {
+		t.Errorf("parseCPUList(\"0-3\") = %d, want 4 (clamp must not affect normal input)", got)
+	}
+}
+
 func TestParseCPUMax(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

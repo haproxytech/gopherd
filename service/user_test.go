@@ -43,7 +43,7 @@ func allowNonRootExec(t *testing.T) {
 
 func TestResolveCredentialNil(t *testing.T) {
 	t.Parallel()
-	cred, err := ResolveCredential("", "", nil, nil)
+	cred, err := ResolveCredential("", "", nil, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestResolveCredentialByID(t *testing.T) {
 	t.Parallel()
 	uid := 1000
 	gid := 1000
-	cred, err := ResolveCredential("", "", &uid, &gid)
+	cred, err := ResolveCredential("", "", &uid, &gid, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestResolveCredentialRejectsNegativeIDs(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			cred, err := ResolveCredential("", "", tc.userID, tc.groupID)
+			cred, err := ResolveCredential("", "", tc.userID, tc.groupID, false)
 			if err == nil {
 				t.Fatalf("expected error for negative id, got cred=%+v", cred)
 			}
@@ -105,7 +105,7 @@ func TestResolveCredentialRejectsNegativeIDs(t *testing.T) {
 func TestResolveCredentialGroupOnly(t *testing.T) {
 	t.Parallel()
 	gid := 1000
-	cred, err := ResolveCredential("", "", nil, &gid)
+	cred, err := ResolveCredential("", "", nil, &gid, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestResolveCredentialGroupOnlyUID(t *testing.T) {
 		return
 	}
 	gid := 1000
-	cred, err := ResolveCredential("", "", nil, &gid)
+	cred, err := ResolveCredential("", "", nil, &gid, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestResolveCredentialUserIDOnlyGID(t *testing.T) {
 		t.Fatalf("parse gid %q from passwd: %v", u.Gid, err)
 	}
 
-	cred, err := ResolveCredential("", "", &uid, nil)
+	cred, err := ResolveCredential("", "", &uid, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestResolveCredentialUserIDUnknownFails(t *testing.T) {
 	if _, err := user.LookupId(strconv.Itoa(uid)); err == nil {
 		t.Skipf("uid %d unexpectedly exists in passwd; skipping", uid)
 	}
-	cred, err := ResolveCredential("", "", &uid, nil)
+	cred, err := ResolveCredential("", "", &uid, nil, false)
 	if err == nil {
 		t.Fatalf("expected error for unknown uid, got cred=%+v", cred)
 	}
@@ -223,7 +223,7 @@ func TestResolveCredentialUserIDUnknownFails(t *testing.T) {
 func TestResolveCredentialGroupOnlySupplementaryGroups(t *testing.T) {
 	t.Parallel()
 	gid := 1000
-	cred, err := ResolveCredential("", "", nil, &gid)
+	cred, err := ResolveCredential("", "", nil, &gid, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -232,5 +232,45 @@ func TestResolveCredentialGroupOnlySupplementaryGroups(t *testing.T) {
 	}
 	if len(cred.Groups) != 1 || cred.Groups[0] != 1000 {
 		t.Errorf("Groups=%v, want [1000] (must restrict supplementary groups to target GID)", cred.Groups)
+	}
+}
+
+// TestResolveCredentialStrictGroups verifies that with a user name AND an
+// explicit group, strictGroups=true reduces the supplementary group set to
+// exactly the requested primary gid, while strictGroups=false preserves the
+// user's full membership. Uses the current user (which has a known passwd
+// entry and at least its own primary group) so the test is hermetic.
+func TestResolveCredentialStrictGroups(t *testing.T) {
+	t.Parallel()
+	u, err := user.LookupId(strconv.Itoa(os.Getuid()))
+	if err != nil {
+		t.Skipf("current uid has no /etc/passwd entry: %v", err)
+	}
+	explicitGID := 1000
+
+	// Non-strict: explicit group is primary, but the user's supplementary
+	// groups are still applied on top (the footgun behaviour).
+	loose, err := ResolveCredential(u.Username, "", nil, &explicitGID, false)
+	if err != nil {
+		t.Fatalf("non-strict: %v", err)
+	}
+	if loose.Gid != uint32(explicitGID) {
+		t.Errorf("non-strict Gid=%d, want %d", loose.Gid, explicitGID)
+	}
+
+	// Strict: exactly the requested primary group, nothing else.
+	strict, err := ResolveCredential(u.Username, "", nil, &explicitGID, true)
+	if err != nil {
+		t.Fatalf("strict: %v", err)
+	}
+	if strict.Gid != uint32(explicitGID) {
+		t.Errorf("strict Gid=%d, want %d", strict.Gid, explicitGID)
+	}
+	if len(strict.Groups) != 1 || strict.Groups[0] != uint32(explicitGID) {
+		t.Errorf("strict Groups=%v, want [%d] (supplementary groups must be dropped)", strict.Groups, explicitGID)
+	}
+	// Strict must never grant more groups than non-strict.
+	if len(strict.Groups) > len(loose.Groups) {
+		t.Errorf("strict granted more groups (%v) than non-strict (%v)", strict.Groups, loose.Groups)
 	}
 }

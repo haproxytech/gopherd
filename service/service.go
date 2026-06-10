@@ -143,6 +143,9 @@ type Process struct {
 	// $NOTIFY_SOCKET in the child env, and blocks the start of dependents
 	// until the child writes "READY=1" to that socket.
 	SDNotify bool
+	// StrictGroups drops a named user's supplementary groups when an explicit
+	// group is set. Default false keeps the user's full membership.
+	StrictGroups bool
 }
 
 // Service wraps a Process config with runtime state for lifecycle management.
@@ -666,11 +669,9 @@ func (s *Service) Start() (pid int, err error) {
 		delete(userKeys, k)
 	}
 
-	// Resolve the privilege-drop credential up front: the sd_notify listener
-	// needs the child's uid to authenticate READY datagrams, and it is also
-	// applied to SysProcAttr below. Pure function, no side effects, so hoisting
-	// it before the listener allocation is safe.
-	cred, err := ResolveCredential(s.Proc.User, s.Proc.Group, s.Proc.UserID, s.Proc.GroupID)
+	// Resolved up front: the sd_notify listener needs the child's uid to
+	// authenticate READY datagrams. Pure function, safe to hoist.
+	cred, err := ResolveCredential(s.Proc.User, s.Proc.Group, s.Proc.UserID, s.Proc.GroupID, s.Proc.StrictGroups)
 	if err != nil {
 		return 0, err
 	}
@@ -720,12 +721,8 @@ func (s *Service) Start() (pid int, err error) {
 	cmd.Stdout = s.Stdout
 	cmd.Stderr = s.Stderr
 	cmd.Stdin = nil // each child gets /dev/null as stdin (exec.Cmd default)
-	// Setsid puts the child in a new session: it becomes leader of a fresh
-	// process group (pgid == pid, so Kill(-pid) still targets the whole group)
-	// and, crucially, is detached from gopherd's controlling terminal. Without
-	// that, a privilege-dropped child sharing gopherd's TTY (interactive
-	// `gopherd -t`) could push characters into the terminal input queue with
-	// the TIOCSTI ioctl and have them run in gopherd's more-privileged session.
+	// Setsid: own process group (pgid == pid) keeps Kill(-pid) working; no
+	// controlling TTY stops a dropped-priv child TIOCSTI-injecting under -t.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	// Parent-death signal: the kernel delivers sig to the child when its

@@ -18,10 +18,8 @@ package sdnotify
 
 import "net"
 
-// credEnabled is false off Linux: SO_PASSCRED / SCM_CREDENTIALS do not exist,
-// so sender credentials cannot be verified and the listener falls back to
-// accepting any datagram (gopherd is a Linux container supervisor; non-Linux
-// builds exist only to keep the package compiling).
+// credEnabled is false off Linux: SO_PASSCRED / SCM_CREDENTIALS are
+// unavailable, so the listener cannot verify senders and accepts any datagram.
 const credEnabled = false
 
 // oobSize is zero off Linux — ReadMsgUnix is never asked for ancillary data.

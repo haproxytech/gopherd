@@ -27,9 +27,7 @@ const credEnabled = true
 // SCM_CREDENTIALS control message.
 var oobSize = syscall.CmsgSpace(syscall.SizeofUcred)
 
-// enablePassCred turns on SO_PASSCRED so each received datagram carries the
-// sender's credentials as an SCM_CREDENTIALS control message. Without it the
-// kernel attaches no credentials and parseSenderUID cannot authenticate.
+// enablePassCred turns on SO_PASSCRED so datagrams carry sender credentials.
 func enablePassCred(conn *net.UnixConn) error {
 	raw, err := conn.SyscallConn()
 	if err != nil {
@@ -44,10 +42,8 @@ func enablePassCred(conn *net.UnixConn) error {
 	return sockErr
 }
 
-// parseSenderUID extracts the sender uid from the ancillary data returned by
-// ReadMsgUnix. ok is false when no SCM_CREDENTIALS message is present (e.g. a
-// datagram from a peer the kernel could not attribute), in which case the
-// caller must treat the sender as unauthenticated and reject it.
+// parseSenderUID extracts the sender uid from ReadMsgUnix ancillary data.
+// ok is false when no SCM_CREDENTIALS message is present (treat as untrusted).
 func parseSenderUID(oob []byte) (uid int, ok bool) {
 	scms, err := syscall.ParseSocketControlMessage(oob)
 	if err != nil {

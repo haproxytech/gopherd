@@ -81,11 +81,8 @@ func readFileTemplate(path string, doTrim, hasDefault bool, defaultVal string) (
 	if !filepath.IsAbs(path) {
 		return "", fmt.Errorf("{{file %q}}: path must be absolute", path)
 	}
-	// gopherd often runs as root PID 1 and substitutes the contents into a
-	// child's argv/env. Walk the ancestor directories and open with
-	// O_NOFOLLOW so a sibling with write access to the secret directory cannot
-	// swap the path (or an intermediate component) for a symlink pointing at a
-	// root-only file and have us read it on their behalf.
+	// Running as root, we read this into a child's argv/env: reject symlinks
+	// (leaf and ancestors) so a sibling can't redirect us to a root-only file.
 	clean := filepath.Clean(path)
 	if err := checkAncestorsNotSymlinked(clean); err != nil {
 		return "", fmt.Errorf("{{file %q}}: %w", path, err)

@@ -229,13 +229,28 @@ func openFile(location string, cfg TargetConfig) (io.WriteCloser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open log file %s: %w", path, err)
 	}
+	// Service output may carry secrets: reject a pre-seeded file owned by
+	// another uid or world-accessible. Checked via the fd to avoid TOCTOU.
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("stat log file %s: %w", path, err)
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		euid := uint32(os.Geteuid())
+		if st.Uid != 0 && st.Uid != euid {
+			_ = f.Close()
+			return nil, fmt.Errorf("log file %s is owned by uid %d (expected root or uid %d); refusing to append", path, st.Uid, euid)
+		}
+		if perm := info.Mode().Perm(); perm&0o006 != 0 {
+			_ = f.Close()
+			return nil, fmt.Errorf("log file %s is world-accessible (mode %04o); refusing to append (service output may contain secrets)", path, perm)
+		}
+	}
 	// Seed size from the existing file so appends to a pre-existing log
 	// honour the rotation threshold immediately rather than only after the
 	// first gopherd-written byte.
-	var initialSize int64
-	if info, err := f.Stat(); err == nil {
-		initialSize = info.Size()
-	}
+	initialSize := info.Size()
 	return &rotatingFileWriter{
 		f:        f,
 		path:     path,
