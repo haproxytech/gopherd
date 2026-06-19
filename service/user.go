@@ -23,23 +23,19 @@ import (
 	"syscall"
 )
 
-// ResolveCredential resolves user/group names and IDs to a syscall.Credential.
-// Returns nil if no user or group information is specified.
-// Numeric IDs take precedence over names. If a user is specified without a
-// group (by name or by id), the user's primary group from /etc/passwd is
-// used — the numeric-id form requires the uid to exist in passwd, otherwise
-// an error is returned and the operator must set group-id explicitly. If only
-// a group is specified, the current process UID is preserved. When resolving
-// by username or by numeric uid with a passwd entry, supplementary groups are
-// populated automatically.
+// ResolveCredential resolves user/group names and IDs to a syscall.Credential,
+// or nil if neither is specified. Numeric IDs take precedence over names. A user
+// without an explicit group inherits its primary group and supplementary groups
+// from /etc/passwd; the numeric-uid form requires a passwd entry (else it errors
+// so the operator sets group-id explicitly). A group-only spec preserves the
+// current process UID.
 //
-// strictGroups drops the user's auto-inherited supplementary groups (docker,
-// wheel, ...) when an explicit group is also set, for least privilege.
+// strictGroups drops auto-inherited supplementary groups (docker, wheel, ...)
+// when an explicit group is also set, for least privilege.
 func ResolveCredential(userName, groupName string, userID, groupID *int, strictGroups bool) (*syscall.Credential, error) {
-	// Bound numeric IDs to the kernel's 32-bit uid_t/gid_t before the uint32
-	// conversions below. Both edges silently misdrop privilege: -1 becomes
-	// (uid_t)-1 = "don't change", and multiples of 2^32 truncate to 0 (root) —
-	// so a config that looks like a privilege drop keeps an unintended UID.
+	// Bound numeric IDs before the uint32 conversions below: both edges silently
+	// misdrop privilege. -1 becomes (uid_t)-1 = "don't change", and multiples of
+	// 2^32 truncate to 0 (root), so an apparent privilege drop keeps root.
 	if err := validateNumericID("user-id", userID); err != nil {
 		return nil, err
 	}
@@ -54,12 +50,10 @@ func ResolveCredential(userName, groupName string, userID, groupID *int, strictG
 	if userID != nil {
 		uid = uint32(*userID)
 		hasUser = true
-		// Mirror the name-form branch below: if the operator supplied only
-		// user-id (no group-id, no group name), look up the uid in
-		// /etc/passwd to derive the primary gid and supplementary groups.
-		// Without this lookup we would fall through to os.Getgid() — which
-		// is gopherd's gid, typically 0 (root) for a PID 1 container — and
-		// silently leave the child in the root group.
+		// With only user-id given, look up the uid in /etc/passwd for its
+		// primary gid and supplementary groups. Otherwise gid would default to
+		// os.Getgid() (typically root in a PID 1 container), leaving the child
+		// in the root group.
 		if groupID == nil && groupName == "" {
 			u, err := user.LookupId(strconv.Itoa(*userID))
 			if err != nil {
@@ -91,7 +85,6 @@ func ResolveCredential(userName, groupName string, userID, groupID *int, strictG
 		}
 		uid = uint32(id)
 		hasUser = true
-		// Use user's primary group as default
 		if groupID == nil && groupName == "" {
 			id, err := strconv.ParseUint(u.Gid, 10, 32)
 			if err != nil {
@@ -100,7 +93,6 @@ func ResolveCredential(userName, groupName string, userID, groupID *int, strictG
 			gid = uint32(id)
 			hasGroup = true
 		}
-		// Resolve supplementary groups.
 		groupIDs, err := u.GroupIds()
 		if err == nil {
 			for _, gidStr := range groupIDs {
@@ -132,9 +124,8 @@ func ResolveCredential(userName, groupName string, userID, groupID *int, strictG
 		return nil, nil
 	}
 
-	// If only group is specified, preserve current process UID.
-	// Explicitly set Groups to just the target GID so the child does not
-	// inherit the parent's supplementary groups (which may include root).
+	// Group-only: keep the current UID, but set Groups to just the target GID so
+	// the child does not inherit the parent's supplementary groups (maybe root).
 	if !hasUser && hasGroup {
 		uid = uint32(os.Getuid())
 		groups = []uint32{gid}

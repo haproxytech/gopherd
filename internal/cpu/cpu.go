@@ -27,7 +27,7 @@ import (
 	"github.com/haproxytech/gopherd/internal/cgroup"
 )
 
-// Cgroup root paths — variables so tests can override them.
+// Cgroup root paths; variables so tests can override them.
 var (
 	cgroupV2Root = "/sys/fs/cgroup"
 	cgroupV1CPU  = "/sys/fs/cgroup/cpu"
@@ -41,9 +41,9 @@ var (
 	cacheMu    sync.Mutex
 )
 
-// Available returns the number of available CPUs, defined as the minimum
-// of system online CPUs, CFS bandwidth quota, and cpuset pinning.
-// Always returns >= 1. The result is cached after the first call.
+// Available returns the number of available CPUs: the minimum of system online
+// CPUs, CFS bandwidth quota, and cpuset pinning. Always >= 1; cached after the
+// first call.
 func Available() int {
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
@@ -78,8 +78,7 @@ func available() int {
 	return best
 }
 
-// cgroupCFSCPUs returns the CPU count from CFS bandwidth quota.
-// Tries cgroup v2 first, then v1.
+// cgroupCFSCPUs returns the CPU count from CFS bandwidth quota, trying v2 then v1.
 func cgroupCFSCPUs() int {
 	if cpus := cgroupV2CFSCPUs(); cpus > 0 {
 		return cpus
@@ -87,8 +86,7 @@ func cgroupCFSCPUs() int {
 	return cgroupV1CFSCPUs()
 }
 
-// cgroupCpusetCPUs returns the CPU count from cpuset pinning.
-// Tries cgroup v2 first, then v1.
+// cgroupCpusetCPUs returns the CPU count from cpuset pinning, trying v2 then v1.
 func cgroupCpusetCPUs() int {
 	if cpus := cgroupV2CpusetCPUs(); cpus > 0 {
 		return cpus
@@ -96,8 +94,7 @@ func cgroupCpusetCPUs() int {
 	return cgroupV1CpusetCPUs()
 }
 
-// cgroupV2CFSCPUs reads CFS quota from cgroup v2 unified hierarchy.
-// cpu.max format: "$MAX $PERIOD" (microseconds). "max 100000" = unlimited.
+// cgroupV2CFSCPUs reads CFS quota from the cgroup v2 unified hierarchy.
 func cgroupV2CFSCPUs() int {
 	cgPath := cgroup.SelfPath("0::")
 	if cgPath == "" {
@@ -113,9 +110,8 @@ func cgroupV2CFSCPUs() int {
 	return int(cgroup.WalkUpLimit(root, cgPath, "cpu.max", parseCPUMax))
 }
 
-// parseCPUMax parses a cgroup v2 cpu.max file.
-// Format: "$MAX $PERIOD" where MAX is microseconds or "max".
-// Returns ceil(MAX/PERIOD) as CPU count, or 0 for unlimited.
+// parseCPUMax parses a cgroup v2 cpu.max file ("$MAX $PERIOD" microseconds,
+// MAX may be "max"). Returns ceil(MAX/PERIOD) as a CPU count, or 0 for unlimited.
 func parseCPUMax(data []byte) int64 {
 	s := strings.TrimSpace(string(data))
 	fields := strings.Fields(s)
@@ -133,12 +129,10 @@ func parseCPUMax(data []byte) int64 {
 	if err != nil || period <= 0 {
 		return 0
 	}
-	// ceil(quota / period)
-	return (quota + period - 1) / period
+	return (quota + period - 1) / period // ceil(quota / period)
 }
 
-// cgroupV1CFSCPUs reads CFS quota from cgroup v1.
-// Reads cpu.cfs_quota_us and cpu.cfs_period_us. quota=-1 means unlimited.
+// cgroupV1CFSCPUs reads CFS quota from cgroup v1 (quota=-1 means unlimited).
 func cgroupV1CFSCPUs() int {
 	cgPath := cgroup.SelfPath("cpu")
 	if cgPath == "" {
@@ -170,12 +164,11 @@ func v1CFSFromRoot(root *os.Root, cgPath string) int {
 	if period <= 0 {
 		return 0
 	}
-	// ceil(quota / period)
-	return int((quota + period - 1) / period)
+	return int((quota + period - 1) / period) // ceil(quota / period)
 }
 
-// parseV1Int parses a cgroup v1 single-integer file.
-// Returns the value, or 0 for -1 (unlimited) or parse errors.
+// parseV1Int parses a cgroup v1 single-integer file. Returns 0 for non-positive
+// values (e.g. -1 unlimited) or parse errors.
 func parseV1Int(data []byte) int64 {
 	s := strings.TrimSpace(string(data))
 	v, err := strconv.ParseInt(s, 10, 64)
@@ -185,7 +178,7 @@ func parseV1Int(data []byte) int64 {
 	return v
 }
 
-// cgroupV2CpusetCPUs reads cpuset from cgroup v2 unified hierarchy.
+// cgroupV2CpusetCPUs reads cpuset from the cgroup v2 unified hierarchy.
 func cgroupV2CpusetCPUs() int {
 	cgPath := cgroup.SelfPath("0::")
 	if cgPath == "" {
@@ -221,8 +214,8 @@ func cgroupV1CpusetCPUs() int {
 // inject into a {{cpu}} substitution. Generous for any real topology.
 var maxCPUCount = int64(runtime.NumCPU()) * 64
 
-// parseCPUList parses a CPU list in "0-3,5,7" format and returns the count,
-// clamped to maxCPUCount. Returns 0 on empty or malformed input.
+// parseCPUList parses a CPU list ("0-3,5,7") and returns the count, clamped to
+// maxCPUCount. Returns 0 on empty or malformed input.
 func parseCPUList(data []byte) int64 {
 	s := strings.TrimSpace(string(data))
 	if s == "" {

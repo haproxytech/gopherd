@@ -16,22 +16,17 @@ package service
 
 import "strings"
 
-// ExpandEnvRefs replaces {{.VAR}} and {{.VAR:-default}} references in s
-// against the given env map. Used for config-time fields that do not flow
-// through expandTemplates (currently: the Startup field). If the named env
-// var is unset or empty, the form without a default expands to "" and the
-// form with a default expands to the literal default text.
+// ExpandEnvRefs replaces {{.VAR}} and {{.VAR:-default}} references in s against
+// the given env map. For an unset/empty var, the bare form expands to "" and the
+// default form expands to the literal default. Used for config-time fields that
+// bypass expandTemplates (currently: Startup).
 //
-// Unlike expandTemplates, this function does NOT warn on missing variables.
-// Silent empty expansion of a bare {{.VAR}} is historically a footgun
-// (a missing value silently corrupts the field), so callers MUST treat the
-// empty-expanded case explicitly rather than letting "" flow through as the
-// effective config value. The one current caller (yml.parseProcess) remaps
-// an empty expansion of the Startup field to "disabled", which is the
-// documented gate-on-env-var behavior.
+// Unlike expandTemplates, it does NOT warn on missing variables. A bare {{.VAR}}
+// silently expanding to "" is a footgun, so callers MUST handle the empty case
+// explicitly rather than let "" flow through as config (yml.parseProcess remaps
+// an empty Startup to "disabled").
 //
-// Only env-var placeholders are recognized here; {{mem}} / {{cpu}} forms are
-// left untouched so they can still be expanded later during Start().
+// {{mem}} / {{cpu}} forms are left untouched for later expansion in Start().
 func ExpandEnvRefs(s string, env map[string]string) string {
 	if !strings.Contains(s, "{{") {
 		return s

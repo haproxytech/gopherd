@@ -21,16 +21,12 @@ import (
 	"syscall"
 )
 
-// SetChildSubreaper returns an error on non-Linux platforms: the
-// PR_SET_CHILD_SUBREAPER prctl is a Linux-specific feature. Gopherd's
-// runtime target is Linux containers, but we keep the darwin build so
-// developers can compile locally.
+// SetChildSubreaper errors on non-Linux platforms: PR_SET_CHILD_SUBREAPER is
+// Linux-only. The non-Linux build exists only for local development.
 func SetChildSubreaper() error {
 	return fmt.Errorf("subreaper mode is only supported on Linux")
 }
 
-// setPdeathsig is a no-op on non-Linux platforms: the PR_SET_PDEATHSIG
-// field on syscall.SysProcAttr exists only on Linux. Callers should also
-// surface an error at config load when the platform does not support it,
-// rather than silently ignoring the setting.
+// setPdeathsig is a no-op on non-Linux platforms (PR_SET_PDEATHSIG is Linux-only).
+// Callers should surface a config-load error rather than silently ignore it.
 func setPdeathsig(_ *syscall.SysProcAttr, _ syscall.Signal) {}

@@ -21,17 +21,15 @@ import (
 	"syscall"
 )
 
-// prSetChildSubreaper is the second argument to prctl(2) for marking the
-// calling process as the child subreaper (Linux >= 3.4). The stdlib syscall
-// package does not export this constant, so it is defined here; the value is
-// stable per include/uapi/linux/prctl.h.
+// prSetChildSubreaper is the prctl(2) option for marking the caller as the child
+// subreaper (Linux >= 3.4). Not exported by the stdlib syscall package; the value
+// is stable per include/uapi/linux/prctl.h.
 const prSetChildSubreaper = 36
 
-// SetChildSubreaper marks the current process as the child subreaper so that
-// orphaned descendants are re-parented to it (and therefore reaped by
-// gopherd's Wait4 loop) instead of to PID 1. Useful when gopherd is not
-// running as PID 1 — e.g. inside `docker exec`, a k8s sidecar, or nested
-// init. Harmless when gopherd already is PID 1.
+// SetChildSubreaper marks the current process as the child subreaper so orphaned
+// descendants re-parent to it (and get reaped by gopherd's Wait4 loop) instead of
+// PID 1. Matters when gopherd is not PID 1 (docker exec, a k8s sidecar, nested
+// init); harmless when it already is.
 func SetChildSubreaper() error {
 	_, _, errno := syscall.Syscall6(syscall.SYS_PRCTL, prSetChildSubreaper, 1, 0, 0, 0, 0)
 	if errno != 0 {
@@ -40,9 +38,8 @@ func SetChildSubreaper() error {
 	return nil
 }
 
-// setPdeathsig records the parent-death signal in attr so the kernel delivers
-// sig to the child when its parent thread terminates (prctl PR_SET_PDEATHSIG,
-// applied via Go's exec machinery between fork and exec).
+// setPdeathsig records the parent-death signal in attr so the kernel delivers sig
+// to the child when its parent thread terminates (PR_SET_PDEATHSIG).
 func setPdeathsig(attr *syscall.SysProcAttr, sig syscall.Signal) {
 	attr.Pdeathsig = sig
 }

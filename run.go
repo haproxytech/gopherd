@@ -52,8 +52,7 @@ func run(entrypointArgs []string) int {
 	}
 
 	// GOPHERD_SOCKET overrides the configured control socket so a deployment
-	// can relocate it (e.g. to a writable path when running rootless) without
-	// editing the config. The client already honors this var.
+	// can relocate it (e.g. writable path when rootless) without editing config.
 	if v := os.Getenv("GOPHERD_SOCKET"); v != "" {
 		cfg.Control.SocketPath = v
 	}
@@ -63,11 +62,9 @@ func run(entrypointArgs []string) int {
 	}
 	log.Printf("%s (built from %s)", version.Version, version.Repo)
 
-	// When configured, mark ourselves as the child subreaper so orphaned
-	// descendants are re-parented to us rather than to the real PID 1.
-	// Intentionally non-fatal: a kernel/config that rejects the prctl (e.g.
-	// unsupported platform, LSM denial) must not crash PID 1. Log and move
-	// on; orphans will just be reaped by PID 1 instead, same as today.
+	// Mark ourselves as child subreaper so orphaned descendants re-parent to us
+	// instead of the real PID 1. Non-fatal: if the prctl is rejected (unsupported
+	// platform, LSM denial) PID 1 must not crash; orphans fall back to PID 1.
 	if cfg.Subreaper {
 		if err := service.SetChildSubreaper(); err != nil {
 			log.Printf("warning: subreaper: %v", err)
@@ -76,7 +73,7 @@ func run(entrypointArgs []string) int {
 		}
 	}
 
-	// Check if another daemon is already running by probing the control socket.
+	// Refuse to start if another daemon already owns the control socket.
 	socketPath := cfg.Control.SocketPath
 	if socketPath == "" {
 		socketPath = control.DefaultSocketPath
@@ -97,7 +94,7 @@ func run(entrypointArgs []string) int {
 		return 1
 	}
 
-	// Validate use-entrypoint-args: at most one service may set it.
+	// At most one service may set use-entrypoint-args.
 	var entrypointCount int
 	for _, p := range cfg.Processes {
 		if p.UseEntrypointArgs {
@@ -107,9 +104,8 @@ func run(entrypointArgs []string) int {
 	if entrypointCount > 1 {
 		log.Fatalf("only one process may set use-entrypoint-args: true")
 	}
-	// Warn if the user passed entrypoint args but no process is configured to
-	// consume them — the args are otherwise silently discarded, which is a
-	// common misconfiguration when migrating a container's CMD to gopherd.
+	// Warn when entrypoint args are passed but no process consumes them,
+	// otherwise they are silently discarded — a common migration mistake.
 	if entrypointCount == 0 && len(entrypointArgs) > 0 {
 		log.Printf("warning: entrypoint args %q will be discarded because no process sets use-entrypoint-args: true", entrypointArgs)
 	}
@@ -125,35 +121,31 @@ func run(entrypointArgs []string) int {
 		childStarted:   make(chan struct{}, 1),
 	}
 
-	// Initialize stats tracking.
 	d.m = metrics.New()
 
-	// Compute start order from dependencies.
 	startOrd, err := d.startOrder()
 	if err != nil {
 		log.Fatalf("dependencies: %v", err)
 	}
-	// Layers group independent services so oneshots in the same layer run in
-	// parallel. Cycles already fail above; this can't surface a new error.
+	// Layers group independent services so same-layer oneshots run in parallel.
+	// Cycles already failed above, so this can't surface a new error.
 	startLayers, err := order.TopoLayers(buildOrderServices(cfg))
 	if err != nil {
 		log.Fatalf("dependencies: %v", err)
 	}
 
-	// Store start order; stopAll() derives the actual sequence from shutdownMode.
+	// stopAll() derives the actual shutdown sequence from shutdownMode.
 	d.shutdownSeq = startOrd
 	d.shutdownMode = cfg.ShutdownOrder
 
-	// Build log targets and services.
 	d.buildLogTargets()
 	if err := d.buildServices(); err != nil {
 		log.Fatalf("config: %v", err)
 	}
 
-	// Start the control socket BEFORE bringing services up so that monitoring
-	// tools and `gopherd status` can observe the daemon while services are
-	// still being launched. Services not yet started by the layer loop appear
-	// as "pending" in stats output.
+	// Start the control socket BEFORE bringing services up so monitoring tools
+	// and `gopherd status` can observe the daemon mid-launch; not-yet-started
+	// services appear as "pending".
 	ctrlServer := d.setupControl()
 	if err := ctrlServer.Start(); err != nil {
 		log.Printf("warning: control socket: %v", err)
@@ -163,14 +155,12 @@ func run(entrypointArgs []string) int {
 
 	d.startServiceLayers(cfg, startLayers)
 
-	// Start health checks.
 	d.startChecks()
 
 	// Startup reads of d.services are done; reload() may now proceed.
 	d.started.Store(true)
 
-	// Signals that trigger gopherd's graceful shutdown. Driven entirely
-	// by `init-stop-signal` in config (defaults to {SIGTERM, SIGINT}).
+	// Graceful-shutdown signals, driven by `init-stop-signal` (default {SIGTERM, SIGINT}).
 	shutdownSet := cfg.ShutdownSignals()
 	shutdownSigs := make([]syscall.Signal, 0, len(shutdownSet))
 	for sig := range shutdownSet {
@@ -180,11 +170,9 @@ func run(entrypointArgs []string) int {
 		log.Printf("init-stop-signal: %s", formatSignalSet(shutdownSigs))
 	}
 
-	// Forward signals to all children. SIGHUP triggers reload.
+	// Subscribe to the shutdown set plus signals with special meaning: SIGHUP
+	// (reload) and SIGUSR1/SIGUSR2 (opt-in per-service forwarding).
 	sigs := make(chan os.Signal, 16)
-	// Subscribe to the shutdown set plus the signals that always have a
-	// special meaning inside gopherd (SIGHUP for reload) and those a
-	// service may opt into forwarding (SIGUSR1, SIGUSR2).
 	subscribed := make(map[syscall.Signal]bool)
 	notify := func(sig syscall.Signal) {
 		if subscribed[sig] {
@@ -217,11 +205,8 @@ func run(entrypointArgs []string) int {
 					log.Printf("%s", msg)
 				}
 			default:
-				// Signal forwarding is opt-in per service via the
-				// signal-rewrite map. Services that do not list the
-				// received signal are not forwarded to — this is the
-				// documented behaviour change from the pre-3d model
-				// that blasted every caught signal to every service.
+				// Forwarding is opt-in per service via the signal-rewrite
+				// map; services not listing the signal are skipped.
 				d.mu.Lock()
 				for _, svc := range d.services {
 					rewritten, ok := svc.RewriteSignal(sysSig)
@@ -239,9 +224,8 @@ func run(entrypointArgs []string) int {
 	go func() {
 		for req := range d.restartCh {
 			d.handleRestartReq(req)
-			// Decrement after the request is fully processed (started, skipped,
-			// or failed) so the reap loop only treats ECHILD as transient while
-			// a restart could still fork a new child.
+			// Decrement only after the request fully settles so the reap loop
+			// treats ECHILD as transient while a restart may still fork a child.
 			d.pendingRestarts.Add(-1)
 		}
 	}()
@@ -259,24 +243,21 @@ func run(entrypointArgs []string) int {
 				continue
 			}
 			if err == syscall.ECHILD {
-				// Shutting down with no children left: the daemon is done.
 				if d.shuttingDown.Load() {
 					break
 				}
 				// A restart is in flight: the handler is about to fork the
-				// replacement child. Sleep briefly and retry so a single-service
-				// daemon survives stop/restart.
+				// replacement child. Retry briefly so a single-service daemon
+				// survives stop/restart.
 				if d.pendingRestarts.Load() > 0 {
 					time.Sleep(10 * time.Millisecond)
 					continue
 				}
-				// No children and not shutting down: idle as a live supervisor
-				// rather than exiting. Stopping the last service (control-socket
-				// stop, ignored exit) must not take gopherd down — it stays up so
-				// the service can be started again. Block until a new child is
-				// forked or shutdown begins. As subreaper, also wake periodically
-				// so reparented orphans are reaped promptly (without subreaper,
-				// orphans go to the real PID 1, so no poll is needed).
+				// No children, not shutting down: idle as a live supervisor.
+				// Stopping the last service must not take gopherd down — it stays
+				// up so the service can be restarted. Block until a new child is
+				// forked or shutdown begins. As subreaper, also poll so reparented
+				// orphans are reaped promptly (otherwise they go to PID 1).
 				var poll <-chan time.Time
 				var timer *time.Timer
 				if subreaper {
@@ -305,43 +286,37 @@ func run(entrypointArgs []string) int {
 		svc, isManaged := d.pidMap[pid]
 		if isManaged {
 			delete(d.pidMap, pid)
-			// MarkExited invalidates svc.Pid and svc.running atomically
-			// before acquiring svc.mu, so concurrent Stop/Signal/killTimer
-			// callers see a stale-pid guard trip and do not issue
-			// syscall.Kill against a pid the kernel has just freed.
+			// MarkExited atomically invalidates svc.Pid/svc.running before taking
+			// svc.mu, so concurrent Stop/Signal/killTimer callers trip the
+			// stale-pid guard and never Kill a pid the kernel just freed.
 			runDuration := svc.MarkExited()
-			// Apply the user-configured exit-code-map BEFORE the WasStopped
-			// fallback so an explicit mapping (e.g. 143 -> 42) wins over the
-			// implicit "intentional-stop-becomes-0" heuristic.
+			// Apply exit-code-map BEFORE the WasStopped fallback so an explicit
+			// mapping (e.g. 143 -> 42) wins over the implicit stop-becomes-0 rule.
 			if mapped := svc.RemapExitCode(code); mapped != code {
 				log.Printf("%s exited (status %d, remapped to %d)", svc.Name, code, mapped)
 				code = mapped
 			} else {
 				log.Printf("%s exited (status %d)", svc.Name, code)
 			}
-			// Compute effective code before recording metrics: intentional stops
-			// (WasStopped) should record exit code 0, not a crash/failure code.
+			// Intentional stops (WasStopped) record exit code 0, not a crash code.
 			effectiveCode := code
 			if svc.WasStopped() && code > 128 {
 				effectiveCode = 0
 			}
-			// Restart-driven exits (control restart, check-failure restart,
-			// crash + ActionRestart) count as a single `restarts +1` event, not
-			// also as `exits +1` / ok / fail. Plain stops and one-off exits
-			// still record ServiceExited as usual. The flag is cleared here so a
-			// crash-then-restart sequence later (without an enqueued restart)
-			// counts normally.
+			// Restart-driven exits count as a single `restarts +1` event, not
+			// also `exits +1`/ok/fail. Plain stops and one-off exits still record
+			// ServiceExited. Clearing the flag here lets a later crash-then-restart
+			// (without an enqueued restart) count normally.
 			restartConsumesExit := d.takeRestartPending(svc.Name)
 
 			if d.shuttingDown.Load() {
 				if !restartConsumesExit {
 					d.m.ServiceExited(svc.Name, effectiveCode)
 				}
-				// Use pidMap rather than d.services: services removed during a
-				// reload are deleted from d.services immediately but stay in
-				// pidMap until they actually exit. Checking only d.services
-				// would miss those processes and break out of the reap loop
-				// prematurely while they are still in their kill-delay window.
+				// Use pidMap, not d.services: a reload deletes services from
+				// d.services immediately but they linger in pidMap until they
+				// actually exit. Checking d.services would break the reap loop
+				// while those processes are still in their kill-delay window.
 				anyRunning := len(d.pidMap) > 0
 				d.mu.Unlock()
 				if !anyRunning {
@@ -353,26 +328,22 @@ func run(entrypointArgs []string) int {
 			success := effectiveCode == 0
 			var action service.ExitAction
 
-			// An intentional Stop() (control-socket stop/restart, check-failure
-			// restart, dependency-cascade stop) must not trigger OnSuccess/
-			// OnFailure: with the default OnSuccess=ActionShutdown a
-			// signal-killed service would otherwise take the whole daemon down.
-			// Pending restart requests already sit on restartCh, so the service
-			// will come back if one was enqueued.
+			// An intentional Stop() must not trigger OnSuccess/OnFailure: with the
+			// default OnSuccess=ActionShutdown a signal-killed service would
+			// otherwise take the whole daemon down. Any enqueued restart already
+			// sits on restartCh, so the service still comes back.
 			switch {
 			case svc.WasStopped():
 				action = service.ActionIgnore
 			case svc.Oneshot:
-				// Oneshot services triggered via control socket after startup
-				// should not take shutdown actions — just ignore the exit.
+				// Oneshots triggered via control socket after startup must not
+				// take shutdown actions — ignore a clean exit.
 				if success {
 					action = service.ActionIgnore
 				} else {
-					// svc.Proc.OnFailure was pre-validated by yml.Unmarshal
-					// (ValidateExitAction) and again by service.New, so a parse
-					// error here is impossible in practice. If one did occur we
-					// fall back to Ignore rather than propagating the error:
-					// fatalling from the reap loop would crash PID 1.
+					// OnFailure was pre-validated by yml.Unmarshal and service.New,
+					// so a parse error is impossible in practice. Fall back to
+					// Ignore rather than fatalling, which would crash PID 1.
 					parsed, err := service.ParseExitAction(svc.Proc.OnFailure, service.ActionIgnore)
 					if err != nil {
 						log.Printf("warning: %s: %v; ignoring exit", svc.Name, err)
@@ -392,9 +363,8 @@ func run(entrypointArgs []string) int {
 				}
 			}
 
-			// Record the exit unless it is part of a restart cycle (either an
-			// already-enqueued restart or the ActionRestart branch we are about
-			// to take below).
+			// Record the exit unless it is part of a restart cycle (already
+			// enqueued, or the ActionRestart branch below).
 			if !restartConsumesExit && action != service.ActionRestart {
 				d.m.ServiceExited(svc.Name, effectiveCode)
 			}
@@ -407,9 +377,8 @@ func run(entrypointArgs []string) int {
 				delay := svc.Backoff.Next()
 				log.Printf("restarting %s in %s", svc.Name, delay)
 				d.m.ServiceRestarted(svc.Name)
-				// Capture the done channel before unlocking; at this point
-				// MarkExited has already closed it, so svc.Done() returns
-				// the closed channel for this specific exit event.
+				// Capture the done channel before unlocking; MarkExited has
+				// already closed it for this specific exit event.
 				exitDone := svc.Done()
 				d.mu.Unlock()
 				// Increment before the send so the reap loop sees the pending
@@ -422,12 +391,12 @@ func run(entrypointArgs []string) int {
 
 			case service.ActionShutdown, service.ActionFailureShutdown:
 				d.mu.Unlock()
-				// Pre-store exit code so it is visible even if the reap loop
-				// breaks (ECHILD) before the goroutine runs.
+				// Pre-store exit code so it survives even if the reap loop breaks
+				// (ECHILD) before the goroutine runs.
 				d.exitCode.CompareAndSwap(0, int32(effectiveCode))
-				// Run in a goroutine so the reap loop remains free to call
-				// Wait4 and close done channels; a synchronous call would
-				// deadlock when stopAll waits on <-done for other services.
+				// Run async so the reap loop stays free to Wait4 and close done
+				// channels; a synchronous call would deadlock when stopAll waits
+				// on <-done for other services.
 				go d.initiateShutdown(effectiveCode)
 				continue
 
@@ -457,15 +426,13 @@ func run(entrypointArgs []string) int {
 
 	ctrlServer.Stop()
 	d.stopChecks()
-	// Stop delivering signals before final teardown so a late SIGHUP cannot
-	// trigger d.reload() concurrent with closeLogTargets() touching d.services.
-	// Closing the channel lets the signal-forwarding goroutine exit cleanly.
+	// Stop delivering signals before teardown so a late SIGHUP cannot run
+	// d.reload() concurrent with closeLogTargets() touching d.services. Closing
+	// the channel lets the signal-forwarding goroutine exit.
 	goSignal.Stop(sigs)
 	close(sigs)
-	// All sources that write to restartCh (reap loop, check callbacks, control
-	// socket RestartFn) have now stopped. Wait for any in-flight sender
-	// goroutines, then close the channel so the restart goroutine's range loop
-	// terminates naturally.
+	// All restartCh writers have stopped; wait for in-flight senders, then close
+	// so the restart goroutine's range loop terminates.
 	d.senderWg.Wait()
 	close(d.restartCh)
 	d.closeLogTargets()
@@ -473,23 +440,11 @@ func run(entrypointArgs []string) int {
 	return int(d.exitCode.Load())
 }
 
-// runLayerOneshots starts every enabled oneshot in `layer` in parallel and
-// blocks until they have all exited (or timed out). On the first non-ignored
-// failure, it waits for the other in-flight oneshots to settle and then
-// log.Fatalfs — matching the original sequential semantics where the first
-// failure aborts gopherd, but without leaving stragglers running.
-//
-// Safety invariant: this is called from the startup loop, which completes
-// entirely before the main reap loop (Wait4(-1,...)) starts. Multiple
-// concurrent specific-PID Wait4 goroutines are safe; only Wait4(-1,...) would
-// race with them, and it has not started yet.
 // startServiceLayers brings up every enabled service in topological order.
-// Oneshots within a layer run concurrently via runLayerOneshots and the next
-// layer waits for all of them to exit cleanly. Non-oneshot services within a
-// layer also start concurrently — by definition they have no ordering edge
-// between each other in this layer, and any per-service gating (ready-check
-// before spawn, sd_notify after spawn) runs inside its own goroutine so a
-// slow gate on one service doesn't stall its siblings.
+// Within a layer, oneshots run concurrently (and the next layer waits for them
+// to exit cleanly) and non-oneshots also start concurrently — they have no
+// ordering edge here, and each one's gating (ready-check, sd_notify) runs in
+// its own goroutine so a slow gate doesn't stall its siblings.
 func (d *daemon) startServiceLayers(cfg *yml.Config, startLayers [][]string) {
 	for _, layer := range startLayers {
 		runLayerOneshots(d, layer)
@@ -515,8 +470,8 @@ func (d *daemon) startLayerNonOneshots(cfg *yml.Config, layer []string) {
 		if svc.Oneshot {
 			continue
 		}
-		// A client connected via the control socket during a previous layer
-		// could have already started this one; don't double-fork.
+		// A control-socket client may have started this in a previous layer;
+		// don't double-fork.
 		if svc.IsRunning() {
 			continue
 		}
@@ -529,10 +484,9 @@ func (d *daemon) startLayerNonOneshots(cfg *yml.Config, layer []string) {
 	wg.Wait()
 }
 
-// startNonOneshot performs the full per-service gating sequence for one
-// non-oneshot, long-running service: optional ready-check, fork+exec, then
-// optional sd_notify wait. Any gate failure is fatal — the daemon cannot
-// safely proceed past a failed dependency gate.
+// startNonOneshot runs the full gating sequence for one long-running service:
+// optional ready-check, fork+exec, then optional sd_notify wait. Any gate
+// failure is fatal — the daemon cannot safely proceed past a failed gate.
 func (d *daemon) startNonOneshot(cfg *yml.Config, svc *service.Service) {
 	if svc.Proc.ReadyCheck != "" {
 		checkCfg, ok := cfg.Checks[svc.Proc.ReadyCheck]
@@ -586,6 +540,14 @@ func (d *daemon) startNonOneshot(cfg *yml.Config, svc *service.Service) {
 	}
 }
 
+// runLayerOneshots starts every enabled oneshot in layer concurrently and
+// blocks until all exit (or time out). On the first non-ignored failure it lets
+// the others settle, then log.Fatalfs — aborting gopherd without leaving
+// stragglers running.
+//
+// Safety invariant: called from the startup loop, which finishes before the main
+// reap loop (Wait4(-1,...)) starts. Concurrent specific-PID Wait4 goroutines are
+// safe; only Wait4(-1,...) would race them, and it hasn't started yet.
 func runLayerOneshots(d *daemon, layer []string) {
 	type started struct {
 		svc *service.Service
@@ -625,7 +587,7 @@ func runLayerOneshots(d *daemon, layer []string) {
 		go func(pp started) {
 			code, err := waitOneshot(pp.pid, pp.svc.Proc.StartupTimeout)
 			if err != nil && pp.pid > 0 {
-				// Timeout (or wait4 error) — make sure the process is gone.
+				// Timeout or wait4 error: make sure the process is gone.
 				_ = syscall.Kill(-pp.pid, syscall.SIGKILL)
 			}
 			results <- result{name: pp.svc.Name, pid: pp.pid, code: code, err: err}
@@ -637,9 +599,8 @@ func runLayerOneshots(d *daemon, layer []string) {
 		r := <-results
 		svc := d.services[r.name]
 		if r.err != nil {
-			// Wait failed (typically startup-timeout). Record a non-zero exit
-			// so stats reflect that the oneshot didn't complete cleanly, even
-			// though log.Fatalf below will terminate the daemon shortly.
+			// Wait failed (typically startup-timeout): record a non-zero exit so
+			// stats reflect the unclean completion before log.Fatalf below.
 			d.m.ServiceExited(r.name, 1)
 			if fatalErr == nil {
 				rc := r
@@ -649,8 +610,7 @@ func runLayerOneshots(d *daemon, layer []string) {
 		}
 		svc.MarkExited()
 		// Apply exit-code-map before success/failure evaluation, matching the
-		// reap loop (RemapExitCode) so a startup oneshot honors the same
-		// mapping a long-running service would.
+		// reap loop so a startup oneshot honors the same mapping.
 		code := svc.RemapExitCode(r.code)
 		if code != r.code {
 			log.Printf("oneshot %s exited (status %d, remapped to %d)", r.name, r.code, code)
@@ -678,13 +638,13 @@ func runLayerOneshots(d *daemon, layer []string) {
 	}
 }
 
-// waitOneshot waits for a oneshot process to exit, with an optional timeout.
-// If timeoutStr is empty, it waits indefinitely. Returns the exit code or an
-// error if the timeout is exceeded.
+// waitOneshot waits for a oneshot process to exit, with an optional timeout
+// (empty timeoutStr waits indefinitely). Returns the exit code, or an error on
+// timeout.
 //
 // Safety invariant: called only during the startup loop, before the main reap
-// loop (Wait4(-1,...)) starts. Concurrent specific-PID Wait4 calls (one per
-// goroutine, distinct PIDs) are safe with each other.
+// loop (Wait4(-1,...)) starts. Concurrent specific-PID Wait4 calls (distinct
+// PIDs) are safe with each other.
 func waitOneshot(pid int, timeoutStr string) (int, error) {
 	type waitResult struct {
 		err  error
@@ -723,15 +683,14 @@ func waitOneshot(pid int, timeoutStr string) (int, error) {
 	case r := <-ch:
 		return r.code, r.err
 	case <-timer.C:
-		// Drain the goroutine so it does not leak after the caller kills the process.
+		// Drain the goroutine so it doesn't leak once the caller kills the process.
 		go func() { <-ch }()
 		return 0, fmt.Errorf("timed out after %s", timeout)
 	}
 }
 
-// formatSignalSet renders a list of signals as a deterministic string
-// ("SIGINT, SIGTERM") for log output. Sorted by numeric value so the
-// output does not flap across runs.
+// formatSignalSet renders signals as a deterministic string ("SIGINT, SIGTERM")
+// for log output, sorted by numeric value so output doesn't flap across runs.
 func formatSignalSet(sigs []syscall.Signal) string {
 	if len(sigs) == 0 {
 		return "(none)"

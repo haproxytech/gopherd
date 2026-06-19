@@ -39,10 +39,8 @@ type serviceStats struct {
 	Successes int
 	Up        bool
 	Enabled   bool
-	// Pending means the service is enabled and configured but the startup
-	// loop has not attempted to fork it yet. Set by RegisterService for
-	// enabled services and cleared by ServiceStarted. Surfaces "pending"
-	// in stats output during the brief startup window.
+	// Pending means the service is enabled but the startup loop has not yet
+	// forked it; surfaces "pending" in stats during the startup window.
 	Pending bool
 }
 
@@ -87,10 +85,9 @@ func New() *Metrics {
 	}
 }
 
-// svcRegister returns the entry for name, creating it if absent. Used only
-// by RegisterService — event methods (Started/Exited/Restarted) must not
-// create entries, otherwise a service unregistered by reload would be
-// resurrected by its own late exit event.
+// svcRegister returns the entry for name, creating it if absent. Only
+// RegisterService may create entries; event methods must not, or a service
+// unregistered by reload would be resurrected by its own late exit event.
 func (m *Metrics) svcRegister(name string) *serviceStats {
 	s, ok := m.services[name]
 	if !ok {
@@ -117,8 +114,8 @@ func (m *Metrics) RegisterService(name string, enabled bool) {
 	defer m.mu.Unlock()
 	s := m.svcRegister(name)
 	s.Enabled = enabled
-	// Re-registering an already-started service (reload path) must not
-	// resurrect Pending — only mark pending if the service has never run.
+	// Only mark pending if the service has never run, so a reload of an
+	// already-started service does not resurrect Pending.
 	if enabled && s.StartedAt.IsZero() && s.Exits == 0 {
 		s.Pending = true
 	}
@@ -134,17 +131,16 @@ func (m *Metrics) IsPending(name string) bool {
 	return ok && s.Pending
 }
 
-// UnregisterService removes a service entry, e.g. after a reload drops it
-// from the config. Counters for a service that no longer exists would be
-// misleading in stats output.
+// UnregisterService removes a service entry, e.g. after a reload drops it from
+// the config; stale counters would otherwise be misleading in stats output.
 func (m *Metrics) UnregisterService(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.services, name)
 }
 
-// ServiceStarted records that a service has started. A no-op if name was
-// never registered (e.g. unregistered by a reload before the event landed).
+// ServiceStarted records that a service has started. No-op if name was never
+// registered (e.g. unregistered by a reload before the event landed).
 func (m *Metrics) ServiceStarted(name string, pid int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -158,8 +154,7 @@ func (m *Metrics) ServiceStarted(name string, pid int) {
 	s.StartedAt = time.Now()
 }
 
-// ServiceExited records that a service has exited. A no-op if name was
-// never registered.
+// ServiceExited records that a service has exited. No-op if name was never registered.
 func (m *Metrics) ServiceExited(name string, exitCode int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -178,8 +173,7 @@ func (m *Metrics) ServiceExited(name string, exitCode int) {
 	}
 }
 
-// ServiceRestarted records a service restart. A no-op if name was never
-// registered.
+// ServiceRestarted records a service restart. No-op if name was never registered.
 func (m *Metrics) ServiceRestarted(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -188,9 +182,8 @@ func (m *Metrics) ServiceRestarted(name string) {
 	}
 }
 
-// RegisterCheck seeds a check in the metrics map so it appears in stats
-// before its first probe runs. Healthy=true and failures=0 are the natural
-// initial state; the first CheckResult call updates them.
+// RegisterCheck seeds a check so it appears in stats (as healthy) before its
+// first probe runs.
 func (m *Metrics) RegisterCheck(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -209,8 +202,7 @@ func (m *Metrics) CheckResult(name string, healthy bool) {
 }
 
 // Snapshot returns a structured view of all services and checks, sorted by
-// name. Counters are copied so callers can use the result without holding
-// any lock.
+// name. Counters are copied so callers need not hold any lock.
 func (m *Metrics) Snapshot() Snapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

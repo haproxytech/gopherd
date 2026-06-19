@@ -36,27 +36,16 @@ import (
 	"github.com/haproxytech/gopherd/service"
 )
 
-// maxConfigFileSize caps how many bytes readConfigFile will consume from the
-// gopherd config file. Real configs are typically a few KiB; 4 MiB is
-// generous for comment-heavy or large examples while preventing an
-// operator-supplied or swapped-out huge file from OOM-killing PID 1.
+// maxConfigFileSize caps readConfigFile's read so a misconfigured or swapped-out
+// huge config file cannot OOM-kill PID 1. 4 MiB is generous for real configs.
 const maxConfigFileSize = 4 << 20
 
-// readConfigFile opens path, verifies it is not a symlink and passes
-// permission checks, then returns its contents. All checks are performed on
-// the open file descriptor to eliminate the TOCTOU window that exists when
-// a separate Lstat+Stat precedes an independent ReadFile call.
-//
-// O_NOFOLLOW causes the open to fail immediately if the final path component
-// is a symlink, making the check atomic with the open.
-//
-// The read is capped at maxConfigFileSize so a misconfigured
-// GOPHERD_CONFIG pointing at a huge file, or a config-management pipeline
-// that accidentally replaced the file, cannot drive PID 1 into an
-// unbounded allocation.
+// readConfigFile opens path, verifies it is not a symlink and passes permission
+// checks, then returns its contents. All checks run on the open file descriptor
+// to eliminate the TOCTOU window of a separate Lstat+Stat preceding ReadFile.
 func readConfigFile(path string) ([]byte, error) {
-	// syscall.Open with O_NOFOLLOW fails with ELOOP (Linux/macOS/FreeBSD)
-	// if path is a symlink, so no separate Lstat is needed.
+	// O_NOFOLLOW fails with ELOOP if path is a symlink, making the symlink
+	// check atomic with the open (no separate Lstat needed).
 	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		if err == syscall.ELOOP {
@@ -67,15 +56,14 @@ func readConfigFile(path string) ([]byte, error) {
 	f := os.NewFile(uintptr(fd), path)
 	defer f.Close()
 
-	// f.Stat() calls fstat(2) on the open fd, so permission checks are on the
-	// same inode we will read — no TOCTOU between the check and the read.
+	// fstat(2) on the open fd: permission checks hit the same inode we read,
+	// closing the TOCTOU window between check and read.
 	info, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
-	// Reject non-regular files. Without this check, a FIFO/pipe at the config
-	// path would cause io.ReadAll to block forever (stalling startup or
-	// reload), and a character/block device would return unexpected bytes.
+	// Reject non-regular files: a FIFO/pipe would make io.ReadAll block forever,
+	// and a char/block device would return unexpected bytes.
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("config %s is not a regular file (mode %s); refusing to open", path, info.Mode())
 	}
@@ -94,9 +82,8 @@ func readConfigFile(path string) ([]byte, error) {
 		}
 	}
 
-	// Read at most maxConfigFileSize+1 so we can distinguish "exactly at the
-	// cap" from "overflowed". If we read maxConfigFileSize+1 bytes, the
-	// file is too large.
+	// Read cap+1 so reading the extra byte distinguishes "at the cap" from
+	// "overflowed".
 	data, err := io.ReadAll(io.LimitReader(f, maxConfigFileSize+1))
 	if err != nil {
 		return nil, err
@@ -111,10 +98,9 @@ func readConfigFile(path string) ([]byte, error) {
 // started its shutdown sequence. Callers must not treat this as a fatal error.
 var errShuttingDown = fmt.Errorf("daemon is shutting down")
 
-// errServiceReplaced is returned by startService when the service being started
-// is no longer the current instance in d.services (replaced or removed by a
-// reload). The restart goroutine must silently skip this rather than treating
-// it as a fatal error that triggers shutdown.
+// errServiceReplaced is returned by startService when the service is no longer
+// the current instance in d.services (replaced or removed by a reload). The
+// restart goroutine must silently skip it, not treat it as fatal.
 var errServiceReplaced = fmt.Errorf("service replaced or removed by reload")
 
 // daemon holds all mutable daemon state so reload can update it.
@@ -130,16 +116,14 @@ type daemon struct {
 	// on this channel. A closed channel broadcasts to all receivers at once.
 	shutdownCh chan struct{}
 
-	// childStarted wakes the reap loop out of its idle wait when a new child is
-	// forked (e.g. a control-socket start after every service was stopped).
-	// Buffered so startService never blocks; a non-blocking send is enough
-	// because the reap loop re-checks for children via Wait4 once woken.
+	// childStarted wakes the reap loop from its idle wait when a new child is
+	// forked. Buffered so startService never blocks; a non-blocking send suffices
+	// since the reap loop re-checks via Wait4 once woken.
 	childStarted chan struct{}
 
-	// restartPending marks services whose next observed exit is part of a
-	// restart cycle (control-socket restart or check-failure restart). The reap
-	// loop uses this to suppress the ServiceExited metric so a restart counts
-	// as `restarts +1` only, not also as an `exits +1`. Guarded by d.mu.
+	// restartPending marks services whose next observed exit is part of a restart
+	// cycle, so the reap loop suppresses the ServiceExited metric (a restart
+	// counts as restarts+1 only, not also exits+1). Guarded by d.mu.
 	restartPending map[string]bool
 
 	configPath     string
@@ -154,38 +138,33 @@ type daemon struct {
 	senderWg sync.WaitGroup
 
 	mu sync.RWMutex
-	// reloadMu serialises concurrent hot-reloads so that two rapid SIGHUPs
-	// cannot race on d.checkers, d.cfg, or d.services.
+	// reloadMu serialises concurrent hot-reloads so two rapid SIGHUPs cannot race
+	// on d.checkers, d.cfg, or d.services.
 	//
-	// Lock ordering: reloadMu is only ever acquired by reload(), and reload()
-	// must take it BEFORE mu. All other code paths (control-socket handlers,
-	// signal handlers, reap loop) take only mu. This one-way ordering makes
-	// deadlock impossible: no caller ever needs to acquire reloadMu while
-	// holding mu.
+	// Lock ordering: only reload() acquires reloadMu, and always BEFORE mu. All
+	// other paths take only mu, so this one-way ordering makes deadlock impossible.
 	reloadMu sync.Mutex
 
 	// pendingRestarts counts restart requests in flight from enqueue until the
-	// restart handler is done. The reap loop checks this on Wait4 ECHILD: if a
-	// restart is pending, the empty-children state is transient (the handler is
-	// about to fork the new process) and the loop must not exit.
+	// handler is done. On Wait4 ECHILD the reap loop checks this: a pending
+	// restart means the empty-children state is transient (a fork is imminent),
+	// so the loop must not exit.
 	pendingRestarts atomic.Int32
 
-	// exitCode and shuttingDown are accessed from multiple goroutines.
-	// Use atomic types so they can be read without holding mu.
+	// Accessed from multiple goroutines; atomic so they can be read without mu.
 	exitCode     atomic.Int32
 	shuttingDown atomic.Bool
 
-	// started gates reload(): the startup loop reads d.services without mu, so
-	// a concurrent reload before this is set would panic PID 1.
+	// started gates reload(): the startup loop reads d.services without mu, so a
+	// concurrent reload before this is set would panic PID 1.
 	started atomic.Bool
 }
 
 type restartReq struct {
 	svc *service.Service
-	// done is the service's Done() channel captured at the moment the restart
-	// was enqueued. The restart handler waits on this channel rather than
-	// calling req.svc.Done() at processing time, which would race against a
-	// concurrent restart that has already re-created the done channel.
+	// done is svc.Done() captured at enqueue time. The handler waits on this
+	// rather than calling req.svc.Done() later, which would race a concurrent
+	// restart that has already re-created the done channel.
 	done  <-chan struct{}
 	delay time.Duration
 }
@@ -212,22 +191,17 @@ func (d *daemon) takeRestartPending(name string) bool {
 }
 
 // handleRestartReq processes one entry from restartCh: wait for the prior exit
-// to be observed, optionally sleep the backoff delay, then re-start the
-// service. The caller is responsible for decrementing pendingRestarts after
-// this returns so the reap loop's ECHILD bookkeeping stays accurate.
+// to be observed, optionally sleep the backoff delay, then re-start the service.
+// The caller must decrement pendingRestarts after this returns so the reap
+// loop's ECHILD bookkeeping stays accurate.
 func (d *daemon) handleRestartReq(req restartReq) {
-	// Wait for the specific exit event that triggered this restart. Using
-	// req.done (captured at enqueue time) rather than calling req.svc.Done()
-	// here avoids blocking on a newer done channel if the service was already
-	// restarted by a concurrent path.
+	// Wait for the specific exit that triggered this restart (see restartReq.done).
 	<-req.done
 	if req.svc.IsRunning() {
 		return
 	}
-	// Sleep the backoff delay, but wake early if shutdown is initiated.
-	// Without this select, a long backoff would stall daemon exit even after
-	// initiateShutdown has been called. time.NewTimer is used instead of
-	// time.After so the timer goroutine can be reclaimed on early shutdown.
+	// Wake early on shutdown so a long backoff cannot stall daemon exit.
+	// NewTimer (not time.After) so the timer goroutine is reclaimed on early wake.
 	if req.delay > 0 {
 		timer := time.NewTimer(req.delay)
 		select {
@@ -236,9 +210,7 @@ func (d *daemon) handleRestartReq(req restartReq) {
 			timer.Stop()
 		}
 	}
-	// startService checks shuttingDown atomically with the fork/exec under
-	// d.mu. errServiceReplaced is returned when a reload replaced this
-	// service while the restart was queued; that is not a fatal error.
+	// errServiceReplaced means a reload replaced this service while queued; not fatal.
 	if _, err := d.startService(req.svc); err != nil {
 		if err != errShuttingDown && err != errServiceReplaced {
 			log.Printf("restart %s failed: %v", req.svc.Name, err)
@@ -248,20 +220,18 @@ func (d *daemon) handleRestartReq(req restartReq) {
 }
 
 func (d *daemon) startService(svc *service.Service) (int, error) {
-	// Register the service in pidMap while holding mu so the reap loop cannot
-	// observe the process exit before we have recorded the PID. Checking
-	// shuttingDown under the same lock closes the race where a concurrent
-	// initiateShutdown completes stopAll() between the caller's pre-check and
-	// this function's fork/exec, which would start a process that never gets
-	// a stop signal.
+	// Hold mu across the shuttingDown check, fork/exec, and pidMap write: the
+	// reap loop can't observe the exit before the PID is recorded, and a
+	// concurrent initiateShutdown can't slip stopAll() in between (which would
+	// start a process that never gets a stop signal).
 	d.mu.Lock()
 	if d.shuttingDown.Load() {
 		d.mu.Unlock()
 		return 0, errShuttingDown
 	}
-	// Reject stale restart requests: if a reload replaced or removed this
-	// service between the restart goroutine enqueuing the request and now,
-	// starting the old instance would briefly run two copies of the service.
+	// Reject stale restart requests: a reload may have replaced or removed this
+	// service since enqueue, and starting the old instance would briefly run two
+	// copies.
 	if current, ok := d.services[svc.Name]; !ok || current != svc {
 		d.mu.Unlock()
 		return 0, errServiceReplaced
@@ -272,15 +242,13 @@ func (d *daemon) startService(svc *service.Service) (int, error) {
 		return 0, err
 	}
 	d.pidMap[pid] = svc
-	// Record ServiceStarted under d.mu so a fast-exiting child cannot be
-	// reaped (which calls ServiceExited) before we have recorded the start.
-	// With the call outside the lock the metrics could show exits > starts
-	// transiently, which is misleading in "stats" output.
+	// Record ServiceStarted under d.mu so a fast-exiting child cannot be reaped
+	// (calling ServiceExited) before the start is recorded, which would
+	// transiently show exits > starts in "stats".
 	d.m.ServiceStarted(svc.Name, pid)
 	d.mu.Unlock()
-	// Wake the reap loop if it is idling with no children (all services were
-	// previously stopped). Non-blocking: a full buffer already means a wake is
-	// pending.
+	// Wake the reap loop if it is idling with no children. Non-blocking: a full
+	// buffer already means a wake is pending.
 	select {
 	case d.childStarted <- struct{}{}:
 	default:
@@ -324,9 +292,9 @@ func (d *daemon) reverseSeq() []string {
 // stopSequential stops services in the given order, waiting for each to fully
 // exit before stopping the next.
 //
-// Callers must hold d.mu on entry. This function temporarily releases d.mu
-// while waiting for each process to exit so the reap loop can call MarkExited
-// (which closes the done channel) without deadlocking.
+// Callers must hold d.mu on entry. It releases d.mu while waiting for each exit
+// so the reap loop can call MarkExited (which closes the done channel) without
+// deadlocking.
 func (d *daemon) stopSequential(seq []string) {
 	stopped := make(map[string]bool)
 	for _, name := range seq {
@@ -334,13 +302,11 @@ func (d *daemon) stopSequential(seq []string) {
 		if !ok || !svc.IsRunning() {
 			continue
 		}
-		// Capture done before Stop so we never miss the close even if the
-		// process exits between Stop() and the channel receive below.
+		// Capture done before Stop so the close isn't missed if the process exits
+		// before the receive below.
 		done := svc.Done()
 		svc.Stop()
 		stopped[name] = true
-		// Release d.mu between stops so the reap loop can call MarkExited
-		// (which closes done) without deadlocking on d.mu.
 		d.mu.Unlock()
 		<-done
 		d.mu.Lock()
@@ -361,12 +327,10 @@ func (d *daemon) stopSequential(seq []string) {
 // stopSimultaneous stops all services concurrently, then waits for every
 // process to fully exit.
 //
-// Callers must hold d.mu on entry. Like stopSequential, this function
-// temporarily releases d.mu while waiting so the reap loop can call
-// MarkExited without deadlocking.
+// Callers must hold d.mu on entry; like stopSequential it releases d.mu while
+// waiting so the reap loop can call MarkExited without deadlocking.
 func (d *daemon) stopSimultaneous() {
-	// Collect done channels and send stop signals while holding d.mu,
-	// then release the lock so the reap loop can call MarkExited.
+	// Collect done channels and signal stops under d.mu, then release before waiting.
 	dones := make([]<-chan struct{}, 0, len(d.services))
 	for _, svc := range d.services {
 		if svc.IsRunning() {
@@ -391,8 +355,8 @@ func (d *daemon) initiateShutdown(code int) {
 	if !d.shuttingDown.CompareAndSwap(false, true) {
 		return
 	}
-	// Closing shutdownCh broadcasts to all select-waiting goroutines (e.g. the
-	// restart backoff sleeper) so they can exit without waiting out their delay.
+	// Broadcast to select-waiting goroutines (e.g. the restart backoff sleeper)
+	// so they exit without waiting out their delay.
 	close(d.shutdownCh)
 	d.exitCode.Store(int32(code))
 	d.mu.Lock()
@@ -414,18 +378,14 @@ func (d *daemon) handleCheckFailure(checkName string) {
 		log.Printf("check %s failed: %s %s", checkName, action, svc.Name)
 		switch action {
 		case service.ActionRestart:
-			// Stop the service and enqueue a restart directly, bypassing the
-			// reap loop's exit-action evaluation. Without this, restart would
-			// only happen if the service also has on-success/on-failure: restart,
-			// which is counterintuitive and not what the user requested.
-			// Capture done before Stop so the restart handler waits on this
-			// specific exit, not a future done channel created by a concurrent
-			// restart that may have already re-created svc.done.
-			// Use senderWg.Go (blocking send in a tracked goroutine) instead of a
-			// non-blocking select so the restart is never silently dropped. A
-			// dropped restart combined with the default OnSuccess=ActionShutdown
-			// would cause an unexpected daemon shutdown when the stopped service
-			// exits with effectiveCode=0 (WasStopped+signal-death path).
+			// Enqueue a restart directly, bypassing the reap loop's exit-action
+			// evaluation; otherwise restart would require on-success/on-failure:
+			// restart too, which the user did not request.
+			// Capture done before Stop so the handler waits on this specific exit
+			// (see restartReq.done). Use senderWg.Go (tracked blocking send) so the
+			// restart is never silently dropped: a drop plus default
+			// OnSuccess=ActionShutdown would shut the daemon down when the stopped
+			// service exits with effectiveCode=0.
 			done := svc.Done()
 			svc.Stop()
 			d.m.ServiceRestarted(svc.Name)
@@ -448,7 +408,6 @@ func (d *daemon) handleCheckFailure(checkName string) {
 			d.initiateShutdown(1)
 			return
 		case service.ActionIgnore:
-			// do nothing
 		}
 	}
 	d.mu.Unlock()
@@ -473,12 +432,11 @@ func (d *daemon) buildLogTargets() {
 func (d *daemon) buildServices() error {
 	d.services = make(map[string]*service.Service)
 	for _, p := range d.cfg.Processes {
-		// Inject entrypoint args into the designated service.
 		if p.UseEntrypointArgs && len(d.entrypointArgs) > 0 {
 			p.Args = append(p.Args, d.entrypointArgs...)
 		}
-		// Resolve the effective prefix into p.Prefix so processConfigChanged
-		// can detect global prefix changes on reload (not just per-service ones).
+		// Resolve the effective prefix into p.Prefix so processConfigChanged can
+		// detect global prefix changes on reload, not just per-service ones.
 		if p.Prefix == "" {
 			p.Prefix = d.cfg.Prefix
 		}
@@ -523,9 +481,8 @@ func (d *daemon) startOrder() ([]string, error) {
 }
 
 func (d *daemon) startChecks() {
-	// Build a map from check name to the credential of the service that
-	// references it (via on-check-failure or ready-check). Exec checks
-	// then run as that service's user instead of as root.
+	// Map each check to the service referencing it (via on-check-failure or
+	// ready-check) so exec checks run as that service's user instead of root.
 	checkOwner := make(map[string]*service.Service)
 	for _, svc := range d.services {
 		if svc.Proc.ReadyCheck != "" {
@@ -584,8 +541,7 @@ func (d *daemon) reload() (string, error) {
 		return "", fmt.Errorf("reload blocked: daemon still starting up")
 	}
 
-	// Serialize concurrent reloads (e.g., two rapid SIGHUPs) so they cannot
-	// race on d.checkers, d.cfg, or d.services.
+	// Serialise concurrent reloads; see reloadMu.
 	d.reloadMu.Lock()
 	defer d.reloadMu.Unlock()
 
@@ -598,9 +554,8 @@ func (d *daemon) reload() (string, error) {
 		return "", fmt.Errorf("reload config: %w", err)
 	}
 
-	// Enforce use-entrypoint-args uniqueness on reload, matching the startup check
-	// in run(). Without this a hot-reload could install a config that would have
-	// been rejected at startup.
+	// Enforce use-entrypoint-args uniqueness, matching the startup check in run(),
+	// so a hot-reload can't install a config that startup would have rejected.
 	var entrypointCount int
 	for _, p := range newCfg.Processes {
 		if p.UseEntrypointArgs {
@@ -611,20 +566,16 @@ func (d *daemon) reload() (string, error) {
 		return "", fmt.Errorf("reload blocked: only one process may set use-entrypoint-args: true")
 	}
 
-	// Pre-validate the dependency graph before acquiring d.mu or mutating any
-	// state. This ensures a bad config (e.g., cycle) fails fast with no
-	// side-effects, rather than leaving services in a half-reconciled state.
+	// Pre-validate the dependency graph before touching any state so a bad config
+	// (e.g. a cycle) fails fast without leaving a half-reconciled daemon.
 	startOrd, err := order.TopoSort(buildOrderServices(newCfg))
 	if err != nil {
 		return "", fmt.Errorf("reload dependencies: %w", err)
 	}
 
-	// Pre-validate every process config (stop-signal, kill-delay, backoff-*,
-	// exit actions) before mutating state. service.New is the authoritative
-	// validator, so a dry-run here guarantees buildServices below cannot fail
-	// mid-reload and leave the daemon in a half-applied state. Without this a
-	// typo like kill-delay: "bogus" in a SIGHUP-reloaded config would abort
-	// reload after services had already been stopped and removed.
+	// Dry-run service.New (the authoritative validator) on every process before
+	// mutating state, so buildServices below cannot fail mid-reload after
+	// services have already been stopped and removed.
 	for _, p := range newCfg.Processes {
 		if _, err := service.New(p, newCfg.Prefix); err != nil {
 			return "", fmt.Errorf("reload: %w", err)
@@ -638,7 +589,6 @@ func (d *daemon) reload() (string, error) {
 		return "", fmt.Errorf("shutting down, reload not possible")
 	}
 
-	// Build new service set from config.
 	newNames := make(map[string]bool)
 	for _, p := range newCfg.Processes {
 		name := p.Name
@@ -648,17 +598,14 @@ func (d *daemon) reload() (string, error) {
 		newNames[name] = true
 	}
 
-	// Snapshot the current service map before any mutations so the reconcile
-	// loop below sees every service that was running before this reload,
-	// including ones we are about to remove.
+	// Snapshot before any mutation so the reconcile loop below still sees every
+	// service running before this reload, including ones about to be removed.
 	oldServices := maps.Clone(d.services)
 
-	// Stop and remove services that are no longer in config.
-	// Set exit actions to ActionIgnore before removing so the reap loop
-	// treats the eventual exit as benign rather than triggering a shutdown.
-	// Invariant: OnSuccess and OnFailure are plain fields that must only be
-	// read or written while holding d.mu. The reap loop reads them under
-	// d.mu; both mutation sites here are inside d.mu.Lock().
+	// Stop and remove services no longer in config. Set exit actions to
+	// ActionIgnore first so the reap loop treats the exit as benign. OnSuccess/
+	// OnFailure are plain fields read by the reap loop under d.mu, which is held
+	// here.
 	for name, svc := range d.services {
 		if !newNames[name] {
 			log.Printf("reload: removing service %s", name)
@@ -667,23 +614,19 @@ func (d *daemon) reload() (string, error) {
 			if svc.IsRunning() {
 				svc.Stop()
 			}
-			// Disconnect from log targets before removal so the subsequent
-			// ClearTargets loop (which iterates d.services) does not miss this
-			// service. Old targets are closed immediately after that loop.
+			// Disconnect from log targets before removal so the later ClearTargets
+			// loop (which iterates d.services) doesn't miss this service.
 			svc.Stdout.ClearTargets()
 			svc.Stderr.ClearTargets()
 			delete(d.services, name)
 		}
 	}
 
-	// Stop old checks.
 	d.stopChecks()
 
-	// Reconcile log targets: disconnect all current services from old target
-	// writers, close old targets, then rebuild from new config. New service
-	// wrappers created by buildServices() will be wired to the new targets
-	// automatically. Preserved services (kept running below) are re-wired
-	// explicitly after the reconcile loop.
+	// Reconcile log targets: disconnect current services, close old targets, then
+	// rebuild from new config. buildServices() wires new wrappers automatically;
+	// preserved services are re-wired explicitly below.
 	for _, svc := range d.services {
 		svc.Stdout.ClearTargets()
 		svc.Stderr.ClearTargets()
@@ -695,18 +638,15 @@ func (d *daemon) reload() (string, error) {
 
 	d.cfg = newCfg
 	d.buildLogTargets()
-	// Config was already pre-validated above, so buildServices cannot fail here
-	// in practice. Defence-in-depth: if it does, abort the reload with d.mu
-	// still held so the partial state is internally consistent (already-stopped
-	// services stay stopped, caller sees the error).
+	// Pre-validated above, so this cannot fail in practice. Defence-in-depth: if
+	// it does, abort with d.mu still held so partial state stays consistent.
 	if err := d.buildServices(); err != nil {
 		d.mu.Unlock()
 		return "", fmt.Errorf("reload: %w", err)
 	}
 
-	// Drop metrics entries for services that were removed from the config so
-	// stale counters don't linger in the stats output. Services still in the
-	// new config were just re-registered by buildServices().
+	// Drop metrics for removed services so stale counters don't linger in stats;
+	// surviving services were just re-registered by buildServices().
 	for name := range oldServices {
 		if _, exists := d.services[name]; !exists {
 			d.m.UnregisterService(name)
@@ -724,34 +664,27 @@ func (d *daemon) reload() (string, error) {
 			continue
 		}
 		if oldSvc.IsRunning() && !processConfigChanged(oldSvc.Proc, newSvc.Proc) {
-			// Config unchanged — keep the old running instance.
-			// Re-wire its PrefixWriters to the newly built log targets.
+			// Config unchanged — keep the running instance; re-wire its writers
+			// to the new log targets.
 			for _, lt := range d.logTargets {
 				if lt.AppliesTo(oldSvc.Name) {
 					oldSvc.Stdout.AddTarget(lt.Writer)
 					oldSvc.Stderr.AddTarget(lt.Writer)
 				}
 			}
-			// Update policy fields in-place. These do not require a process
-			// restart, but must be applied immediately so that a reload
-			// changing on-success, on-failure, on-check-failure, or requires
-			// takes effect for the current run rather than being silently lost.
-			// All four fields are read by the reap loop or check callbacks
-			// under d.mu, which is held here, so the update is race-free.
+			// Update policy fields in-place so a reload tuning them takes effect
+			// without a restart. All are read by the reap loop / check callbacks
+			// under d.mu, held here, so this is race-free.
 			oldSvc.OnSuccess = newSvc.OnSuccess
 			oldSvc.OnFailure = newSvc.OnFailure
 			oldSvc.OnCheckFailure = newSvc.OnCheckFailure
 			oldSvc.Requires = newSvc.Requires
-			// exit-code-map and signal-rewrite live on Proc and are read by
-			// the reap loop / signal-forward branch. Copy them so a reload
-			// that only tunes these maps takes effect without a restart.
 			oldSvc.Proc.ExitCodeMap = newSvc.Proc.ExitCodeMap
 			oldSvc.Proc.SignalRewrite = newSvc.Proc.SignalRewrite
 			d.services[name] = oldSvc
 		} else if oldSvc.IsRunning() {
-			// Config changed — stop old instance. Set exit actions to ignore
-			// so the reap loop treats the upcoming exit as benign and does not
-			// trigger a restart or shutdown while we start the new instance.
+			// Config changed — stop old instance, ignoring its exit so the reap
+			// loop doesn't restart or shut down while we start the new one.
 			log.Printf("reload: restarting changed service %s", name)
 			oldSvc.OnSuccess = service.ActionIgnore
 			oldSvc.OnFailure = service.ActionIgnore
@@ -760,11 +693,9 @@ func (d *daemon) reload() (string, error) {
 		}
 	}
 
-	// Update shutdown sequence and mode from new config.
 	d.shutdownSeq = startOrd
 	d.shutdownMode = newCfg.ShutdownOrder
 
-	// Collect services that need starting.
 	var toStart []*service.Service
 	for _, name := range startOrd {
 		svc, ok := d.services[name]
@@ -775,19 +706,17 @@ func (d *daemon) reload() (string, error) {
 			continue
 		}
 		if svc.IsRunning() {
-			continue // already running (preserved from old config)
+			continue // preserved from old config
 		}
 		toStart = append(toStart, svc)
 	}
 
-	// Release the lock before waiting and starting services, since startService
-	// acquires d.mu internally, and the reap loop needs d.mu to call MarkExited
-	// (which closes the done channels we are about to wait on).
+	// Release the lock before waiting/starting: startService acquires d.mu, and
+	// the reap loop needs it to call MarkExited (closing the done channels below).
 	d.mu.Unlock()
 
-	// Wait for stopped old instances to fully exit before starting their
-	// replacements. Without this wait, two instances of the same service could
-	// run simultaneously during the reload window.
+	// Wait for stopped old instances to exit before starting replacements, else
+	// two instances could run simultaneously during the reload window.
 	for _, done := range waitForOld {
 		<-done
 	}
@@ -798,8 +727,8 @@ func (d *daemon) reload() (string, error) {
 		}
 	}
 
-	// Restart checks with new config. Hold the lock so a concurrent reload
-	// (e.g., two rapid SIGHUPs) cannot race on d.checkers or d.cfg.
+	// Restart checks with new config under the lock to avoid racing on
+	// d.checkers or d.cfg.
 	d.mu.Lock()
 	d.startChecks()
 	d.mu.Unlock()
@@ -902,29 +831,22 @@ func (d *daemon) setupControl() *control.Server {
 			d.mu.Unlock()
 			return "", fmt.Errorf("unknown service %q", name)
 		}
-		// Refuse the restart early if the daemon has started shutting down, so
-		// we never stop a service with no plan to bring it back up.
+		// Refuse during shutdown so we never stop a service with no plan to
+		// bring it back up.
 		if d.shuttingDown.Load() {
 			d.mu.Unlock()
 			return "", fmt.Errorf("daemon is shutting down")
 		}
-		// Capture done under d.mu. Before calling Stop(), verify that restartCh
-		// has capacity for the enqueue: otherwise we would stop the service and
-		// leave it stopped with no pending restart, which is inconsistent from
-		// the caller's perspective ("restart queue full" but the service is
-		// actually down). A non-blocking send outside the lock would hit the
-		// same race; use senderWg.Go for a tracked blocking send that is
-		// synchronised with the shutdown path (senderWg.Wait before close).
+		// Capture done under d.mu. Use senderWg.Go for a tracked blocking send,
+		// synchronised with the shutdown path (run.go waits for senderWg before
+		// closing restartCh) so the send never panics on a closed channel and
+		// the service is never left stopped with no pending restart.
 		done := svc.Done()
 		if svc.IsRunning() {
 			svc.Stop()
 			d.markRestartPending(svc.Name)
 		}
 		d.m.ServiceRestarted(svc.Name)
-		// Use senderWg.Go so the sender is tracked by the shutdown path just
-		// like the reap-loop and check-failure restart senders. This allows a
-		// blocking send without risk of panicking on a closed channel: run.go
-		// waits for senderWg to drain before closing restartCh.
 		d.pendingRestarts.Add(1)
 		d.senderWg.Go(func() {
 			d.restartCh <- restartReq{svc: svc, done: done, delay: 0}
@@ -942,15 +864,13 @@ func (d *daemon) setupControl() *control.Server {
 		if !ok {
 			return nil, nil, nil, fmt.Errorf("unknown service %q", name)
 		}
-		// Merge recent lines from both stdout and stderr (stdout first).
+		// Merge recent lines from both streams (stdout first).
 		recent := append(svc.Stdout.Recent(), svc.Stderr.Recent()...)
 		if !follow {
 			return recent, nil, nil, nil
 		}
-		// Fan-in stdout and stderr subscription channels so the caller
-		// receives lines from both streams. A stop channel lets unsub()
-		// unblock pipe goroutines that are waiting to send to merged,
-		// preventing goroutine leaks when the client disconnects.
+		// Fan-in stdout and stderr subscriptions. The stop channel lets unsub()
+		// unblock pipe goroutines on client disconnect, preventing leaks.
 		outCh, outUnsub := svc.Stdout.Subscribe()
 		errCh, errUnsub := svc.Stderr.Subscribe()
 		merged := make(chan []byte, 256)
@@ -991,19 +911,11 @@ func (d *daemon) setupControl() *control.Server {
 	return ctrlServer
 }
 
-// processConfigChanged reports whether the fields of p that affect the running
-// process differ between old and new. Fields that only affect restart policy or
-// metadata are intentionally excluded since they do not require a process restart:
-//   - on-success, on-failure, on-check-failure, requires: updated in-place on
-//     the preserved service wrapper by reload() under d.mu; no restart needed
-//   - backoff-*: applied at next restart, no restart needed
-//   - startup-timeout: only relevant during initial start sequencing
-//
-// ReadyCheck, ReadyTimeout, and KillDelay ARE included: they affect how the
-// process is started (readiness gating) and stopped (kill delay), so a config
-// change should cause the service to restart with the new values.
-// Startup IS included: changing "oneshot" vs normal vs "disabled" changes the
-// process lifecycle model and must take effect immediately.
+// processConfigChanged reports whether fields that affect the running process
+// differ between old and new, i.e. whether the service must be restarted.
+// Excluded (applied without a restart): on-success, on-failure, on-check-failure,
+// requires (updated in-place by reload()), backoff-* (used at next restart), and
+// startup-timeout (only during initial start sequencing).
 func processConfigChanged(oldp, newp service.Process) bool {
 	if oldp.Prefix != newp.Prefix {
 		return true
@@ -1023,8 +935,7 @@ func processConfigChanged(oldp, newp service.Process) bool {
 	if intPtrDiffers(oldp.UserID, newp.UserID) || intPtrDiffers(oldp.GroupID, newp.GroupID) {
 		return true
 	}
-	// strict-groups changes the resolved supplementary group set, applied at
-	// fork time — a change only takes effect on the next spawn.
+	// strict-groups is applied at fork time, so a change needs a restart.
 	if oldp.StrictGroups != newp.StrictGroups {
 		return true
 	}
@@ -1055,25 +966,21 @@ func processConfigChanged(oldp, newp service.Process) bool {
 	if oldp.KillDelay != newp.KillDelay {
 		return true
 	}
-	// Flipping SDNotify changes the spawn env (adds/removes NOTIFY_SOCKET)
-	// and changes whether dependent startup gates on READY=1; both require
-	// the child to be restarted with the new behaviour.
+	// SDNotify changes the spawn env (NOTIFY_SOCKET) and whether dependents gate
+	// on READY=1, so a change needs a restart.
 	if oldp.SDNotify != newp.SDNotify {
 		return true
 	}
 	if oldp.SDNotifyTimeout != newp.SDNotifyTimeout {
 		return true
 	}
-	// Parent-death signal is applied via SysProcAttr at fork time, so a
-	// change only takes effect on the next spawn — require a restart.
+	// Parent-death signal is applied via SysProcAttr at fork time, so a change
+	// needs a restart.
 	if oldp.ParentDeathSignal != newp.ParentDeathSignal {
 		return true
 	}
-	// Exit-code-map and signal-rewrite are consulted at runtime against the
-	// live Process, so a change does NOT require a restart — updating the
-	// struct in-place is enough. These checks exist to surface the fact
-	// that the reload handler updates those fields on the preserved
-	// service wrapper.
+	// Exit-code-map and signal-rewrite are consulted at runtime, so reload()
+	// updates them in-place without a restart — no check needed here.
 	return false
 }
 

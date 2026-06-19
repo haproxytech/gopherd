@@ -19,8 +19,7 @@ import (
 	"syscall"
 )
 
-// credEnabled reports whether the kernel will attach SCM_CREDENTIALS to
-// received datagrams on this platform. Linux: yes.
+// credEnabled is true on Linux: the kernel attaches SCM_CREDENTIALS to received datagrams.
 const credEnabled = true
 
 // oobSize is the ancillary-data buffer size needed to receive one

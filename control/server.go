@@ -28,11 +28,9 @@ import (
 )
 
 // DefaultSocketMode is the default Unix socket file permission.
-// 0o600 matches the uid-based access check in handleConn (owner-only): a
-// looser mode (e.g. 0o660) would allow same-group peers to open the socket
-// but then be rejected at the first command, which is surprising. Setting
-// an explicit socket-mode in config together with a GID-aware deployment
-// is the supported way to broaden access.
+// 0o600 matches the owner-only uid check in handleConn: a looser mode would
+// let same-group peers open the socket only to be rejected at the first
+// command. Broadening access is done via an explicit socket-mode in config.
 const DefaultSocketMode = os.FileMode(0o600)
 
 // DefaultSocketPath is the default Unix socket path.
@@ -58,20 +56,17 @@ type Server struct {
 	// The unsubscribe func must be called when done.
 	LogsFn func(name string, follow bool) (recent [][]byte, ch <-chan []byte, unsub func(), err error)
 
-	// done is closed by Stop() to signal long-running handlers (currently only
-	// `logs -f` streaming) that they must return immediately rather than
-	// blocking on their log channel. Without this, an idle streaming client
-	// would hold handlersWg open until it disconnects, blocking clean
-	// shutdown and leaking buffered log lines that closeLogTargets() would
-	// otherwise flush.
+	// done is closed by Stop() so long-running handlers (currently only
+	// `logs -f` streaming) return immediately instead of blocking on their log
+	// channel. Otherwise an idle streaming client holds handlersWg open until it
+	// disconnects, blocking clean shutdown.
 	done chan struct{}
 
 	SocketPath string
 
-	// handlersWg tracks in-flight handleConn goroutines. Stop() waits on it so
-	// the daemon can safely close daemon-owned channels (e.g. restartCh) after
-	// Stop() returns without racing an in-flight handler that may still invoke
-	// RestartFn / ReloadFn.
+	// handlersWg tracks in-flight handleConn goroutines so Stop() can wait for
+	// them before the daemon closes channels (e.g. restartCh) a handler may
+	// still write to via RestartFn / ReloadFn.
 	handlersWg sync.WaitGroup
 
 	mu         sync.Mutex
@@ -99,10 +94,9 @@ func NewServer(cfg Config) *Server {
 	return &Server{SocketPath: path, socketMode: mode, done: make(chan struct{})}
 }
 
-// Start begins listening. Call in a goroutine or before the reap loop.
+// Start begins listening.
 func (cs *Server) Start() error {
-	// Verify the socket path is not a symlink before removing, to prevent
-	// a TOCTOU attack where a symlink is placed at the socket path.
+	// Reject a symlink at the socket path before removing it (TOCTOU guard).
 	if info, err := os.Lstat(cs.SocketPath); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("control socket: %s is a symlink, refusing to replace", cs.SocketPath)
@@ -110,19 +104,16 @@ func (cs *Server) Start() error {
 		_ = os.Remove(cs.SocketPath)
 	}
 
-	// Set a restrictive umask before Listen so the socket is never
-	// world-accessible between creation and Chmod.
+	// Restrictive umask so the socket is never world-accessible between
+	// creation and Chmod.
 	oldMask := syscall.Umask(0o077)
 	ln, err := net.Listen("unix", cs.SocketPath)
 	syscall.Umask(oldMask)
 	if err != nil {
 		return fmt.Errorf("control socket: %w", err)
 	}
-	// Post-bind verification: an attacker with write access to the parent
-	// directory could have planted a symlink between our Remove and Listen,
-	// causing bind(2) to materialise the socket at the symlink target. Confirm
-	// that the path we just bound is a real socket file, not a symlink or
-	// regular file. Fail closed if hijacked.
+	// Post-bind check: a symlink planted between Remove and Listen could redirect
+	// bind(2) to another target. Confirm we bound a real socket; fail closed if not.
 	postInfo, err := os.Lstat(cs.SocketPath)
 	if err != nil {
 		_ = ln.Close()
@@ -147,8 +138,7 @@ const (
 	// for one-shot commands (start, stop, status, etc.).
 	maxConns = 64
 	// maxStreaming is the maximum number of concurrent streaming connections
-	// (logs -f). These are tracked separately so streaming clients cannot
-	// starve one-shot command slots.
+	// (logs -f). Tracked separately so streaming cannot starve one-shot command slots.
 	maxStreaming = 16
 )
 
@@ -174,7 +164,7 @@ func (cs *Server) acceptLoop() {
 				cs.handleConn(conn, sem, streamSem)
 			})
 		default:
-			// At capacity — reject the connection.
+			// At capacity.
 			_ = conn.Close()
 		}
 	}
@@ -188,18 +178,15 @@ const connReadTimeout = 5 * time.Second
 // Prevents stalled readers from holding connection slots indefinitely.
 const connWriteTimeout = 10 * time.Second
 
-// streamIdleTimeout caps how long a `logs -f` subscription may sit quiet on
-// an idle service. Without a cap, an authorised client (or attacker with the
-// daemon's uid) could open up to maxStreaming sessions on silent services and
-// permanently hold every streaming slot. Set well above the client's own
-// read idle timeout so a legitimate active session is closed by the client,
-// not pre-emptively by the server.
+// streamIdleTimeout caps how long a `logs -f` subscription may sit quiet.
+// Without it, sessions on silent services could permanently hold every
+// streaming slot. Set above the client's read idle timeout so a live session
+// is closed by the client, not pre-emptively by the server.
 const streamIdleTimeout = 1 * time.Hour
 
 func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
-	// Centralise semaphore release and panic recovery so that no path leaks
-	// a cmdSem slot — including panics between accept and the first early
-	// return, or inside a callback.
+	// Centralise semaphore release and panic recovery so no path leaks a
+	// cmdSem slot, including panics inside a callback.
 	cmdReleased := false
 	releaseCmd := func() {
 		if !cmdReleased {
@@ -226,10 +213,9 @@ func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 	}
 
 	uid := peerUID(conn)
-	// On Linux, enforce that only root (uid 0) or the daemon's own user may
-	// issue commands. This is defense-in-depth on top of socket file
-	// permissions (mode 0600). On other platforms uid is -1 (unavailable)
-	// and access control falls back to filesystem permissions alone.
+	// Defense-in-depth on top of the 0600 socket mode: only root or the daemon's
+	// own user may issue commands. uid == -1 (non-Linux) falls back to filesystem
+	// permissions alone.
 	if uid != -1 && uid != 0 && uid != os.Geteuid() {
 		log.Printf("control: uid=%d rejected: permission denied", uid)
 		_ = conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
@@ -242,10 +228,10 @@ func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 	_ = conn.SetReadDeadline(time.Time{})
 
 	parts := strings.Fields(line)
-	// Streaming commands release the command slot and acquire a streaming
-	// slot instead, so they cannot starve one-shot commands.
+	// Streaming commands swap their command slot for a streaming slot so they
+	// cannot starve one-shot commands.
 	if parts[0] == "logs" {
-		releaseCmd() // give the command slot back before switching to streaming
+		releaseCmd()
 		select {
 		case streamSem <- struct{}{}:
 			defer func() { <-streamSem }()
@@ -409,7 +395,6 @@ func (cs *Server) handleLogs(conn net.Conn, parts []string) {
 		defer unsub()
 	}
 
-	// Send recent buffered lines.
 	for _, line := range recent {
 		_ = conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 		if _, err := conn.Write(line); err != nil {
@@ -440,7 +425,6 @@ func (cs *Server) handleLogs(conn net.Conn, parts []string) {
 			if _, err := conn.Write(line); err != nil {
 				return
 			}
-			// Reset idle timer on every successful write.
 			if !idle.Stop() {
 				select {
 				case <-idle.C:
@@ -456,26 +440,25 @@ func (cs *Server) handleLogs(conn net.Conn, parts []string) {
 	}
 }
 
-// Stop shuts down the server and removes the socket file.
-// Blocks until all in-flight handleConn goroutines have returned, so callers
-// can rely on no further callbacks (StartFn, RestartFn, ReloadFn, ...) firing
-// after Stop() returns. Without this, a late RestartFn could panic sending on
-// an already-closed restartCh.
+// Stop shuts down the server and removes the socket file. Blocks until all
+// in-flight handleConn goroutines have returned, so no callbacks (StartFn,
+// RestartFn, ...) fire after Stop() returns; otherwise a late RestartFn could
+// panic sending on an already-closed restartCh.
 func (cs *Server) Stop() {
 	cs.mu.Lock()
 	alreadyClosed := cs.closed
 	cs.closed = true
 	cs.mu.Unlock()
-	// Signal streaming handlers to return. Guard against a double Stop(),
-	// which would double-close the channel and panic.
+	// Signal streaming handlers to return; guard against a double Stop()
+	// double-closing the channel.
 	if !alreadyClosed && cs.done != nil {
 		close(cs.done)
 	}
 	if cs.listener != nil {
 		_ = cs.listener.Close()
 	}
-	// Closing the listener wakes up Accept(); wait for all in-flight handlers
-	// to return before the caller proceeds to tear down shared state.
+	// Closing the listener wakes Accept(); wait for handlers before the caller
+	// tears down shared state.
 	cs.handlersWg.Wait()
 	_ = os.Remove(cs.SocketPath)
 }

@@ -32,18 +32,15 @@ type TargetConfig struct {
 	Labels   map[string]string // custom metadata
 	Type     string            // "syslog" or "file"
 	Location string            // e.g. "udp://logs.example.com:514" or "/var/log/app.log"
-	// MaxSize is a human-readable byte size (e.g. "10MiB", "100MB") at which
-	// a file target is rotated. Empty = no rotation. Applies only to file
-	// targets; ignored for syslog.
+	// MaxSize is a human-readable byte size (e.g. "10MiB") at which a file
+	// target rotates. Empty = no rotation. File targets only; ignored for syslog.
 	MaxSize  string
 	Services []string // filter: only these service names
-	// MaxFiles is the number of rotated files to keep (app.log.1 ...
-	// app.log.N). Values <= 0 default to 5 when MaxSize is set. Older files
-	// beyond this count are deleted on rotation.
+	// MaxFiles is the number of rotated files to keep. Values <= 0 default to
+	// defaultMaxFiles when MaxSize is set.
 	MaxFiles int
-	// Compress enables gzip compression of rotated files. Rotated files are
-	// named app.log.1.gz, app.log.2.gz, etc. Only meaningful for file
-	// targets with MaxSize set.
+	// Compress enables gzip compression of rotated files. Only meaningful for
+	// file targets with MaxSize set.
 	Compress bool
 }
 
@@ -105,8 +102,8 @@ func (lt *Target) Close() {
 	}
 }
 
-// syslogInfoer is the subset of *syslog.Writer methods needed by syslogWriter.
-// Using an interface allows test doubles without a real syslog connection.
+// syslogInfoer is the subset of *syslog.Writer methods needed by syslogWriter,
+// extracted as an interface to allow test doubles.
 type syslogInfoer interface {
 	Info(m string) error
 	Close() error
@@ -145,16 +142,14 @@ func (sw *syslogWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// sanitize strips control characters (except newline and tab) from log
-// output before forwarding to syslog or file targets. This prevents services
-// from injecting ANSI escape sequences or carriage returns into log entries.
-// Fast path: zero-alloc unsafe.String aliasing p (the 99% case).
-// Slow path: builds a clean copy only from the first bad byte onward.
+// sanitize strips control characters (except newline and tab) to block
+// services from injecting ANSI escapes or carriage returns into log entries.
+// Fast path: zero-alloc unsafe.String aliasing p. Slow path: builds a clean
+// copy only from the first bad byte onward.
 //
-// The returned string aliases p when no control chars are present. Callers
-// must consume it synchronously before p is mutated. syslog.Writer.Info
-// satisfies this: it writes to the conn and returns; nothing retains the
-// string past return.
+// When no control chars are present the result aliases p, so callers must
+// consume it synchronously before p is mutated. syslog.Writer.Info satisfies
+// this; it retains nothing past return.
 func sanitize(p []byte) string {
 	firstBad := -1
 	for i, b := range p {
@@ -183,23 +178,17 @@ func (sw *syslogWriter) Close() error {
 	return sw.w.Close()
 }
 
-// openFile opens a log file for append-only writing. The path must be
-// absolute to prevent relative path confusion. Every ancestor from "/" down
-// to the parent directory must be a real directory — not a symlink — so
-// gopherd running as root does not silently redirect writes through an
-// operator-unexpected path. O_NOFOLLOW on the final open prevents the
-// kernel from following a symlink at the leaf.
+// openFile opens a log file for append-only writing. The path must be absolute,
+// and every ancestor must be a real directory (not a symlink) so gopherd running
+// as root cannot be tricked into redirecting writes; O_NOFOLLOW guards the leaf.
 //
-// A TOCTOU window exists between the ancestor walk and the final OpenFile:
-// an attacker who can swap a directory for a symlink in that window could
-// still redirect the write. Closing that window requires openat2(2) with
-// RESOLVE_NO_SYMLINKS, which is not in stdlib syscall and the project has
-// a zero-external-dependency policy. The remaining window requires write
-// access to a root-owned directory, which is a higher-privilege primitive
-// than this check already defends against.
+// A TOCTOU window remains between the ancestor walk and OpenFile. Closing it
+// needs openat2(2) with RESOLVE_NO_SYMLINKS, absent from stdlib syscall (the
+// project has a zero-external-dependency policy). Exploiting the window requires
+// write access to a root-owned directory, a higher privilege than this defends.
 //
-// cfg supplies the rotation fields (MaxSize, MaxFiles, Compress). When
-// MaxSize is empty the returned writer still tracks size but never rotates.
+// cfg supplies the rotation fields. With MaxSize empty the writer tracks size
+// but never rotates.
 func openFile(location string, cfg TargetConfig) (io.WriteCloser, error) {
 	path := strings.TrimPrefix(location, "file://")
 	if path == "" {
@@ -223,8 +212,6 @@ func openFile(location string, cfg TargetConfig) (io.WriteCloser, error) {
 		maxFiles = defaultMaxFiles
 	}
 
-	// O_NOFOLLOW causes the open to fail if the final path component is a
-	// symlink, preventing TOCTOU attacks without a separate Lstat check.
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW, 0o640)
 	if err != nil {
 		return nil, fmt.Errorf("open log file %s: %w", path, err)
@@ -247,9 +234,8 @@ func openFile(location string, cfg TargetConfig) (io.WriteCloser, error) {
 			return nil, fmt.Errorf("log file %s is world-accessible (mode %04o); refusing to append (service output may contain secrets)", path, perm)
 		}
 	}
-	// Seed size from the existing file so appends to a pre-existing log
-	// honour the rotation threshold immediately rather than only after the
-	// first gopherd-written byte.
+	// Seed size from the existing file so appends honour the rotation
+	// threshold immediately, not only after the first gopherd-written byte.
 	initialSize := info.Size()
 	return &rotatingFileWriter{
 		f:        f,
@@ -266,12 +252,11 @@ func openFile(location string, cfg TargetConfig) (io.WriteCloser, error) {
 // path must be absolute and already filepath.Clean'd.
 func checkAncestorsNotSymlinked(path string) error {
 	parent := filepath.Dir(path)
-	// Walk from "/" to parent inclusive. filepath.Clean guarantees no
-	// trailing separator and no "." / ".." segments to worry about.
+	// filepath.Clean guarantees no trailing separator and no "." / ".." segments.
 	cur := "/"
 	rel := strings.TrimPrefix(parent, "/")
 	if rel == "" {
-		// path is directly under "/", e.g. "/out.log" — nothing to walk.
+		// path is directly under "/" — nothing to walk.
 		return nil
 	}
 	for comp := range strings.SplitSeq(rel, "/") {

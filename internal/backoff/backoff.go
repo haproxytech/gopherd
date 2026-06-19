@@ -25,16 +25,16 @@ import (
 // Not thread-safe: Next() and Reset() must be called from a single goroutine or
 // under an external lock. In gopherd, both are called from the reap loop under d.mu.
 type Backoff struct {
-	delay   time.Duration // initial delay (default 500ms)
-	factor  float64       // multiplier per attempt (default 2.0)
-	Limit   time.Duration // max delay cap (default 30s)
-	atLimit bool          // true once math.Pow would exceed Limit; skips redundant computation (P3)
+	delay   time.Duration // initial delay
+	factor  float64       // multiplier per attempt
+	Limit   time.Duration // max delay cap
+	atLimit bool          // capped; skips further math.Pow (P3)
 
 	attempt int
 }
 
-// New creates a new Backoff with the given parameters.
-// Zero/negative values are replaced with defaults.
+// New creates a new Backoff. Zero/negative values are replaced with defaults
+// (delay 500ms, factor 2.0, limit 30s).
 func New(delay time.Duration, factor float64, limit time.Duration) *Backoff {
 	if delay <= 0 {
 		delay = 500 * time.Millisecond
@@ -52,7 +52,7 @@ func New(delay time.Duration, factor float64, limit time.Duration) *Backoff {
 func (b *Backoff) Next() time.Duration {
 	var d float64
 	if b.atLimit {
-		// Already at cap — skip math.Pow to avoid computing +Inf for large attempt (P3).
+		// Skip math.Pow, which would overflow to +Inf for large attempt (P3).
 		d = float64(b.Limit)
 	} else {
 		d = float64(b.delay) * math.Pow(b.factor, float64(b.attempt))
@@ -62,7 +62,6 @@ func (b *Backoff) Next() time.Duration {
 		}
 	}
 	b.attempt++
-	// Add ±10% jitter
 	jitter := d * 0.1 * (2*rand.Float64() - 1)
 	d += jitter
 	if d < 0 {

@@ -52,10 +52,8 @@ var signalMap = map[string]syscall.Signal{
 	"SIGXFSZ":   syscall.SIGXFSZ,
 }
 
-// sigNames is the reverse of signalMap, built lazily on first use so it
-// stays in sync with signalMap without a second hardcoded table. Used by
-// callers that need to render a syscall.Signal back to a name (e.g.
-// signal-rewrite map lookup, log output).
+// sigNames is the reverse of signalMap, derived from it to avoid a second
+// hardcoded table. Renders a syscall.Signal back to its name.
 var sigNames = func() map[syscall.Signal]string {
 	m := make(map[syscall.Signal]string, len(signalMap))
 	for name, sig := range signalMap {

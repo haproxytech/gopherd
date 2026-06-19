@@ -27,12 +27,10 @@ import (
 	"syscall"
 )
 
-// defaultMaxFiles is the number of rotated files kept when the user enables
-// rotation without specifying max-files.
+// defaultMaxFiles is used when rotation is enabled without an explicit max-files.
 const defaultMaxFiles = 5
 
-// parseByteSize parses human-readable byte sizes:
-// "10MiB", "100MB", "512KiB", "1GB", "42" (bare number = bytes).
+// parseByteSize parses human-readable byte sizes (e.g. "10MiB", "100MB", "42").
 // Empty input returns (0, nil) so callers can treat unset as "no rotation".
 func parseByteSize(s string) (int64, error) {
 	s = strings.TrimSpace(s)
@@ -85,9 +83,9 @@ func parseByteSize(s string) (int64, error) {
 	if v <= 0 {
 		return 0, fmt.Errorf("parse byte size %q: must be positive", s)
 	}
-	// Guard the float->int64 narrowing: an out-of-range float (huge value or
-	// +Inf) converts implementation-defined — amd64 wraps negative, silently
-	// disabling rotation. float64(math.MaxInt64) is exactly 2^63, so reject >=.
+	// Guard the float->int64 narrowing: out-of-range values convert
+	// implementation-defined (amd64 wraps negative, silently disabling
+	// rotation). float64(math.MaxInt64) is exactly 2^63, so reject >=.
 	if v >= float64(math.MaxInt64) {
 		return 0, fmt.Errorf("parse byte size %q: too large (max %d bytes)", s, int64(math.MaxInt64))
 	}
@@ -96,18 +94,15 @@ func parseByteSize(s string) (int64, error) {
 }
 
 // rotatingFileWriter is a file-backed log writer with optional size-triggered
-// rotation. Writes pass through sanitize() before hitting disk. When maxSize
-// is zero, rotation is disabled and the writer behaves like a plain append.
+// rotation. Writes pass through sanitize() before hitting disk. maxSize zero
+// disables rotation.
 //
-// Multiple services can share a single log target, so their PrefixWriters
-// (each with its own mutex) can invoke Write concurrently. fw.mu serialises
-// those calls, which is required for the size counter and for the rotate()
-// critical section. Without rotation the serialisation is redundant but
-// cheap compared to the syscall already in the write path.
+// Multiple services can share a target, so their PrefixWriters can invoke
+// Write concurrently; fw.mu serialises those calls to protect the size counter
+// and the rotate() critical section.
 //
-// Rotation (including gzip compression when enabled) is synchronous so
-// ordering is predictable and we do not need a background worker. For the
-// usual file sizes (MiB range) gzip latency is tens of milliseconds.
+// Rotation (including gzip) is synchronous to keep ordering predictable without
+// a background worker. For MiB-range files gzip latency is tens of ms.
 type rotatingFileWriter struct {
 	f        *os.File
 	path     string
@@ -124,21 +119,18 @@ func (fw *rotatingFileWriter) Write(p []byte) (int, error) {
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
 
-	// Rotate before writing when this call would cross the threshold.
-	// Skip rotation on the very first write of an empty file so an oversized
-	// single line does not trigger a pointless rotation of a 0-byte file.
+	// Rotate before writing when this call would cross the threshold. The
+	// size > 0 check avoids rotating a 0-byte file for one oversized line.
 	if fw.maxSize > 0 && fw.size > 0 && fw.size+int64(len(clean)) > fw.maxSize {
 		if err := fw.rotate(); err != nil {
 			log.Printf("log rotate %s: %v", fw.path, err)
-			// Fall through: prefer continuing to write to the (possibly
-			// still-open) file over losing the line.
+			// Fall through: prefer writing to the still-open file over
+			// losing the line.
 		}
 	}
 
 	if fw.f == nil {
-		// Previous rotate failed to reopen. Returning an error lets
-		// PrefixWriter and its other extras continue without us, but
-		// signals the operator via logs.
+		// Previous rotate failed to reopen; signal the operator via logs.
 		return 0, fmt.Errorf("log file %s not open", fw.path)
 	}
 	n, err := io.WriteString(fw.f, clean)
@@ -163,16 +155,14 @@ func (fw *rotatingFileWriter) Close() error {
 // rotate closes the current file, shifts rotated suffixes up by one, and
 // reopens a fresh file at fw.path. Caller must hold fw.mu.
 //
-// Naming: rotated files are <path>.1, <path>.2, ... <path>.N. When compress
-// is enabled they become <path>.1.gz, <path>.2.gz, .... Both naming schemes
-// are tolerated during shifts so a config flip of the compress flag leaves
-// no files orphaned forever.
+// Rotated files are <path>.1 .. <path>.N (or .gz when compress is enabled).
+// Both naming schemes are handled during shifts so flipping the compress flag
+// leaves no files orphaned.
 func (fw *rotatingFileWriter) rotate() error {
-	// Re-validate the directory chain before rename/remove/reopen: openFile
-	// checked once, but an ancestor could be swapped for a symlink before this
-	// late rotation, redirecting these root operations. Returning early leaves
-	// fw.f open so Write keeps logging. Restores openFile's guarantee; the same
-	// residual check-to-syscall TOCTOU window remains.
+	// Re-validate the directory chain: an ancestor could be swapped for a
+	// symlink between openFile and this rotation, redirecting these root
+	// operations. Returning early leaves fw.f open so Write keeps logging.
+	// The same residual check-to-syscall TOCTOU window remains.
 	if err := checkAncestorsNotSymlinked(fw.path); err != nil {
 		return fmt.Errorf("rotate %s: %w", fw.path, err)
 	}
@@ -188,8 +178,7 @@ func (fw *rotatingFileWriter) rotate() error {
 	_ = os.Remove(plain(fw.maxFiles))
 	_ = os.Remove(gz(fw.maxFiles))
 
-	// Shift .N-1 → .N, down to .1 → .2. Handle both suffix styles so a
-	// previous run with a different compress setting does not leak files.
+	// Shift .N-1 → .N, down to .1 → .2, handling both suffix styles.
 	for i := fw.maxFiles - 1; i >= 1; i-- {
 		for _, src := range []string{gz(i), plain(i)} {
 			if _, err := os.Lstat(src); err != nil {
@@ -205,7 +194,6 @@ func (fw *rotatingFileWriter) rotate() error {
 		}
 	}
 
-	// Move the live file to .1, then optionally gzip into .1.gz.
 	rotated := plain(1)
 	if err := os.Rename(fw.path, rotated); err != nil {
 		return fmt.Errorf("rename %s: %w", fw.path, err)

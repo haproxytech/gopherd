@@ -35,13 +35,12 @@ func main() {
 
 	_ = version.Set()
 
-	// Split os.Args on "--": everything after is entrypoint extra args.
-	// Also, if the first arg starts with "-", it's neither a client command
-	// nor a passthrough binary — treat all args as entrypoint args.
+	// Split os.Args on "--": everything after is entrypoint args. A leading
+	// "-" arg is neither a client command nor a passthrough binary, so treat
+	// all args as entrypoint args.
 	var entrypointArgs []string
 	programArgs := os.Args[1:]
 	if len(programArgs) > 0 && strings.HasPrefix(programArgs[0], "-") {
-		// All flag-style args belong to the entrypoint target service.
 		// Strip a leading "--" separator if present.
 		if programArgs[0] == "--" {
 			entrypointArgs = programArgs[1:]
@@ -76,7 +75,7 @@ func main() {
 			fmt.Println(version.Tag)
 			return
 		}
-		// Passthrough: exec the command directly, replacing this process.
+		// Passthrough: exec the command, replacing this process.
 		path, err := exec.LookPath(first)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "gopherd: %q not found (not a known command and not on PATH)\n", first)

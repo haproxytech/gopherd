@@ -71,13 +71,13 @@ func ExpandFileRefs(s string) (string, error) {
 }
 
 // openFileTemplate opens clean for reading. As root, contents flow into a
-// child's argv/env, so a symlink must not redirect the read to a root-only
-// file. Without follow, leaf and ancestor symlinks are rejected. With follow
-// (for K8s ..data/ secret symlinks), os.Root confines resolution to clean's
-// directory so a swapped symlink cannot escape to e.g. /etc/shadow; since
-// os.Root maps absolute targets relative to the root, follow requires relative
-// symlinks. O_NONBLOCK keeps a FIFO target from blocking PID 1's config load
-// before the not-a-regular-file check rejects it.
+// child's argv/env, so a symlink must not redirect the read to a root-only file.
+// Without follow, leaf and ancestor symlinks are rejected. With follow (for K8s
+// ..data/ secret symlinks), os.Root confines resolution to clean's directory so
+// a swapped symlink cannot escape to e.g. /etc/shadow; os.Root maps absolute
+// targets relative to the root, so follow requires relative symlinks. O_NONBLOCK
+// keeps a FIFO target from blocking PID 1's config load before the
+// not-a-regular-file check rejects it.
 func openFileTemplate(clean string, follow bool) (*os.File, error) {
 	if follow {
 		root, err := os.OpenRoot(filepath.Dir(clean))

@@ -44,7 +44,7 @@ func IsClientCommand(args []string) bool {
 	if ClientCommands[args[0]] {
 		return true
 	}
-	// "<service> <action>" form: second arg is the action keyword.
+	// "<service> <action>" form.
 	if len(args) >= 2 && serviceActions[args[1]] {
 		return true
 	}
@@ -66,15 +66,13 @@ func ClientCommandList() []string {
 // server doesn't stall the CLI or startup probe indefinitely.
 const clientDialTimeout = 5 * time.Second
 
-// clientReadIdleTimeout bounds how long the client will wait for the next
-// response line from the server. Generous enough that `logs -f` does not
-// time out during legitimate quiet periods, short enough that a dead/hung
+// clientReadIdleTimeout bounds the wait for the next response line. Generous
+// enough not to interrupt `logs -f` quiet periods, short enough that a hung
 // daemon eventually unblocks the CLI.
 const clientReadIdleTimeout = 10 * time.Minute
 
-// clientMaxLine caps how large a single response line may be before the
-// scanner reports an error. Raised above bufio's 64 KiB default so log lines
-// with a long stack trace or compact JSON still fit.
+// clientMaxLine caps a single response line. Raised above bufio's 64 KiB
+// default so log lines with a long stack trace or compact JSON still fit.
 const clientMaxLine = 1 << 20
 
 // IsAlive reports whether a trusted gopherd is reachable at socketPath. The
@@ -99,10 +97,7 @@ func IsAlive(socketPath string) bool {
 // for the two-argument service commands. `status` accepts an optional
 // `-o <fmt>` flag which is passed through verbatim.
 func buildClientCommand(args []string) (string, error) {
-	// Separate any trailing `-o <fmt>` flag so the positional-arg cases below
-	// don't need to know about it. Only `status` consumes the flag server-
-	// side; passing it through with any other command would be an error
-	// caught later.
+	// Strip a trailing `-o <fmt>` so the positional cases below stay simple.
 	positional, flagSuffix, err := extractOutputFlag(args)
 	if err != nil {
 		return "", err
@@ -126,7 +121,7 @@ func buildPositionalCommand(args []string) (string, error) {
 	case len(args) >= 2 && args[0] == "logs":
 		return strings.Join(args, " "), nil
 	case len(args) == 2:
-		// Support both "gopherd <service> <action>" and "gopherd <action> <service>".
+		// Both "<service> <action>" and "<action> <service>" are accepted.
 		action, svcName := args[1], args[0]
 		if serviceActions[args[0]] {
 			action, svcName = args[0], args[1]
@@ -140,9 +135,8 @@ func buildPositionalCommand(args []string) (string, error) {
 	}
 }
 
-// extractOutputFlag pulls a trailing `-o <fmt>` out of args. Only `status` is
-// expected to use it; restricting recognition to a trailing position keeps
-// service names containing the literal string "-o" workable.
+// extractOutputFlag pulls a trailing `-o <fmt>` out of args. Recognizing it
+// only in trailing position keeps service names containing "-o" workable.
 func extractOutputFlag(args []string) (positional []string, flagSuffix string, err error) {
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] != "-o" {
@@ -186,13 +180,11 @@ func RunClient(args []string) {
 	fmt.Fprintf(conn, "%s\n", command)
 
 	scanner := bufio.NewScanner(conn)
-	// Grow the scanner buffer so long log lines (stack traces, dense JSON)
-	// stream through without bufio.ErrTooLong.
+	// Grow the buffer so long log lines stream through without bufio.ErrTooLong.
 	scanner.Buffer(make([]byte, 64*1024), clientMaxLine)
 	hasError := false
 	for {
-		// Refresh the read deadline before each line so that a hung daemon
-		// unblocks the CLI after clientReadIdleTimeout instead of forever.
+		// Refresh per line so a hung daemon unblocks the CLI rather than waiting forever.
 		_ = conn.SetReadDeadline(time.Now().Add(clientReadIdleTimeout))
 		if !scanner.Scan() {
 			break

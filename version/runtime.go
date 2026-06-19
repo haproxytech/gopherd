@@ -21,7 +21,7 @@ import (
 	"strings"
 )
 
-// Build metadata populated by Set().
+// Build metadata, populated by Set.
 var (
 	Repo       = ""
 	Version    = "dev"

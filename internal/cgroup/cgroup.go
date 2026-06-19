@@ -23,8 +23,7 @@ import (
 	"strings"
 )
 
-// ProcSelfCgroup is the path to the cgroup membership file.
-// Variable so tests can override it.
+// ProcSelfCgroup is the cgroup membership file. Variable so tests can override it.
 var ProcSelfCgroup = "/proc/self/cgroup"
 
 // SelfPath reads /proc/self/cgroup and returns the cgroup path for the
@@ -50,7 +49,6 @@ func SelfPath(prefix string) string {
 	}
 	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		if prefix == "0::" {
-			// Cgroup v2: line starts with "0::".
 			if path, ok := strings.CutPrefix(line, "0::"); ok {
 				return path
 			}
@@ -70,18 +68,17 @@ func SelfPath(prefix string) string {
 	return ""
 }
 
-// maxCgroupFileSize caps how many bytes ReadRootFile will consume from a
-// single cgroup file. Real cgroup and cpuset files are tens of bytes; 64 KiB
-// leaves plenty of headroom for pathological cpuset.cpus lists while
-// preventing a hostile or mis-bind-mounted file from driving PID 1 into an
-// unbounded allocation.
+// maxCgroupFileSize caps bytes read from a single cgroup file. Real files are
+// tens of bytes; 64 KiB covers pathological cpuset.cpus lists while preventing
+// a hostile or mis-bind-mounted file from driving PID 1 into unbounded
+// allocation.
 const maxCgroupFileSize = 64 << 10
 
 // ReadRootFile reads a file relative to an os.Root handle, capped at
 // maxCgroupFileSize bytes. Returns nil on any error (file not found,
 // permission denied, traversal blocked).
 func ReadRootFile(root *os.Root, name string) []byte {
-	// Strip leading slash — os.Root paths are relative to the root.
+	// os.Root paths are relative to the root.
 	name = strings.TrimPrefix(name, "/")
 	if name == "" {
 		return nil

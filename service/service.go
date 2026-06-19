@@ -55,9 +55,8 @@ const (
 const DefaultKillDelay = 5 * time.Second
 
 // ParseExitAction parses an exit action string, returning the default if empty.
-// An unknown action returns the default together with a non-nil error. This
-// lets callers recover (e.g. reload() logging the error and reverting) rather
-// than crashing PID 1, which a log.Fatalf from library code would do.
+// An unknown action returns the default plus a non-nil error so callers can
+// recover (e.g. revert a reload) rather than crashing PID 1.
 func ParseExitAction(s string, defaultAction ExitAction) (ExitAction, error) {
 	switch ExitAction(s) {
 	case ActionRestart, ActionShutdown, ActionSuccessShutdown, ActionFailureShutdown, ActionIgnore:
@@ -104,44 +103,38 @@ type Process struct {
 	StartupTimeout string
 	DotEnv         string
 	Prefix         string
-	// SDNotifyTimeout is the maximum duration to wait for a READY=1 datagram
-	// on $NOTIFY_SOCKET after the service has started. Empty = 60s default.
-	// Only meaningful when SDNotify is true.
+	// SDNotifyTimeout is the max wait for a READY=1 datagram on $NOTIFY_SOCKET
+	// after start. Empty = 60s default. Only meaningful when SDNotify is true.
 	SDNotifyTimeout string
-	// ParentDeathSignal is the signal name (e.g. "SIGTERM", "SIGKILL") that
-	// the kernel will deliver to the child when its parent thread dies. Set
-	// via prctl(PR_SET_PDEATHSIG) after fork, before exec. Empty = unset.
-	// Linux-only: silently ignored on non-Linux builds.
+	// ParentDeathSignal is the signal name the kernel delivers to the child
+	// when its parent thread dies (via PR_SET_PDEATHSIG, set after fork before
+	// exec). Empty = unset. Linux-only; ignored on non-Linux builds.
 	ParentDeathSignal string
-	// ExitCodeMap remaps observed child exit codes before they feed into
-	// OnSuccess/OnFailure dispatch and before they become gopherd's own
-	// exit code. Typical use: neutralise SIGTERM→143 and SIGKILL→137 so a
-	// cleanly-stopped service is not reported as a failure. A nil or empty
-	// map means "pass the code through unchanged".
+	// ExitCodeMap remaps observed child exit codes before OnSuccess/OnFailure
+	// dispatch and before they become gopherd's own exit code. Typical use:
+	// neutralise SIGTERM→143 and SIGKILL→137 so a cleanly-stopped service is
+	// not reported as a failure. Nil/empty passes codes through unchanged.
 	ExitCodeMap map[int]int
 	// SignalRewrite opts this service into signal forwarding and optionally
-	// rewrites the signal on the way to the child. Keys and values are
-	// signal names ("SIGUSR1", "USR1", "HUP", ...). When nil/empty, gopherd
-	// does NOT forward arbitrary received signals to the child; forwarding
-	// is strictly opt-in. Does not affect the shutdown/reload signal paths
-	// — gopherd's own reactions to SIGTERM/SIGINT/SIGHUP still run.
+	// rewrites the signal on the way to the child. Keys and values are signal
+	// names ("SIGUSR1", "USR1", ...). Forwarding is strictly opt-in: when
+	// nil/empty, received signals are not forwarded. Does not affect gopherd's
+	// own reactions to SIGTERM/SIGINT/SIGHUP.
 	SignalRewrite map[string]string
 	Args          []string
 	After         []string
 	Before        []string
 	Requires      []string
 	// RemoveEnv lists env keys to delete from the child's final environment
-	// after merging OS env (if pass-env is true), dotenv, and per-process
-	// environment. Used to drop shared dotenv keys that one service must
-	// not see, or to strip specific OS env vars when opting in to pass-env
-	// for other reasons.
+	// after merging OS env, dotenv, and per-process environment. Used to drop
+	// a shared dotenv key one service must not see, or to strip OS env vars
+	// when opting in to pass-env.
 	RemoveEnv         []string
 	BackoffFactor     float64
 	UseEntrypointArgs bool
-	// SDNotify enables the sd_notify-compatible readiness protocol: gopherd
-	// allocates a per-service abstract unix datagram socket, exposes it via
-	// $NOTIFY_SOCKET in the child env, and blocks the start of dependents
-	// until the child writes "READY=1" to that socket.
+	// SDNotify enables the sd_notify readiness protocol: gopherd allocates a
+	// per-service abstract unix datagram socket, exposes it via $NOTIFY_SOCKET,
+	// and blocks dependents until the child writes "READY=1" to it.
 	SDNotify bool
 	// StrictGroups drops a named user's supplementary groups when an explicit
 	// group is set. Default false keeps the user's full membership.
@@ -162,9 +155,9 @@ type Service struct {
 	killTimer *time.Timer // deferred SIGKILL; cancelled on exit to prevent PID reuse race
 	done      chan struct{}
 
-	// sdNotifyListener owns the abstract unix datagram socket for sd_notify
-	// readiness signalling when Proc.SDNotify is set. Created in Start() and
-	// closed in MarkExited(); nil otherwise. Guarded by svc.mu.
+	// sdNotifyListener owns the sd_notify abstract socket when Proc.SDNotify
+	// is set. Created in Start, closed in MarkExited; nil otherwise. Guarded
+	// by svc.mu.
 	sdNotifyListener *sdnotify.Listener
 
 	Name      string
@@ -175,8 +168,8 @@ type Service struct {
 
 	stopSignal syscall.Signal
 	killDelay  time.Duration
-	// Pid is stored atomically so control-socket callbacks can read it
-	// without holding svc.mu, while Start() writes it under svc.mu.
+	// Pid is atomic so control-socket callbacks can read it without holding
+	// svc.mu, while Start() writes it under svc.mu.
 	Pid atomic.Int64
 
 	mu      sync.Mutex
@@ -186,10 +179,9 @@ type Service struct {
 	Oneshot bool
 }
 
-// New creates a new Service from a Process config.
-// globalPrefix is the top-level prefix setting; per-process Prefix overrides it.
-// Returns an error rather than fatal-logging so a malformed reload config does
-// not crash PID 1.
+// New creates a new Service from a Process config. globalPrefix is the
+// top-level prefix; per-process Prefix overrides it. Returns an error rather
+// than fatal-logging so a malformed reload config does not crash PID 1.
 func New(p Process, globalPrefix string) (*Service, error) {
 	name := p.Name
 	if name == "" {
@@ -277,9 +269,8 @@ func New(p Process, globalPrefix string) (*Service, error) {
 }
 
 // stripDotEnvComment removes an unquoted inline comment from a .env value.
-// Inline comments start with " #" (space followed by hash) outside of any
-// quoted region. Single and double quotes protect hash characters, matching
-// the same convention used by Docker's --env-file and most .env parsers.
+// An inline comment starts with " #" outside any quoted region; quotes protect
+// hash characters, matching Docker's --env-file and most .env parsers.
 //
 // Examples:
 //
@@ -293,7 +284,7 @@ func stripDotEnvComment(v string) string {
 	for i := 0; i < len(v); i++ {
 		switch {
 		case v[i] == '\\' && inDouble && i+1 < len(v):
-			i++ // skip escaped character inside double-quoted string
+			i++ // skip escaped char inside double quotes
 		case v[i] == '\'' && !inDouble:
 			inSingle = !inSingle
 		case v[i] == '"' && !inSingle:
@@ -305,8 +296,8 @@ func stripDotEnvComment(v string) string {
 	return v
 }
 
-// dotenvUnescapeDouble processes backslash escape sequences in a .env
-// double-quoted value. Handles the common sequences: \n, \t, \r, \\, \".
+// dotenvUnescapeDouble processes backslash escapes (\n, \t, \r, \\, \") in a
+// .env double-quoted value.
 func dotenvUnescapeDouble(s string) string {
 	if !strings.ContainsRune(s, '\\') {
 		return s
@@ -340,9 +331,9 @@ func dotenvUnescapeDouble(s string) string {
 	return b.String()
 }
 
-// isValidEnvKey reports whether k is a valid POSIX environment variable
-// name: [A-Za-z_][A-Za-z0-9_]*. Rejecting malformed keys in dotenv files
-// prevents shell-unsafe values from leaking into cmd.Env.
+// isValidEnvKey reports whether k is a valid POSIX environment variable name:
+// [A-Za-z_][A-Za-z0-9_]*. Rejecting malformed keys prevents shell-unsafe
+// values from leaking into cmd.Env.
 func isValidEnvKey(k string) bool {
 	if k == "" {
 		return false
@@ -350,11 +341,8 @@ func isValidEnvKey(k string) bool {
 	for i, r := range k {
 		switch {
 		case r == '_':
-			// always allowed
 		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z':
-			// always allowed
-		case i > 0 && r >= '0' && r <= '9':
-			// digits only after the first character
+		case i > 0 && r >= '0' && r <= '9': // digits only after the first char
 		default:
 			return false
 		}
@@ -362,10 +350,9 @@ func isValidEnvKey(k string) bool {
 	return true
 }
 
-// checkAncestorsNotSymlinked walks every ancestor of path from "/" down to
-// the immediate parent and rejects any that is a symlink or not a directory.
-// path must be absolute and already filepath.Clean'd. Duplicated deliberately
-// from logger/ so each package stays self-contained.
+// checkAncestorsNotSymlinked rejects any ancestor of path (from "/" to the
+// immediate parent) that is a symlink or not a directory. path must be absolute
+// and Clean'd. Duplicated from logger/ so each package stays self-contained.
 func checkAncestorsNotSymlinked(path string) error {
 	parent := filepath.Dir(path)
 	cur := "/"
@@ -389,22 +376,18 @@ func checkAncestorsNotSymlinked(path string) error {
 	return nil
 }
 
-// maxDotEnvSize caps how many bytes parseDotEnv will consume from a
-// dotenv file. Real dotenv files are typically under 10 KiB; 1 MiB
-// leaves plenty of headroom while preventing an operator-pointed or
-// swapped-out huge file from OOM-killing PID 1.
+// maxDotEnvSize caps parseDotEnv's read so a huge or swapped-out file cannot
+// OOM-kill PID 1. Real dotenv files are typically under 10 KiB.
 const maxDotEnvSize = 1 << 20
 
-// parseDotEnv reads a dotenv file and returns key-value pairs.
-// Lines are in the format KEY=value. Empty lines and lines starting with # are skipped.
-// Uses O_NOFOLLOW to reject symlinks atomically on the leaf and walks the
-// ancestor directories with Lstat to reject any symlink above the leaf. Without
-// the ancestor walk, an attacker with write access to a directory on the
-// dotenv path could swap an intermediate component for a symlink and redirect
-// the open to a file of their choice; O_NOFOLLOW only guards the final component.
+// parseDotEnv reads a dotenv file and returns KEY=value pairs; empty lines and
+// lines starting with # are skipped. O_NOFOLLOW rejects a symlinked leaf, and
+// the Lstat ancestor walk rejects symlinks above it: otherwise an attacker with
+// write access to a directory on the path could swap an intermediate component
+// for a symlink and redirect the open, since O_NOFOLLOW only guards the leaf.
 func parseDotEnv(path string) (map[string]string, error) {
-	// Resolve to an absolute path so the walker has a stable starting point
-	// even when the operator configured a relative dotenv path.
+	// Absolute path so the ancestor walker has a stable start even for a
+	// relative configured path.
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("dotenv %s: %w", path, err)
@@ -426,8 +409,7 @@ func parseDotEnv(path string) (map[string]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dotenv %s: stat: %w", path, err)
 	}
-	// Reject non-regular files — a FIFO here would block io.ReadAll forever,
-	// matching the guard used for the main config file.
+	// Reject non-regular files: a FIFO would block io.ReadAll forever.
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("dotenv %s is not a regular file (mode %s); refusing to open", path, info.Mode())
 	}
@@ -444,9 +426,6 @@ func parseDotEnv(path string) (map[string]string, error) {
 			log.Printf("warning: dotenv %s is group-writable (mode %04o, owner uid=%d)", path, mode.Perm(), stat.Uid)
 		}
 	}
-	// Cap the dotenv read so a huge or swapped-out file cannot drive
-	// PID 1 into an unbounded allocation. Dotenv files are typically
-	// under 10 KiB; 1 MiB is generous while still bounded.
 	data, err := io.ReadAll(io.LimitReader(f, maxDotEnvSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("dotenv %s: %w", path, err)
@@ -454,7 +433,7 @@ func parseDotEnv(path string) (map[string]string, error) {
 	if int64(len(data)) > maxDotEnvSize {
 		return nil, fmt.Errorf("dotenv %s exceeds %d-byte size cap", path, maxDotEnvSize)
 	}
-	// Strip UTF-8 BOM if present so the first key is not prefixed with it.
+	// Strip UTF-8 BOM so the first key is not prefixed with it.
 	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
 	env := make(map[string]string)
 	for line := range strings.SplitSeq(string(data), "\n") {
@@ -468,20 +447,16 @@ func parseDotEnv(path string) (map[string]string, error) {
 		}
 		k = strings.TrimSpace(k)
 		if k == "" {
-			// Skip lines like "=value" that produce an empty key; an empty key
-			// would create an invalid "=value" entry in cmd.Env (B5).
+			// Skip "=value" lines; an empty key yields an invalid cmd.Env entry (B5).
 			continue
 		}
 		if !isValidEnvKey(k) {
 			return nil, fmt.Errorf("dotenv %s: invalid env key %q (must match [A-Za-z_][A-Za-z0-9_]*)", path, k)
 		}
 		v = strings.TrimSpace(v)
-		// Strip unquoted inline comments (e.g. "value # comment" → "value").
 		v = stripDotEnvComment(v)
-		// Strip matching outer quotes. Double-quoted values have their
-		// backslash escape sequences processed (e.g. \n, \t) consistent
-		// with how the YAML parser handles double-quoted strings.
-		// Single-quoted values are taken literally.
+		// Strip matching outer quotes. Double-quoted values get escape
+		// sequences processed (matching YAML); single-quoted are literal.
 		if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
 			v = dotenvUnescapeDouble(v[1 : len(v)-1])
 		} else if len(v) >= 2 && v[0] == '\'' && v[len(v)-1] == '\'' {
@@ -492,15 +467,12 @@ func parseDotEnv(path string) (map[string]string, error) {
 	return env, nil
 }
 
-// buildEnvMap builds a merged environment map from OS env, dotenv file, and per-process overrides.
-// Priority (highest last): OS env < dotenv < per-process environment.
-// If passEnv is false (the default), the parent's environment is not inherited — only dotenv
-// and per-process vars are used. This prevents secrets from leaking to children.
-// Set passEnv: true explicitly to opt in to inheritance of gopherd's OS env.
-// The returned userKeys set identifies keys set by dotenv or procEnv; only
-// values at those keys are eligible for {{...}} template expansion, so
-// inherited OS env values that happen to contain "{{" are passed through
-// verbatim.
+// buildEnvMap merges OS env, dotenv, and per-process overrides, with priority
+// (highest last) OS env < dotenv < per-process. When passEnv is false (the
+// default) the parent env is not inherited, preventing secrets from leaking to
+// children. The returned userKeys set marks keys from dotenv or procEnv; only
+// those values are eligible for {{...}} expansion, so inherited OS env values
+// containing "{{" pass through verbatim.
 func buildEnvMap(dotenvPath string, procEnv map[string]string, passEnv bool) (map[string]string, map[string]bool, error) {
 	env := make(map[string]string)
 	if passEnv {
@@ -528,48 +500,37 @@ func buildEnvMap(dotenvPath string, procEnv map[string]string, passEnv bool) (ma
 	return env, userKeys, nil
 }
 
-// templateRe matches {{.VAR_NAME}} and {{.VAR_NAME:-default}} placeholders.
-// Submatches: (1) var name, (2) default text (may be empty; capture group is
-// absent when no ":-default" suffix is present). The default is matched
-// permissively as anything up to the first "}"; "}}" cannot appear inside by
-// construction, so nesting is not supported.
+// templateRe matches {{.VAR}} and {{.VAR:-default}} placeholders. Submatches:
+// (1) var name, (2) default text (absent when no ":-default"). The default is
+// matched up to the first "}", so nesting is not supported.
 var templateRe = regexp.MustCompile(`\{\{\s*\.(\w+)\s*(?::-([^}]*))?\s*\}\}`)
 
 // memRe matches {{mem EXPR}} placeholders for memory expressions.
 var memRe = regexp.MustCompile(`\{\{\s*mem\s+(.+?)\s*\}\}`)
 
-// cpuRe matches {{cpu}} and {{cpu EXPR}} placeholders for CPU expressions.
-// Bare {{cpu}} (no expression) expands to the available CPU count directly.
-// The `cpu` token must be followed by whitespace or `}}` so identifiers like
-// `{{cpus 50%}}` or `{{cpu_x}}` do not match and are left as literal text
-// instead of producing a confusing "invalid cpu expression" error.
+// cpuRe matches {{cpu}} and {{cpu EXPR}}; bare {{cpu}} expands to the available
+// CPU count. The `cpu` token must be followed by whitespace or `}}` so e.g.
+// `{{cpus 50%}}` or `{{cpu_x}}` stay literal instead of erroring.
 var cpuRe = regexp.MustCompile(`\{\{\s*cpu(?:\s+(.+?))?\s*\}\}`)
 
 // expandTemplates resolves {{.VAR}}, {{.VAR:-default}}, {{mem EXPR}}, and
-// {{cpu EXPR}} placeholders in a string slice. Environment lookups use env;
-// memory expressions use totalMiB; CPU expressions use totalCPUs. When an env
-// var is unset or empty, {{.VAR:-default}} expands to the literal default
-// text, while {{.VAR}} expands to "" and emits a warning — a silent empty
-// substitution of e.g. a password template has historically caused outages.
+// {{cpu EXPR}} placeholders in a string slice (env lookups via env, memory via
+// totalMiB, CPU via totalCPUs). For an unset/empty var, {{.VAR:-default}}
+// expands to the default while {{.VAR}} expands to "" and warns — a silent
+// empty substitution (e.g. a password template) has historically caused outages.
 //
-// Expansion is single-pass: if a variable's value itself contains placeholders
-// they are not re-expanded. Variables defined in the environment: block therefore
-// cannot reference each other.
-//
-// Uses FindAllStringSubmatchIndex for a single-pass replacement, avoiding the
-// double-regex overhead of ReplaceAllStringFunc + FindStringSubmatch.
+// Expansion is single-pass: a value's own placeholders are not re-expanded, so
+// environment: entries cannot reference each other.
 func expandTemplates(values []string, env map[string]string, totalMiB int64, totalCPUs int) ([]string, error) {
 	out := make([]string, len(values))
-	// warned tracks keys that already produced a "not set" warning during this
-	// expansion call, so a restart loop with the same misconfigured argv does
-	// not flood the log on every iteration.
+	// Track keys already warned about this call so a restart loop with the same
+	// misconfigured argv does not flood the log.
 	warned := make(map[string]struct{})
 	for i, s := range values {
 		if !strings.Contains(s, "{{") {
 			out[i] = s
 			continue
 		}
-		// Expand {{mem EXPR}} placeholders first.
 		if locs := memRe.FindAllStringSubmatchIndex(s, -1); locs != nil {
 			var b strings.Builder
 			prev := 0
@@ -585,7 +546,6 @@ func expandTemplates(values []string, env map[string]string, totalMiB int64, tot
 			b.WriteString(s[prev:])
 			s = b.String()
 		}
-		// Expand {{cpu EXPR}} placeholders.
 		if locs := cpuRe.FindAllStringSubmatchIndex(s, -1); locs != nil {
 			var b strings.Builder
 			prev := 0
@@ -606,9 +566,8 @@ func expandTemplates(values []string, env map[string]string, totalMiB int64, tot
 			b.WriteString(s[prev:])
 			s = b.String()
 		}
-		// Expand {{file "/path"}} placeholders. Runs before {{.VAR}} so file
-		// contents containing template-like text (e.g. an example config
-		// snippet committed as a secret) are not re-expanded.
+		// Expand {{file "/path"}} before {{.VAR}} so file contents containing
+		// template-like text are not re-expanded.
 		if strings.Contains(s, "{{") && strings.Contains(s, "file") {
 			expanded, err := ExpandFileRefs(s)
 			if err != nil {
@@ -616,7 +575,6 @@ func expandTemplates(values []string, env map[string]string, totalMiB int64, tot
 			}
 			s = expanded
 		}
-		// Expand {{.VAR}} and {{.VAR:-default}} placeholders.
 		if locs := templateRe.FindAllStringSubmatchIndex(s, -1); locs != nil {
 			var b strings.Builder
 			prev := 0
@@ -628,10 +586,8 @@ func expandTemplates(values []string, env map[string]string, totalMiB int64, tot
 				if (!ok || val == "") && hasDefault {
 					val = s[loc[4]:loc[5]]
 				} else if !ok {
-					// Empty substitution of a missing variable can silently
-					// corrupt arguments (e.g. an empty password flag). Warn
-					// once per missing key per call so a service restart loop
-					// does not flood the log with the same warning line.
+					// A silent empty substitution can corrupt arguments (e.g.
+					// an empty password flag). Warn once per missing key.
 					if _, already := warned[name]; !already {
 						warned[name] = struct{}{}
 						log.Printf("warning: template variable {{.%s}} is not set in environment; expanding to empty string", name)
@@ -650,44 +606,40 @@ func expandTemplates(values []string, env map[string]string, totalMiB int64, tot
 
 // Start launches the process. Returns the PID on success.
 func (s *Service) Start() (pid int, err error) {
-	// Build environment, resolve credentials, and expand templates before
-	// acquiring the lock to minimize time spent in the critical section.
-	// The default when PassEnv is unset (nil) is FALSE: gopherd does not
-	// forward its own OS env to children unless the operator opts in with
-	// pass-env: true. This prevents operator secrets in gopherd's env
-	// from silently leaking into every child.
+	// Build env, resolve credentials, and expand templates before locking to
+	// minimize the critical section. PassEnv defaults to false (nil): gopherd
+	// does not forward its own OS env to children unless the operator opts in,
+	// so operator secrets do not silently leak into every child.
 	passEnv := s.Proc.PassEnv != nil && *s.Proc.PassEnv
 	env, userKeys, err := buildEnvMap(s.Proc.DotEnv, s.Proc.Environment, passEnv)
 	if err != nil {
 		return 0, err
 	}
-	// Drop any keys the operator listed in remove-env. Runs after the OS /
-	// dotenv / procEnv merge so a shared dotenv key can be suppressed for
-	// one service without modifying the dotenv file.
+	// Drop remove-env keys after the merge so a shared dotenv key can be
+	// suppressed for one service without editing the dotenv file.
 	for _, k := range s.Proc.RemoveEnv {
 		delete(env, k)
 		delete(userKeys, k)
 	}
 
 	// Resolved up front: the sd_notify listener needs the child's uid to
-	// authenticate READY datagrams. Pure function, safe to hoist.
+	// authenticate READY datagrams.
 	cred, err := ResolveCredential(s.Proc.User, s.Proc.Group, s.Proc.UserID, s.Proc.GroupID, s.Proc.StrictGroups)
 	if err != nil {
 		return 0, err
 	}
 
-	// Allocate the sd_notify listener before exec so NOTIFY_SOCKET is set
-	// in the child env. A pre-existing listener (restart path) is replaced
-	// because the old socket may still hold stale READY state from the
-	// prior run — dependents of a restarting service must wait for the new
-	// instance to re-notify readiness on its own terms.
+	// Allocate the sd_notify listener before exec so NOTIFY_SOCKET is in the
+	// child env. On restart, replace any existing listener: the old socket may
+	// hold stale READY state, and dependents must wait for the new instance to
+	// re-notify readiness.
 	if s.Proc.SDNotify {
 		if s.sdNotifyListener != nil {
 			_ = s.sdNotifyListener.Close()
 			s.sdNotifyListener = nil
 		}
-		// The child sends READY=1 from its resolved uid (or gopherd's own euid
-		// when no privilege drop applies); only that uid or root is trusted.
+		// Trust only the child's resolved uid (or gopherd's euid when no
+		// privilege drop applies) or root for READY=1.
 		allowedUID := os.Geteuid()
 		if cred != nil {
 			allowedUID = int(cred.Uid)
@@ -698,10 +650,9 @@ func (s *Service) Start() (pid int, err error) {
 		}
 		s.sdNotifyListener = l
 		env["NOTIFY_SOCKET"] = l.Path()
-		// Not marked as a userKey: the value is a literal socket path, never
-		// contains "{{", and must not be subject to template expansion.
-		// Release the listener on any subsequent error so the abstract
-		// socket name is not leaked; MarkExited handles the success path.
+		// Not a userKey: a literal socket path must not be template-expanded.
+		// Release the listener on any later error so the abstract socket name
+		// is not leaked; MarkExited handles the success path.
 		defer func() {
 			if err != nil && s.sdNotifyListener != nil {
 				_ = s.sdNotifyListener.Close()
@@ -725,11 +676,9 @@ func (s *Service) Start() (pid int, err error) {
 	// controlling TTY stops a dropped-priv child TIOCSTI-injecting under -t.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
-	// Parent-death signal: the kernel delivers sig to the child when its
-	// parent thread terminates, so children do not linger after gopherd is
-	// killed abruptly (e.g. SIGKILL). Validated at config load, so we
-	// surface any residual parse error here as an internal bug rather than
-	// a user-facing one. Non-Linux builds silently skip via setPdeathsig.
+	// Parent-death signal: the kernel delivers sig to the child when gopherd's
+	// thread dies, so children do not linger after an abrupt kill. Validated at
+	// config load. Non-Linux builds skip via setPdeathsig.
 	if s.Proc.ParentDeathSignal != "" {
 		pdeathSig, perr := ParseSignal(s.Proc.ParentDeathSignal)
 		if perr != nil {
@@ -742,17 +691,12 @@ func (s *Service) Start() (pid int, err error) {
 		cmd.Dir = s.Proc.WorkingDir
 	}
 
-	// Set the child's environment explicitly when pass-env is off (default),
-	// dotenv / per-process vars are supplied, remove-env lists any keys
-	// to strip, or a notify listener injected NOTIFY_SOCKET. When cmd.Env
-	// is nil, Go inherits the parent env — only safe when pass-env is on
-	// and no other env configuration applies.
+	// Set cmd.Env explicitly unless pass-env is on with no other env config:
+	// a nil cmd.Env makes Go inherit the parent env, which is only safe then.
 	if !passEnv || s.Proc.DotEnv != "" || len(s.Proc.Environment) > 0 || len(s.Proc.RemoveEnv) > 0 || s.Proc.SDNotify {
-		// Expand {{mem}}, {{cpu}}, and {{.VAR}} only in user-defined env
-		// values (dotenv + procEnv). Inherited OS env values are passed
-		// through verbatim so that incidental "{{" sequences (e.g. a CI
-		// variable containing template-like text from a commit message)
-		// do not trigger expansion failures.
+		// Expand templates only in user-defined values (dotenv + procEnv).
+		// Inherited OS env passes through verbatim so incidental "{{" does not
+		// trigger expansion failures.
 		envVals := make([]string, 0, len(env))
 		envKeys := make([]string, 0, len(env))
 		userVals := make([]string, 0, len(userKeys))
@@ -772,10 +716,8 @@ func (s *Service) Start() (pid int, err error) {
 		for i, idx := range userIdx {
 			envVals[idx] = expanded[i]
 		}
-		// Build "key=value" strings reusing a scratch buffer to avoid one
-		// make-per-entry. kvBuf is reallocated only when the next entry does
-		// not fit in the existing capacity; otherwise the same backing array
-		// is reused and string(kvBuf) copies just the used portion.
+		// Build "key=value" strings reusing kvBuf to avoid one make per entry;
+		// reallocated only when the next entry does not fit.
 		cmd.Env = make([]string, len(env))
 		var kvBuf []byte
 		for i, k := range envKeys {
@@ -794,7 +736,7 @@ func (s *Service) Start() (pid int, err error) {
 		cmd.SysProcAttr.Credential = cred
 	}
 
-	// Lock only for the fork/exec and state update.
+	// Lock only for fork/exec and the state update.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -811,12 +753,10 @@ func (s *Service) Start() (pid int, err error) {
 	return cmd.Process.Pid, nil
 }
 
-// Stop sends the configured stop signal to the process group and schedules
-// SIGKILL after kill-delay. Signaling the group (negative PID) ensures that
-// children forked by the service also receive the signal.
-// The stopped flag is set so the reap loop knows this was an intentional exit.
-// The deferred SIGKILL timer is cancelled by MarkExited to prevent sending
-// SIGKILL to a recycled PID.
+// Stop signals the process group (negative PID, so forked children are hit too)
+// with the configured stop signal and schedules SIGKILL after kill-delay. Sets
+// the stopped flag so the reap loop knows the exit was intentional. MarkExited
+// cancels the deferred SIGKILL to avoid signalling a recycled PID.
 func (s *Service) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -830,11 +770,10 @@ func (s *Service) Stop() {
 	}
 	_ = syscall.Kill(-pid, s.stopSignal)
 	if s.killDelay > 0 {
-		// Cancel any previously scheduled SIGKILL before creating a new one.
-		// Without this, a second Stop() call (e.g. from a concurrent control
-		// socket client and a check-failure handler) would overwrite s.killTimer
-		// leaving the first timer unreachable and unable to be cancelled by
-		// MarkExited, risking a SIGKILL to a recycled PID.
+		// Cancel any previously scheduled SIGKILL first. A second Stop() (e.g.
+		// concurrent control-socket client and check-failure handler) would
+		// otherwise overwrite s.killTimer, leaving the first timer uncancellable
+		// by MarkExited and risking a SIGKILL to a recycled PID.
 		if s.killTimer != nil {
 			s.killTimer.Stop()
 		}
@@ -843,19 +782,13 @@ func (s *Service) Stop() {
 			if kpid <= 0 {
 				return
 			}
-			// MarkExited calls killTimer.Stop() under s.mu, but Stop()
-			// returns false and does not wait if the callback is already
-			// running. Without a lock the callback could observe a
-			// still-running service, then race MarkExited and signal a
-			// PID that the kernel has since recycled.
-			//
-			// Hold s.mu across the Kill so the callback is serialized
-			// with MarkExited: either MarkExited runs first (we see
-			// running=false and return) or the Kill completes before
-			// MarkExited can acquire the lock. The caller of MarkExited
-			// has already reaped the PID via Wait4 before taking s.mu,
-			// so the check-then-kill sequence inside the lock still
-			// cannot race with PID recycling for that service.
+			// Hold s.mu across the Kill to serialize with MarkExited:
+			// timer.Stop() does not wait if this callback is already running,
+			// so without the lock we could observe a still-running service and
+			// signal a PID the kernel has recycled. Under the lock, either
+			// MarkExited ran first (running=false, we return) or the Kill
+			// completes before it acquires the lock. MarkExited's caller has
+			// already reaped the PID via Wait4, so no recycling race remains.
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			if !s.running.Load() || int(s.Pid.Load()) != kpid {
@@ -866,17 +799,15 @@ func (s *Service) Stop() {
 	}
 }
 
-// Signal sends an arbitrary signal to the entire process group. The service is
-// started with Setsid so it leads its own process group (pgid == pid); -pid
-// then addresses all processes in the group, not just the leader. This matches
-// the behaviour of Stop().
+// Signal sends sig to the entire process group. Setsid makes the service lead
+// its own group (pgid == pid), so -pid addresses all members, like Stop().
 func (s *Service) Signal(sig os.Signal) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.running.Load() || s.cmd == nil || s.cmd.Process == nil {
 		return
 	}
-	// Use comma-ok to avoid a panic if sig is not a syscall.Signal (B6).
+	// comma-ok avoids a panic if sig is not a syscall.Signal (B6).
 	sysSig, ok := sig.(syscall.Signal)
 	if !ok {
 		return
@@ -888,19 +819,15 @@ func (s *Service) Signal(sig os.Signal) {
 	_ = syscall.Kill(-pid, sysSig)
 }
 
-// MarkExited marks the service as no longer running and returns how long it ran.
-// It cancels any pending deferred SIGKILL to prevent sending signals to a
-// recycled PID.
+// MarkExited marks the service as no longer running, cancels any pending
+// SIGKILL, and returns how long it ran.
 //
-// Atomically clears s.running and s.Pid BEFORE acquiring s.mu so that
-// concurrent Stop, Signal, and killTimer callers — which all re-read these
-// atomics after locking s.mu — see the invalidated values and their
-// `pid <= 0` / `Pid.Load() != kpid` guards trip. By the time Wait4 has
-// returned and the reap loop reaches this function, the kernel has already
-// freed the pid for reuse; the atomic stores bound the window in which a
-// concurrent signaller could issue syscall.Kill against a just-recycled
-// pid. The residual window cannot be closed without pidfd_send_signal,
-// which is not in syscall stdlib.
+// Clears s.running and s.Pid atomically BEFORE acquiring s.mu so concurrent
+// Stop, Signal, and killTimer callers (which re-read these atomics after
+// locking) trip their `pid <= 0` / `Pid.Load() != kpid` guards. Since Wait4 has
+// already freed the pid for reuse, this bounds the window in which a concurrent
+// signaller could Kill a just-recycled pid. The residual window cannot be
+// closed without pidfd_send_signal, which is not in the syscall stdlib.
 func (s *Service) MarkExited() time.Duration {
 	s.running.Store(false)
 	s.Pid.Store(0)
@@ -922,11 +849,9 @@ func (s *Service) MarkExited() time.Duration {
 	return time.Since(s.startedAt)
 }
 
-// WaitSDNotifyReady blocks until the service writes "READY=1" to
-// $NOTIFY_SOCKET or ctx is done. Returns an error if the service was not
-// started with SDNotify enabled, or if ctx expires first. Safe to call
-// from outside the service goroutine; the listener itself is
-// concurrency-safe.
+// WaitSDNotifyReady blocks until the service writes "READY=1" to $NOTIFY_SOCKET
+// or ctx is done. Returns an error if SDNotify was not enabled or ctx expires
+// first. Safe to call from outside the service goroutine.
 func (s *Service) WaitSDNotifyReady(ctx context.Context) error {
 	s.mu.Lock()
 	l := s.sdNotifyListener
@@ -937,17 +862,16 @@ func (s *Service) WaitSDNotifyReady(ctx context.Context) error {
 	return l.WaitReady(ctx)
 }
 
-// WasStopped returns true if the service exited because we called Stop()
-// (as opposed to exiting on its own). This distinguishes intentional signal-death
-// from unexpected exits for the purpose of exit code propagation.
+// WasStopped reports whether the service exited because Stop() was called rather
+// than on its own, distinguishing intentional signal-death from unexpected exits
+// for exit-code propagation.
 func (s *Service) WasStopped() bool {
 	return s.stopped.Load()
 }
 
-// RemapExitCode applies the service's exit-code-map to the observed code.
-// When the map is empty or has no entry for code, the original value is
-// returned unchanged. Used by the reap loop before OnSuccess/OnFailure
-// dispatch and before the code is propagated as gopherd's own exit.
+// RemapExitCode applies the service's exit-code-map to code, returning it
+// unchanged when the map is empty or has no entry. Used by the reap loop before
+// OnSuccess/OnFailure dispatch and before propagation as gopherd's own exit.
 func (s *Service) RemapExitCode(code int) int {
 	if len(s.Proc.ExitCodeMap) == 0 {
 		return code
@@ -958,11 +882,10 @@ func (s *Service) RemapExitCode(code int) int {
 	return code
 }
 
-// RewriteSignal looks up sig in the service's signal-rewrite map and
-// returns (rewritten, true) if an entry exists, or (0, false) when the
-// service did not opt in to forwarding for this signal. Unrecognised
-// target names fall back to the original signal rather than failing
-// silently; names are pre-validated at config load so this is defensive.
+// RewriteSignal returns (rewritten, true) if sig has an entry in the
+// signal-rewrite map, or (0, false) when the service did not opt in to
+// forwarding it. An unparseable target falls back to the original signal;
+// targets are pre-validated at config load, so this is defensive.
 func (s *Service) RewriteSignal(sig syscall.Signal) (syscall.Signal, bool) {
 	if len(s.Proc.SignalRewrite) == 0 {
 		return 0, false
@@ -980,10 +903,9 @@ func (s *Service) RewriteSignal(sig syscall.Signal) (syscall.Signal, bool) {
 	return parsed, true
 }
 
-// SignalName returns the canonical "SIGFOO" name for a syscall.Signal,
-// or its numeric form when no name is known. Used by RewriteSignal for
-// map lookup and by the yml package to canonicalise signal-rewrite keys.
-// Mirrors how ParseSignal accepts both "SIGUSR1" and "USR1".
+// SignalName returns the canonical "SIGFOO" name for sig, or its numeric form
+// when unknown. Used by RewriteSignal and the yml package to canonicalise
+// signal-rewrite keys; mirrors ParseSignal accepting both "SIGUSR1" and "USR1".
 func SignalName(sig syscall.Signal) string {
 	if name, ok := sigNames[sig]; ok {
 		return name
@@ -996,13 +918,13 @@ func (s *Service) IsRunning() bool {
 	return s.running.Load()
 }
 
-// Done returns a channel that is closed when the service exits.
-// Callers can select on this instead of polling IsRunning().
+// Done returns a channel closed when the service exits, so callers can select
+// instead of polling IsRunning().
 func (s *Service) Done() <-chan struct{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.done == nil {
-		// Service was never started or already exited — return a closed channel.
+		// Never started or already exited: return a closed channel.
 		ch := make(chan struct{})
 		close(ch)
 		return ch

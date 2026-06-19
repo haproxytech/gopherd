@@ -25,9 +25,8 @@ import (
 	"strings"
 )
 
-// maxParseDepth caps how deeply parseBlock may recurse. Guards against a
-// malformed or adversarial config exhausting the stack of the PID 1 process
-// via pathologically nested structures.
+// maxParseDepth caps parseBlock recursion so a malformed or adversarial
+// config cannot exhaust the PID 1 process stack via deep nesting.
 const maxParseDepth = 64
 
 // Node represents a parsed YAML value.
@@ -54,20 +53,19 @@ const (
 
 // Parse parses YAML text into a node tree.
 func Parse(data []byte) (*Node, error) {
-	// Strip UTF-8 BOM so the first key does not parse with a \ufeff prefix
-	// when configs are saved by Windows editors.
+	// Strip UTF-8 BOM (Windows editors) so the first key does not parse with
+	// a \ufeff prefix.
 	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
-	// Normalize bare-\r line endings (classic Mac) to \n so they split correctly;
-	// \r\n is already handled by the TrimRight inside splitLines. Single
-	// pass: on a CRLF file the previous two-pass approach re-allocated the whole
-	// buffer twice.
+	// Normalize bare-\r line endings (classic Mac) to \n; \r\n is handled by
+	// the TrimRight in splitLines. Single pass to avoid the two reallocations
+	// the previous approach did on CRLF files.
 	if bytes.IndexByte(data, '\r') >= 0 {
 		out := make([]byte, 0, len(data))
 		for i := 0; i < len(data); i++ {
 			if data[i] == '\r' {
 				out = append(out, '\n')
 				if i+1 < len(data) && data[i+1] == '\n' {
-					i++ // skip the \n in a \r\n pair
+					i++ // \r\n pair
 				}
 				continue
 			}
@@ -101,10 +99,9 @@ func splitLines(data []byte) ([]rawLine, error) {
 		if trimmed == "" || strings.TrimSpace(trimmed) == "" {
 			continue
 		}
-		// Tab-indented lines are rejected rather than silently flattened:
-		// indent is counted in spaces only, so a leading \t would parse as
-		// indent=0 and attach the line at the wrong depth. YAML 1.2 forbids
-		// tabs for indentation.
+		// Reject tab indentation: indent is counted in spaces only, so a
+		// leading \t would parse as indent=0 and attach at the wrong depth.
+		// YAML 1.2 forbids tabs for indentation anyway.
 		if len(raw) > 0 && raw[0] == '\t' {
 			return nil, fmt.Errorf("line %d: tab character used for indentation; YAML requires spaces", i)
 		}
@@ -130,9 +127,8 @@ func stripInlineComment(s string) string {
 		}
 		switch c {
 		case '\\':
-			// Inside double-quoted strings, a backslash escapes the next
-			// character (e.g. \" does not close the string).
-			// Single-quoted strings treat backslash as literal.
+			// In double-quoted strings a backslash escapes the next char
+			// (e.g. \" does not close); single-quoted treats it as literal.
 			if inDouble {
 				escaped = true
 			}
@@ -175,9 +171,8 @@ func parseBlock(lines []rawLine, pos, minIndent, depth int) (*Node, int, error) 
 
 func parseMapping(lines []rawLine, pos, minIndent, depth int) (*Node, int, error) {
 	m := &Node{kind: kindMapping}
-	// seenKeys detects duplicate mapping keys at the same level so an
-	// ambiguous config fails loudly rather than silently keeping first-wins
-	// semantics that differ from YAML 1.2.
+	// Detect duplicate keys at the same level so an ambiguous config fails
+	// loudly instead of silently keeping first-wins.
 	seenKeys := make(map[string]int)
 	baseIndent := -1 // indent of the first key; all siblings must match
 
@@ -187,12 +182,11 @@ func parseMapping(lines []rawLine, pos, minIndent, depth int) (*Node, int, error
 			break
 		}
 		if baseIndent < 0 {
-			// First key establishes the required indent for all siblings.
+			// First key sets the required indent for all siblings.
 			baseIndent = line.indent
 			minIndent = line.indent - 1
 		} else if line.indent != baseIndent {
-			// A different indent means this line belongs to a parent or
-			// child block — stop consuming siblings here.
+			// Different indent: this line belongs to a parent or child block.
 			break
 		}
 
@@ -293,8 +287,8 @@ func splitCSV(s string) []string {
 		}
 		if inQuote {
 			if c == '\\' && quoteChar == '"' {
-				// Backslash only escapes inside double-quoted segments,
-				// matching YAML semantics (single-quoted treats \ as literal).
+				// Backslash escapes only in double-quoted segments
+				// (single-quoted treats \ as literal), per YAML.
 				current.WriteByte(c)
 				escaped = true
 				continue
@@ -375,12 +369,11 @@ func unescapeDouble(s string) string {
 	return b.String()
 }
 
-// findColon returns the index of the first ':' that is followed by a space
-// or appears at end-of-string. It does not account for quoting. The only
-// risk is a key name that itself contains ": " (colon-space), which is not
-// a valid YAML identifier and not used in any gopherd config key.
-// URL-like values (e.g. "http://host:port") are safe because "://" does not
-// match the "colon followed by space" pattern.
+// findColon returns the index of the first ':' followed by a space or at
+// end-of-string. It ignores quoting; the only risk is a key containing ": ",
+// which is not a valid YAML identifier nor used by any gopherd key. URL-like
+// values (e.g. "http://host:port") are safe since "://" lacks the trailing
+// space.
 func findColon(s string) int {
 	for i := range len(s) {
 		if s[i] == ':' {
@@ -439,8 +432,8 @@ func (n *Node) Bool() bool {
 	return s == "true" || s == "yes"
 }
 
-// BoolPtr returns a pointer to a bool if the node has a value, or nil if
-// the key is absent. This allows distinguishing "not set" from "set to false".
+// BoolPtr returns a pointer to the bool value, or nil if absent, so callers
+// can distinguish "not set" from "set to false".
 func (n *Node) BoolPtr() *bool {
 	if n == nil || n.String() == "" {
 		return nil
@@ -477,7 +470,7 @@ func (n *Node) StringMap() map[string]string {
 	return m
 }
 
-// Entries returns a defensive copy of the mapping entries; mutating it cannot
+// Entries returns a defensive copy of the mapping entries so mutation cannot
 // corrupt the node tree.
 func (n *Node) Entries() []MapEntry {
 	if n == nil || n.kind != kindMapping {
@@ -486,7 +479,7 @@ func (n *Node) Entries() []MapEntry {
 	return slices.Clone(n.mapping)
 }
 
-// Items returns a defensive copy of the sequence items; mutating it cannot
+// Items returns a defensive copy of the sequence items so mutation cannot
 // corrupt the node tree.
 func (n *Node) Items() []*Node {
 	if n == nil || n.kind != kindSequence {

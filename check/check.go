@@ -29,7 +29,6 @@ import (
 	"time"
 )
 
-// Pre-allocated error for the no-check-type case (should never happen in practice).
 var errNoCheckType = fmt.Errorf("no check type configured")
 
 // HTTP defines an HTTP health check.
@@ -68,8 +67,8 @@ type Checker struct {
 	onFailureFn  func(checkName string)          // called when threshold breached
 	metricsFn    func(checkName string, ok bool) // called after every check
 	credential   *syscall.Credential             // optional: run exec checks as this user
-	httpClient   *http.Client                    // cached HTTP client (created once)
-	httpReq      *http.Request                   // cached base request (cloned per-check)
+	httpClient   *http.Client
+	httpReq      *http.Request // cached base request, cloned per-check
 	name         string
 	tcpAddr      string // cached "host:port" for TCP checks
 	cfg          Config
@@ -146,7 +145,7 @@ func New(name string, cfg Config, onFailure func(string), metricsFn func(string,
 	}
 	if cfg.HTTP != nil {
 		c.httpClient = c.buildHTTPClient()
-		// Pre-build the base request to avoid parsing the URL on every check.
+		// Pre-build the base request to avoid re-parsing the URL on every check.
 		req, err := http.NewRequest(http.MethodGet, cfg.HTTP.URL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("check %s: invalid http url %q: %v", name, cfg.HTTP.URL, err)
@@ -169,9 +168,8 @@ func New(name string, cfg Config, onFailure func(string), metricsFn func(string,
 // Run starts the periodic check loop in a goroutine.
 func (c *Checker) Run() {
 	go func() {
-		// Initial delay before first check (default: 1x period, configurable via initial-delay).
-		// Use time.NewTimer so the timer is cancelled and GC-eligible when Stop() fires
-		// during the delay, rather than running until the delay expires (B1).
+		// Use a timer (not time.After) so it is stopped and GC-eligible if Stop()
+		// fires during the initial delay (B1).
 		timer := time.NewTimer(c.initialDelay)
 		select {
 		case <-timer.C:
@@ -210,11 +208,10 @@ func (c *Checker) Run() {
 				c.healthy = true
 			}
 			c.mu.Unlock()
-			// Call onFailureFn outside the lock to avoid a lock-order inversion:
-			// onFailureFn acquires d.mu, and d.mu is also held when stopChecks()
-			// calls c.Stop(). Releasing c.mu first keeps the ordering consistent.
-			// Guard with stopped so a callback queued just before Stop() does not
-			// fire after the checker has been shut down (B3).
+			// Call onFailureFn outside c.mu to avoid lock-order inversion:
+			// onFailureFn acquires d.mu, which is also held when stopChecks()
+			// calls c.Stop(). The stopped guard prevents a callback queued just
+			// before Stop() from firing after shutdown (B3).
 			if callFailure && c.onFailureFn != nil && !c.stopped.Load() {
 				c.onFailureFn(c.name)
 			}
@@ -229,8 +226,8 @@ func (c *Checker) Run() {
 }
 
 // WaitReady runs the check in a loop until it passes once or ctx is cancelled.
-// The polling interval is capped at 1 second so a check with a long period
-// (e.g., 30s) does not stall service startup for an entire period between tries.
+// The poll interval is capped at 1s so a long period (e.g. 30s) does not stall
+// startup for a full period between tries.
 func (c *Checker) WaitReady(ctx context.Context) error {
 	if err := c.Execute(); err != nil {
 		log.Printf("check %s: waiting (initial probe failed: %v)", c.name, err)
@@ -297,17 +294,15 @@ func (c *Checker) buildHTTPClient() *http.Client {
 			},
 		}
 	} else {
-		// Own transport (cloned from stdlib defaults) so each checker has an
-		// isolated idle-conn pool — otherwise one checker's Stop() (which calls
-		// CloseIdleConnections) evicts conns still used by other checkers.
+		// Own transport so each checker has an isolated idle-conn pool; otherwise
+		// one checker's Stop() (CloseIdleConnections) evicts conns still in use by
+		// other checkers.
 		client.Transport = http.DefaultTransport.(*http.Transport).Clone()
 	}
 	return client
 }
 
 func (c *Checker) checkHTTP(ctx context.Context) error {
-	// Reuse cached request with the check's context. WithContext does a
-	// shallow copy but avoids re-parsing the URL on every check.
 	req := c.httpReq.WithContext(ctx)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -334,19 +329,17 @@ func (c *Checker) checkTCP(ctx context.Context) error {
 
 func (c *Checker) checkExec(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, c.cfg.Exec.Command, c.cfg.Exec.Args...)
-	// Setsid: own process group so cancel-SIGKILL via Kill(-pid) hits only the
-	// check and descendants (I2); no controlling TTY blocks TIOCSTI injection.
+	// Setsid gives the check its own process group (so Kill(-pid) on cancel
+	// reaches all descendants, I2) and no controlling TTY (blocks TIOCSTI
+	// injection).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if c.credential != nil {
 		cmd.SysProcAttr.Credential = c.credential
 	}
-	// On context cancellation, signal the entire process group so any
-	// grandchildren the check forked are also killed. The default
-	// exec.CommandContext Cancel only sends SIGKILL to the process leader,
-	// leaving descendants to be reparented to PID 1 — where gopherd then
-	// reaps them, but with all of the check's side effects still in flight.
-	// WaitDelay bounds how long we wait for the process group to exit after
-	// the context is cancelled; after that, SIGKILL is forcibly delivered.
+	// Signal the whole process group on cancel so forked grandchildren die too;
+	// the default Cancel only kills the leader, leaving descendants reparented to
+	// PID 1 with side effects still in flight. WaitDelay bounds the grace period
+	// before SIGKILL is forced.
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return nil

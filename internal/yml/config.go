@@ -32,7 +32,7 @@ import (
 )
 
 // envFromOS returns the current process environment as a map.
-// Exposed as a var so tests can stub the environment source.
+// A var so tests can stub the environment source.
 var envFromOS = func() map[string]string {
 	env := os.Environ()
 	m := make(map[string]string, len(env))
@@ -44,7 +44,6 @@ var envFromOS = func() map[string]string {
 	return m
 }
 
-// Config is the top-level gopherd configuration.
 // Shutdown order modes.
 const (
 	ShutdownReverseDep   = "reverse-dep"
@@ -58,34 +57,31 @@ type Config struct {
 	LogTargets map[string]logger.TargetConfig
 	Prefix     string
 	// PassEnv is the global default for the per-service pass-env flag.
-	// A nil pointer means "not set in config", which the consumer treats as
-	// false (do not inherit gopherd's environment). This default prevents
-	// operator secrets in gopherd's own env from silently leaking into
+	// nil means "not set", treated as false: child processes do not inherit
+	// gopherd's environment, so operator secrets cannot silently leak into
 	// every child. Explicit true opts in to inheritance.
 	PassEnv *bool
 
 	ShutdownOrder string
-	// InitStopSignal lists the signals that cause gopherd itself to begin
-	// a graceful shutdown. When unset, defaults to [SIGTERM, SIGINT].
-	// SIGKILL/SIGSTOP are rejected at load (cannot be caught).
+	// InitStopSignal lists signals that trigger gopherd's own graceful
+	// shutdown. Defaults to [SIGTERM, SIGINT]. SIGKILL/SIGSTOP are rejected
+	// at load since they cannot be caught.
 	InitStopSignal []string
 	Control        control.Config
 	Processes      []service.Process
 	NoLogo         bool
-	// Subreaper enables PR_SET_CHILD_SUBREAPER at startup so orphaned
-	// descendants are re-parented to gopherd (and reaped by its Wait4 loop)
-	// instead of the real PID 1. Useful when gopherd itself is not PID 1
-	// (e.g. inside docker exec, k8s sidecars, nested init).
+	// Subreaper enables PR_SET_CHILD_SUBREAPER so orphaned descendants are
+	// re-parented to gopherd (and reaped by its Wait4 loop) instead of the
+	// real PID 1. Needed when gopherd is not PID 1 (docker exec, k8s
+	// sidecars, nested init).
 	Subreaper bool
 }
 
-// ShutdownSignals returns the set of signals that, when received by
-// gopherd, trigger a graceful shutdown. Uses `init-stop-signal` when
-// set; defaults to {SIGTERM, SIGINT} otherwise.
+// ShutdownSignals returns the signals that trigger gopherd's graceful
+// shutdown: init-stop-signal when set, else {SIGTERM, SIGINT}.
 //
-// Signal names are already validated at parse time, so parse failures
-// here would indicate an internal bug; they are skipped rather than
-// returned as an error so PID 1 never crashes on a malformed set.
+// Names are validated at parse time, so a parse failure here is an internal
+// bug; such entries are skipped rather than erroring so PID 1 never crashes.
 func (c *Config) ShutdownSignals() map[syscall.Signal]bool {
 	out := make(map[syscall.Signal]bool)
 	if len(c.InitStopSignal) == 0 {
@@ -136,9 +132,8 @@ func Unmarshal(data []byte) (*Config, error) {
 	}
 	if n := root.Get("init-stop-signal"); n != nil {
 		cfg.InitStopSignal = n.Strings()
-		// Validate each entry and reject non-catchable signals (SIGKILL /
-		// SIGSTOP), which the kernel never delivers to a userspace handler
-		// — putting them in the list would be dead config.
+		// Reject SIGKILL/SIGSTOP: the kernel never delivers them to a
+		// userspace handler, so listing them would be dead config.
 		for _, name := range cfg.InitStopSignal {
 			sig, err := service.ParseSignal(name)
 			if err != nil {
@@ -171,9 +166,9 @@ func Unmarshal(data []byte) (*Config, error) {
 		}
 	}
 
-	// Env is snapshotted once per load so all processes see a consistent view
-	// and we avoid rebuilding the map per process. Hot reload picks up new
-	// values because the whole config is re-parsed.
+	// Snapshot env once per load so all processes see a consistent view and
+	// the map is not rebuilt per process. Hot reload re-parses the whole
+	// config, so new values are still picked up.
 	env := envFromOS()
 
 	for _, item := range root.Get("processes").Items() {
@@ -181,9 +176,8 @@ func Unmarshal(data []byte) (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
-		// If per-service pass-env is unset, inherit the global default
-		// when explicitly set. Either side left nil falls through to the
-		// consumer, which treats nil as false (do not inherit gopherd's env).
+		// Unset per-service pass-env inherits the global default. If both
+		// stay nil, the consumer treats it as false.
 		if p.PassEnv == nil && cfg.PassEnv != nil {
 			v := *cfg.PassEnv
 			p.PassEnv = &v
@@ -207,8 +201,7 @@ func Unmarshal(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("no processes defined")
 	}
 
-	// Computed once: ShutdownSignals depends only on config-level fields, not
-	// on the per-process loop below.
+	// Computed once: independent of the per-process loop below.
 	shutdownSet := cfg.ShutdownSignals()
 	for _, p := range cfg.Processes {
 		name := p.Name
@@ -237,13 +230,6 @@ func Unmarshal(data []byte) (*Config, error) {
 				return nil, fmt.Errorf("process %q on-check-failure[%s]: %w", name, checkName, err)
 			}
 		}
-		// signal-rewrite keys must not overlap with signals gopherd itself
-		// consumes (SIGHUP = reload, plus every entry in the effective
-		// shutdown set — the init-stop-signal list or the legacy
-		// {SIGTERM, SIGINT, stop-signal} default): such entries would be
-		// silently dead code because the switch in run.go dispatches
-		// those signals before ever reaching the forward branch. Fail
-		// loudly at load.
 		if err := validateSignalRewrite(name, p.SignalRewrite, shutdownSet); err != nil {
 			return nil, err
 		}
@@ -253,11 +239,9 @@ func Unmarshal(data []byte) (*Config, error) {
 }
 
 // validateSignalRewrite rejects signal-rewrite keys that collide with
-// signals gopherd always handles itself (SIGHUP = reload) or with any
-// signal in the effective shutdown set (init-stop-signal, or the legacy
-// {SIGTERM, SIGINT, stop-signal} default). Such entries would be dead
-// code because the switch in run.go dispatches those signals before ever
-// reaching the forward branch.
+// signals gopherd handles itself (SIGHUP = reload, or any signal in the
+// shutdown set). The switch in run.go dispatches those before reaching the
+// forward branch, so such entries would be dead code.
 func validateSignalRewrite(procName string, rewrite map[string]string, shutdownSet map[syscall.Signal]bool) error {
 	if len(rewrite) == 0 {
 		return nil
@@ -278,8 +262,8 @@ func validateSignalRewrite(procName string, rewrite map[string]string, shutdownS
 
 func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 	rawStartup := n.Get("startup").String()
-	// {{file}} expansion happens before {{.VAR}}: a file may itself contain
-	// text that looks like a template, and we don't want to re-expand it.
+	// {{file}} expands before {{.VAR}}: file contents that look like a
+	// template must not be re-expanded.
 	fileExpanded, err := service.ExpandFileRefs(rawStartup)
 	if err != nil {
 		name := n.Get("name").String()
@@ -292,16 +276,14 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		return service.Process{}, fmt.Errorf("process %q startup: %w", name, err)
 	}
 	startup := strings.TrimSpace(service.ExpandEnvRefs(fileExpanded, env))
-	// An env-var reference that resolves to empty means "disabled", so the
-	// common `startup: "{{.START_X}}"` pattern gates the service on whether
-	// $START_X is set. A literal empty string (no reference) keeps today's
-	// behavior of falling through to the default "enabled" branch.
+	// An env-var reference resolving to empty means "disabled", so
+	// `startup: "{{.START_X}}"` gates the service on whether $START_X is set.
+	// A literal empty string (no reference) falls through to "enabled".
 	if startup == "" && strings.Contains(rawStartup, "{{") {
 		startup = "disabled"
 	}
-	// Validate here rather than in Unmarshal so we can redact the expanded
-	// value when it came from a template — a misconfigured `startup:
-	// "{{.DB_PASS}}"` would otherwise echo the secret into the daemon log.
+	// Validate here, not in Unmarshal, so a template-expanded value can be
+	// redacted: `startup: "{{.DB_PASS}}"` must not echo the secret to the log.
 	switch startup {
 	case "", "enabled", "disabled", "oneshot":
 		// valid
@@ -353,14 +335,11 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		ParentDeathSignal: n.Get("parent-death-signal").String(),
 		SignalRewrite:     n.Get("signal-rewrite").StringMap(),
 	}
-	// exit-code-map: YAML keys parse as strings; convert to int-keyed map.
-	// Accept either a raw integer (e.g. "143") or a signal name (e.g.
-	// "SIGTERM" / "TERM") on both sides; signal names translate to the
-	// shell convention 128+signum, which is the same code waitStatusCode
-	// reports for signal-terminated children. Mixed forms are fine:
-	//   exit-code-map:
-	//     SIGTERM: 0
-	//     137: 0
+	// exit-code-map: YAML keys parse as strings; convert to an int-keyed map.
+	// Both sides accept a raw integer ("143") or a signal name ("SIGTERM" /
+	// "TERM"); signal names map to the shell convention 128+signum, matching
+	// what waitStatusCode reports for signal-terminated children. Mixed forms
+	// are fine.
 	if raw := n.Get("exit-code-map").StringMap(); len(raw) > 0 {
 		p.ExitCodeMap = make(map[int]int, len(raw))
 		for k, v := range raw {
@@ -383,9 +362,9 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 			p.ExitCodeMap[keyInt] = valInt
 		}
 	}
-	// signal-rewrite: validate both key and value as known signal names at
-	// load time. Canonicalise to "SIGFOO" form so the runtime lookup does
-	// not have to re-parse on every event.
+	// signal-rewrite: validate key and value as known signal names, and
+	// canonicalise to "SIGFOO" form so the runtime lookup need not re-parse
+	// on every event.
 	if len(p.SignalRewrite) > 0 {
 		canon := make(map[string]string, len(p.SignalRewrite))
 		for k, v := range p.SignalRewrite {
@@ -442,8 +421,8 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		p.BackoffFactor = v
 	}
 	p.Prefix = n.Get("prefix").String()
-	// {{file}}/{{.VAR}} in args land in the child's argv, world-readable via
-	// /proc/<pid>/cmdline. Warn so secrets move to environment:.
+	// {{file}}/{{.VAR}} in args land in argv, world-readable via
+	// /proc/<pid>/cmdline; warn so secrets move to environment:.
 	if slices.ContainsFunc(p.Args, argSecretTemplateRe.MatchString) {
 		name := p.Name
 		if name == "" {
@@ -454,13 +433,13 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 	return p, nil
 }
 
-// argSecretTemplateRe matches arg templates whose value lands in argv:
-// {{file}} and {{.VAR}}. {{cpu}}/{{mem}} expand to integers, so excluded.
+// argSecretTemplateRe matches arg templates whose value lands in argv
+// ({{file}}, {{.VAR}}). {{cpu}}/{{mem}} expand to integers, so excluded.
 var argSecretTemplateRe = regexp.MustCompile(`\{\{\s*(?:file\b|\.)`)
 
-// parseExitCode accepts either a decimal integer exit code ("143") or a
-// signal name ("SIGTERM", "TERM") and returns the numeric exit status. The
-// shell convention is 128+signum, matching what waitStatusCode reports for
+// parseExitCode accepts a decimal exit code ("143") or a signal name
+// ("SIGTERM", "TERM"), returning the numeric exit status. Signal names use
+// the shell convention 128+signum, matching what waitStatusCode reports for
 // signal-terminated children, so `SIGTERM` and `143` are interchangeable.
 func parseExitCode(s string) (int, error) {
 	s = strings.TrimSpace(s)

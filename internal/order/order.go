@@ -40,10 +40,9 @@ func TopoSort(services []Service) ([]string, error) {
 		names[s.Name] = true
 	}
 
-	// Build adjacency list: edge from A -> B means A must start before B.
-	// seenEdge tracks inserted (from, to) pairs to deduplicate edges that
-	// appear in multiple constraint lists (e.g., both after and requires).
-	// Duplicate edges would double-count inDegree and cause false cycle reports.
+	// Adjacency list: edge A -> B means A must start before B. seenEdge
+	// deduplicates edges appearing in multiple constraint lists (e.g. after
+	// and requires); duplicates would double-count inDegree and report false cycles.
 	edges := make(map[string][]string)
 	inDegree := make(map[string]int)
 	seenEdge := make(map[[2]string]bool)
@@ -85,9 +84,8 @@ func TopoSort(services []Service) ([]string, error) {
 		}
 	}
 
-	// Kahn's algorithm. Use a head index instead of queue = queue[1:] to
-	// avoid the O(n) slice shift on every dequeue. Pre-allocate to avoid
-	// repeated reallocations as nodes are enqueued (P2).
+	// Kahn's algorithm. Head index instead of queue[1:] avoids the O(n) shift
+	// per dequeue; pre-allocation avoids reallocations as nodes enqueue (P2).
 	queue := make([]string, 0, len(services))
 	for _, s := range services {
 		if inDegree[s.Name] == 0 {
@@ -124,12 +122,10 @@ func TopoSort(services []Service) ([]string, error) {
 }
 
 // TopoLayers returns service names grouped into topologically-ordered layers:
-// all services in layer N have every dependency satisfied by services in layers
-// 0..N-1, so layer N's members carry no edges between each other and can be
-// started in parallel. Layer N+1 must wait for layer N to complete.
-// Each layer is sorted alphabetically for deterministic order. Returns an error
-// on cycles or unknown dependency references, with the same diagnostics as
-// TopoSort.
+// layer N's dependencies are all satisfied by layers 0..N-1, so its members
+// have no edges between each other and can start in parallel; layer N+1 waits
+// for layer N. Each layer is sorted alphabetically for determinism. Returns an
+// error on cycles or unknown dependency references, like TopoSort.
 func TopoLayers(services []Service) ([][]string, error) {
 	names := make(map[string]bool)
 	for _, s := range services {
@@ -199,7 +195,7 @@ func TopoLayers(services []Service) ([][]string, error) {
 		}
 		slices.Sort(layer)
 		for _, n := range layer {
-			// Mark as drained: -1 makes inDegree==0 check above ignore it next loop.
+			// -1 marks drained so the inDegree==0 check skips it next loop.
 			inDegree[n] = -1
 			for _, neighbor := range edges[n] {
 				inDegree[neighbor]--

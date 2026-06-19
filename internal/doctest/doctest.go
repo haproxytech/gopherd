@@ -80,10 +80,9 @@ func (b *syncBuffer) String() string {
 // Output returns the daemon's combined stdout/stderr captured so far.
 func (d *Daemon) Output() string { return d.out.String() }
 
-// reap performs the single cmd.Wait() for the process and caches its result.
-// Safe to call repeatedly and from multiple goroutines: only the first call
-// invokes cmd.Wait(); subsequent calls return the cached error. This prevents
-// concurrent cmd.Wait() races between Wait()'s goroutine, Kill(), and Stop().
+// reap performs the single cmd.Wait() and caches its result. Safe to call
+// repeatedly and concurrently; only the first call invokes cmd.Wait(), which
+// prevents races between Wait()'s goroutine, Kill(), and Stop().
 func (d *Daemon) reap() error {
 	d.reapOnce.Do(func() { d.waitErr = d.cmd.Wait() })
 	return d.waitErr
@@ -275,9 +274,9 @@ func (d *Daemon) Command(command string) string {
 	return strings.Join(lines, "\n")
 }
 
-// WaitRunning polls until the service reports running, failing the test on
-// timeout. The control socket accepts connections before services start, so a
-// status query right after Run can observe a still-pending service.
+// WaitRunning polls until the service reports running, failing on timeout. The
+// control socket accepts connections before services start, so a status query
+// right after Run can observe a still-pending service.
 func (d *Daemon) WaitRunning(service string, timeout time.Duration) string {
 	d.t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -316,8 +315,8 @@ func (d *Daemon) Wait(timeout time.Duration) int {
 		}
 		return -1
 	case <-time.After(timeout):
-		// Kill directly, then drain the in-flight reap goroutine instead of
-		// calling Kill() (which would re-enter reap and could race the select).
+		// Kill directly and drain the reap goroutine; calling Kill() would
+		// re-enter reap and could race the select.
 		if d.cmd.Process != nil {
 			d.cmd.Process.Signal(syscall.SIGKILL) //nolint:errcheck
 		}

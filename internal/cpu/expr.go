@@ -30,9 +30,7 @@ var exprRe = regexp.MustCompile(
 )
 
 // Eval evaluates a CPU expression against the given total CPU count.
-// Result is always >= 1.
-//
-// Supported expressions:
+// Result is always >= 1. Supported expressions:
 //   - "" (empty) → totalCPUs
 //   - "50%" → ceil(totalCPUs * 50 / 100), minimum 1
 //   - "50% - 1" → ceil(totalCPUs * 50 / 100) - 1, minimum 1
@@ -54,11 +52,9 @@ func Eval(expr string, totalCPUs int) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid cpu expression: %q", expr)
 	}
-	// Reject percentages outside (0, 100]. Values above 100% are nonsensical
-	// (a service cannot use more CPUs than exist) and, without this check,
-	// pathological inputs like "1e20%" would overflow the float→int
-	// conversion below, leaving the program to rely on the final clamp as
-	// a safety net.
+	// Reject percentages outside (0, 100]: a service cannot use more CPUs than
+	// exist, and this also bounds the float→int conversion below (e.g. "1e20%"
+	// would otherwise overflow).
 	if pct <= 0 || pct > 100 {
 		return 0, fmt.Errorf("cpu percentage must be in (0, 100], got %g: %q", pct, expr)
 	}

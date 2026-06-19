@@ -19,9 +19,8 @@
 // there is no filesystem to clean up and rootless permission issues are
 // avoided.
 //
-// Abstract sockets have no filesystem permissions, so any process in the
-// netns could otherwise spoof READY=1. The listener enables SO_PASSCRED and
-// accepts records only from the child's uid or root.
+// Abstract sockets have no filesystem permissions, so the listener enables
+// SO_PASSCRED and accepts records only from the child's uid or root.
 package sdnotify
 
 import (
@@ -35,8 +34,7 @@ import (
 	"sync/atomic"
 )
 
-// readBufSize is the datagram read buffer. systemd uses 4096; STATUS
-// messages that exceed this are truncated.
+// readBufSize matches systemd's 4096; longer STATUS messages are truncated.
 const readBufSize = 4096
 
 // Listener owns a single abstract unix datagram socket and tracks state
@@ -203,6 +201,5 @@ func (n *Listener) parse(data []byte) {
 		case "STATUS":
 			n.status.Store(val)
 		}
-		// Other keys (MAINPID, BUSERROR, WATCHDOG, ...) are silently ignored.
 	}
 }

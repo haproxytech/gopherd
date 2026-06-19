@@ -18,8 +18,8 @@ package control
 
 import "net"
 
-// peerUID is a stub for non-Linux platforms where SO_PEERCRED is unavailable.
-// Returns -1 (unknown) — audit logs will show uid=-1.
+// peerUID is a stub for non-Linux platforms where SO_PEERCRED is unavailable;
+// it returns -1 (unknown).
 func peerUID(_ net.Conn) int {
 	return -1
 }

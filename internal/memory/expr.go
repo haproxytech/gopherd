@@ -60,21 +60,18 @@ func Eval(expr string, totalMiB int64) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid memory expression: %q", expr)
 	}
-	// Reject percentages outside (0, 100]: a service cannot exceed available
-	// memory. This also bounds the float math so the overflow check rarely fires.
+	// Reject percentages outside (0, 100]: a service cannot exceed available memory.
 	if pct <= 0 || pct > 100 {
 		return 0, fmt.Errorf("memory percentage must be in (0, 100], got %g: %q", pct, expr)
 	}
-	// Defence-in-depth: a pathologically large totalMiB (corrupted cgroup read)
-	// can still overflow int64; an out-of-range float64 saturates to int64 min,
-	// yielding a bogus "valid" negative result below.
+	// Guard overflow: a corrupted, pathologically large totalMiB would saturate
+	// the float64→int64 conversion to int64 min, yielding a bogus negative result.
 	resF := float64(totalMiB) * pct / 100
 	if resF > float64(math.MaxInt64) || math.IsInf(resF, 0) || math.IsNaN(resF) {
 		return 0, fmt.Errorf("memory expression overflows int64: %q (total: %d MiB)", expr, totalMiB)
 	}
 	result := int64(resF)
 
-	// Subtract fixed amount if present.
 	if m[2] != "" {
 		sub, err := strconv.ParseFloat(m[2], 64)
 		if err != nil {
@@ -93,10 +90,9 @@ func Eval(expr string, totalMiB int64) (int64, error) {
 	return result, nil
 }
 
-// toMiB converts a value+unit to MiB, rounding so 1 MB (0.953 MiB) becomes 1,
-// not a confusing 0. Out-of-range/non-finite results are rejected explicitly
-// rather than trusting the implementation-defined overflowing float64→int64
-// conversion (amd64 saturates negative, caught only by chance downstream).
+// toMiB converts a value+unit to MiB, rounding so 1 MB (0.953 MiB) becomes 1, not
+// a confusing 0. Out-of-range/non-finite results are rejected explicitly rather
+// than trusting the implementation-defined overflowing float64→int64 conversion.
 func toMiB(val float64, unit string) (int64, error) {
 	var mib float64
 	switch strings.ToUpper(unit) {
