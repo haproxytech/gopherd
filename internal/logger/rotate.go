@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -84,6 +85,13 @@ func parseByteSize(s string) (int64, error) {
 	if v <= 0 {
 		return 0, fmt.Errorf("parse byte size %q: must be positive", s)
 	}
+	// Guard the float->int64 narrowing: an out-of-range float (huge value or
+	// +Inf) converts implementation-defined — amd64 wraps negative, silently
+	// disabling rotation. float64(math.MaxInt64) is exactly 2^63, so reject >=.
+	if v >= float64(math.MaxInt64) {
+		return 0, fmt.Errorf("parse byte size %q: too large (max %d bytes)", s, int64(math.MaxInt64))
+	}
+
 	return int64(v), nil
 }
 
@@ -160,6 +168,14 @@ func (fw *rotatingFileWriter) Close() error {
 // are tolerated during shifts so a config flip of the compress flag leaves
 // no files orphaned forever.
 func (fw *rotatingFileWriter) rotate() error {
+	// Re-validate the directory chain before rename/remove/reopen: openFile
+	// checked once, but an ancestor could be swapped for a symlink before this
+	// late rotation, redirecting these root operations. Returning early leaves
+	// fw.f open so Write keeps logging. Restores openFile's guarantee; the same
+	// residual check-to-syscall TOCTOU window remains.
+	if err := checkAncestorsNotSymlinked(fw.path); err != nil {
+		return fmt.Errorf("rotate %s: %w", fw.path, err)
+	}
 	if err := fw.f.Close(); err != nil {
 		log.Printf("log rotate %s: close: %v", fw.path, err)
 	}

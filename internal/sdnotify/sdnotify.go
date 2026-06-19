@@ -154,6 +154,11 @@ func (n *Listener) readLoop() {
 
 // authorized reports whether the datagram's sender (from ancillary creds) may
 // drive state: the child's uid or root. Unattributable datagrams are dropped.
+//
+// Authorization is uid-only, so a co-located process sharing the child's uid
+// can spoof READY/STOPPING/STATUS (the abstract socket name is discoverable).
+// Impact is limited to readiness gating, not code execution; run each service
+// under a distinct uid to avoid it. pid/cgroup attestation is overkill here.
 func (n *Listener) authorized(oob []byte) bool {
 	if !credEnabled {
 		return true

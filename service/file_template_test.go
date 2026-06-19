@@ -18,7 +18,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestExpandFileRefs(t *testing.T) {
@@ -177,7 +179,9 @@ func TestExpandFileRefsFollow(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := filepath.Join(dir, "link")
-	if err := os.Symlink(target, link); err != nil {
+	// Relative symlink: follow confines to the file's directory via os.Root,
+	// which treats absolute targets as escapes, so symlinks must be relative.
+	if err := os.Symlink("secret", link); err != nil {
 		t.Fatal(err)
 	}
 
@@ -199,7 +203,7 @@ func TestExpandFileRefsFollow(t *testing.T) {
 	k8sKey := filepath.Join(mount, "token")
 
 	dangling := filepath.Join(dir, "dangling")
-	if err := os.Symlink(filepath.Join(dir, "gone"), dangling); err != nil {
+	if err := os.Symlink("gone", dangling); err != nil {
 		t.Fatal(err)
 	}
 
@@ -237,11 +241,16 @@ func TestExpandFileRefsFollowErrors(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	dangling := filepath.Join(dir, "dangling")
-	if err := os.Symlink(filepath.Join(dir, "gone"), dangling); err != nil {
+	if err := os.Symlink("gone", dangling); err != nil {
+		t.Fatal(err)
+	}
+	// Relative symlink to a directory within the file's directory: follow
+	// resolves it but the not-a-regular-file check still rejects it.
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	dirLink := filepath.Join(dir, "dirlink")
-	if err := os.Symlink(dir, dirLink); err != nil {
+	if err := os.Symlink("sub", dirLink); err != nil {
 		t.Fatal(err)
 	}
 
@@ -263,6 +272,92 @@ func TestExpandFileRefsFollowErrors(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.wantSub) {
 				t.Errorf("error %q does not contain %q", err, tt.wantSub)
+			}
+		})
+	}
+}
+
+// follow still confines resolution to the file's directory: a symlink escaping
+// it (the swap-to-/etc/shadow attack) is refused, as is any absolute target.
+func TestExpandFileRefsFollowConfinesToDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// A "secret" that lives OUTSIDE the referenced file's directory.
+	outside := filepath.Join(dir, "outside-secret")
+	if err := os.WriteFile(outside, []byte("TOPSECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(dir, "inner")
+	if err := os.Mkdir(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Relative symlink escaping inner/ via ../, and an absolute symlink (even
+	// one pointing back inside dir) — both must be refused under confinement.
+	escRel := filepath.Join(inner, "escape-rel")
+	if err := os.Symlink(filepath.Join("..", "outside-secret"), escRel); err != nil {
+		t.Fatal(err)
+	}
+	absLink := filepath.Join(inner, "abs")
+	if err := os.Symlink(outside, absLink); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct{ name, in string }{
+		{"relative ../ escape refused", `{{file "` + escRel + `" follow}}`},
+		{"absolute symlink refused", `{{file "` + absLink + `" follow}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			out, err := ExpandFileRefs(tt.in)
+			if err == nil {
+				t.Fatalf("expected confinement error, got %q", out)
+			}
+			if strings.Contains(out, "TOPSECRET") {
+				t.Fatalf("leaked secret from outside the directory: %q", out)
+			}
+		})
+	}
+}
+
+// Both paths open with O_NONBLOCK so a FIFO target cannot block open() — and
+// thus PID 1's config load — before the not-a-regular-file check rejects it.
+func TestExpandFileRefsFifoDoesNotHang(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo unsupported: %v", err)
+	}
+	link := filepath.Join(dir, "fifolink")
+	if err := os.Symlink("fifo", link); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct{ name, in string }{
+		{"follow symlink to fifo", `{{file "` + link + `" follow}}`},
+		{"direct fifo no follow", `{{file "` + fifo + `"}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			done := make(chan struct{})
+			var out string
+			var err error
+			go func() {
+				out, err = ExpandFileRefs(tt.in)
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("ExpandFileRefs hung opening a FIFO")
+			}
+			if err == nil {
+				t.Fatalf("expected not-a-regular-file error, got %q", out)
+			}
+			if !strings.Contains(err.Error(), "not a regular file") {
+				t.Errorf("error = %v, want 'not a regular file'", err)
 			}
 		})
 	}

@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -205,6 +207,9 @@ func Unmarshal(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("no processes defined")
 	}
 
+	// Computed once: ShutdownSignals depends only on config-level fields, not
+	// on the per-process loop below.
+	shutdownSet := cfg.ShutdownSignals()
 	for _, p := range cfg.Processes {
 		name := p.Name
 		if name == "" {
@@ -239,7 +244,7 @@ func Unmarshal(data []byte) (*Config, error) {
 		// silently dead code because the switch in run.go dispatches
 		// those signals before ever reaching the forward branch. Fail
 		// loudly at load.
-		if err := validateSignalRewrite(name, p.SignalRewrite, cfg.ShutdownSignals()); err != nil {
+		if err := validateSignalRewrite(name, p.SignalRewrite, shutdownSet); err != nil {
 			return nil, err
 		}
 	}
@@ -437,21 +442,21 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		p.BackoffFactor = v
 	}
 	p.Prefix = n.Get("prefix").String()
-	// {{file}} in args ends up in the child's argv, exposed world-readably via
-	// /proc/<pid>/cmdline — strictly weaker than the owner-only /proc/<pid>/environ
-	// the feature is meant to improve on. Warn so secrets move to environment:.
-	for _, a := range p.Args {
-		if strings.Contains(a, "{{file") {
-			name := p.Name
-			if name == "" {
-				name = p.Command
-			}
-			log.Printf("warning: process %q uses {{file}} in args; argv is world-readable via /proc/<pid>/cmdline — use environment: for secrets", name)
-			break
+	// {{file}}/{{.VAR}} in args land in the child's argv, world-readable via
+	// /proc/<pid>/cmdline. Warn so secrets move to environment:.
+	if slices.ContainsFunc(p.Args, argSecretTemplateRe.MatchString) {
+		name := p.Name
+		if name == "" {
+			name = p.Command
 		}
+		log.Printf("warning: process %q expands {{file}}/{{.VAR}} in args; argv is world-readable via /proc/<pid>/cmdline — use environment: for secrets", name)
 	}
 	return p, nil
 }
+
+// argSecretTemplateRe matches arg templates whose value lands in argv:
+// {{file}} and {{.VAR}}. {{cpu}}/{{mem}} expand to integers, so excluded.
+var argSecretTemplateRe = regexp.MustCompile(`\{\{\s*(?:file\b|\.)`)
 
 // parseExitCode accepts either a decimal integer exit code ("143") or a
 // signal name ("SIGTERM", "TERM") and returns the numeric exit status. The

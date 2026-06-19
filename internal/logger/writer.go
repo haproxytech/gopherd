@@ -29,6 +29,11 @@ const defaultRingSize = 200
 // Prevents unbounded memory growth from output without newlines.
 const maxBufSize = 1 << 20 // 1 MB
 
+// slotRetainCap bounds the backing-array capacity a reused ring/subscriber slot
+// keeps. Normal lines are well under it (zero-alloc reuse path); without it, one
+// near-maxBufSize spike would pin that many bytes in every slot forever.
+const slotRetainCap = 64 << 10 // 64 KiB
+
 // subChanCap is the per-subscriber channel buffer.
 //
 // subBufRingSize must be strictly greater than the maximum number of buffers
@@ -274,13 +279,21 @@ func (pw *PrefixWriter) Write(p []byte) (int, error) {
 
 			// Store in circular ring buffer. Reuse existing slot capacity
 			// when possible to avoid allocating a new []byte per line.
+			//
+			// The ring feeds the control socket (Recent/Subscribe), which writes
+			// these bytes to an operator's terminal — strip control chars here
+			// (as file/syslog targets do) to block ANSI/forged-line injection.
+			// The stdout passthrough above stays raw to keep colored container logs.
+			clean := sanitize(prefixed)
 			slot := pw.ring[pw.ringPos]
-			if cap(slot) >= len(prefixed) {
-				slot = slot[:len(prefixed)]
+			// Reuse the slot unless it is too small or an oversized leftover
+			// (cap > slotRetainCap) a small line would otherwise pin; else realloc.
+			if c := cap(slot); c >= len(clean) && c <= slotRetainCap {
+				slot = slot[:len(clean)]
 			} else {
-				slot = make([]byte, len(prefixed))
+				slot = make([]byte, len(clean))
 			}
-			copy(slot, prefixed)
+			copy(slot, clean)
 			pw.ring[pw.ringPos] = slot
 			pw.ringPos++
 			if pw.ringPos >= defaultRingSize {
@@ -292,10 +305,12 @@ func (pw *PrefixWriter) Write(p []byte) (int, error) {
 			// reuse the same slot.
 			for _, s := range pw.subs {
 				buf := s.bufs[s.bufIdx]
-				if cap(buf) < len(slot) {
-					buf = make([]byte, len(slot))
-				} else {
+				// Same reuse/shrink rule as the ring slot above: drop an
+				// oversized leftover instead of pinning it per subscriber.
+				if c := cap(buf); c >= len(slot) && c <= slotRetainCap {
 					buf = buf[:len(slot)]
+				} else {
+					buf = make([]byte, len(slot))
 				}
 				copy(buf, slot)
 				s.bufs[s.bufIdx] = buf

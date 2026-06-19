@@ -296,6 +296,11 @@ func (c *Checker) buildHTTPClient() *http.Client {
 				return (&net.Dialer{}).DialContext(ctx, "unix", c.cfg.HTTP.Socket)
 			},
 		}
+	} else {
+		// Own transport (cloned from stdlib defaults) so each checker has an
+		// isolated idle-conn pool — otherwise one checker's Stop() (which calls
+		// CloseIdleConnections) evicts conns still used by other checkers.
+		client.Transport = http.DefaultTransport.(*http.Transport).Clone()
 	}
 	return client
 }
@@ -310,7 +315,7 @@ func (c *Checker) checkHTTP(ctx context.Context) error {
 	}
 	// Drain the body before closing so the transport can reuse the TCP connection.
 	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("http check: status %d", resp.StatusCode)
 	}
@@ -323,7 +328,7 @@ func (c *Checker) checkTCP(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("tcp check %s: %w", c.tcpAddr, err)
 	}
-	conn.Close()
+	_ = conn.Close()
 	return nil
 }
 

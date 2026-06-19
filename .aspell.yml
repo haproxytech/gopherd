@@ -12,3 +12,7 @@ allowed:
   - oneshots
   - doctest
   - mem
+  - uid
+  - gid
+  - argv
+  - toolchain

@@ -16,6 +16,7 @@ package service
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"os/user"
 	"strconv"
@@ -35,16 +36,15 @@ import (
 // strictGroups drops the user's auto-inherited supplementary groups (docker,
 // wheel, ...) when an explicit group is also set, for least privilege.
 func ResolveCredential(userName, groupName string, userID, groupID *int, strictGroups bool) (*syscall.Credential, error) {
-	// Reject negative numeric IDs. A naive uint32(*userID) conversion on a
-	// negative value wraps to a large positive number; in particular -1 maps
-	// to (uid_t)-1, which setresuid(2) treats as "do not change this id".
-	// The operator would then see a config that looks like it drops
-	// privileges while the child silently keeps gopherd's UID.
-	if userID != nil && *userID < 0 {
-		return nil, fmt.Errorf("user-id must be >= 0, got %d", *userID)
+	// Bound numeric IDs to the kernel's 32-bit uid_t/gid_t before the uint32
+	// conversions below. Both edges silently misdrop privilege: -1 becomes
+	// (uid_t)-1 = "don't change", and multiples of 2^32 truncate to 0 (root) —
+	// so a config that looks like a privilege drop keeps an unintended UID.
+	if err := validateNumericID("user-id", userID); err != nil {
+		return nil, err
 	}
-	if groupID != nil && *groupID < 0 {
-		return nil, fmt.Errorf("group-id must be >= 0, got %d", *groupID)
+	if err := validateNumericID("group-id", groupID); err != nil {
+		return nil, err
 	}
 
 	var uid, gid uint32
@@ -147,4 +147,18 @@ func ResolveCredential(userName, groupName string, userID, groupID *int, strictG
 	}
 
 	return &syscall.Credential{Uid: uid, Gid: gid, Groups: groups}, nil
+}
+
+// validateNumericID rejects a uid/gid outside [0, MaxUint32] (nil = unset, ok).
+// See ResolveCredential for why both bounds matter. int64 widening keeps the
+// upper-bound compare valid on 32-bit platforms (where it cannot trigger).
+func validateNumericID(field string, id *int) error {
+	if id == nil {
+		return nil
+	}
+	if *id < 0 || int64(*id) > math.MaxUint32 {
+		return fmt.Errorf("%s must be in range [0, %d], got %d", field, int64(math.MaxUint32), *id)
+	}
+
+	return nil
 }

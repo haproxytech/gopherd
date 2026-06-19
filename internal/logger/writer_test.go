@@ -211,6 +211,50 @@ func TestRecent(t *testing.T) {
 	}
 }
 
+// TestRecentSanitizesControlChars verifies child control chars are stripped
+// from the control-socket buffers (Recent/Subscribe) but left raw on the
+// stdout passthrough, so colored container logs survive.
+func TestRecentSanitizesControlChars(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	pw := NewPrefixWriter(&buf, "svc", "none")
+
+	// ESC (0x1b, ANSI), BEL (0x07) and CR (0x0d) are terminal-injection bytes.
+	pw.Write([]byte("ok\x1b[31mRED\x07\rEVIL\n"))
+
+	recent := pw.Recent()
+	if len(recent) != 1 {
+		t.Fatalf("expected 1 recent line, got %d", len(recent))
+	}
+	for _, b := range recent[0] {
+		if b < 0x20 && b != '\n' && b != '\t' {
+			t.Errorf("Recent() retained control byte %#x: %q", b, recent[0])
+		}
+	}
+	if !bytes.Contains(recent[0], []byte("RED")) || !bytes.Contains(recent[0], []byte("EVIL")) {
+		t.Errorf("Recent() should keep printable text: %q", recent[0])
+	}
+
+	// A subscriber must also receive sanitized bytes.
+	pwSub := NewPrefixWriter(io.Discard, "svc", "none")
+	ch, unsub := pwSub.Subscribe()
+	defer unsub()
+	pwSub.Write([]byte("clean\x1bEVIL\n"))
+	select {
+	case line := <-ch:
+		if bytes.IndexByte(line, 0x1b) >= 0 {
+			t.Errorf("subscriber retained ESC: %q", line)
+		}
+	case <-time.After(time.Second):
+		t.Error("subscriber did not receive line")
+	}
+
+	// stdout/stderr passthrough must remain raw (colors preserved).
+	if !bytes.Contains(buf.Bytes(), []byte("\x1b[31m")) {
+		t.Errorf("stdout passthrough should retain raw bytes: %q", buf.Bytes())
+	}
+}
+
 func TestRecentRingOverflow(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
@@ -510,5 +554,30 @@ func BenchmarkWriteNone(b *testing.B) {
 	b.ReportAllocs()
 	for range b.N {
 		pw.Write(line)
+	}
+}
+
+// TestRingSlotCapacityReclaimed verifies a one-off huge line's oversized slot is
+// reclaimed once normal lines cycle the ring: no slot exceeds slotRetainCap.
+func TestRingSlotCapacityReclaimed(t *testing.T) {
+	t.Parallel()
+	pw := NewPrefixWriter(io.Discard, "svc", "none")
+	// One huge line (> slotRetainCap, < maxBufSize) inflates a single slot.
+	huge := append(bytes.Repeat([]byte("x"), 128<<10), '\n')
+	if _, err := pw.Write(huge); err != nil {
+		t.Fatal(err)
+	}
+	// Cycle the whole ring with small lines so every slot is reused at least once.
+	for range defaultRingSize + 2 {
+		if _, err := pw.Write([]byte("small\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pw.mu.Lock()
+	defer pw.mu.Unlock()
+	for i, slot := range pw.ring {
+		if cap(slot) > slotRetainCap {
+			t.Errorf("ring slot %d retained cap %d > slotRetainCap %d after a spike", i, cap(slot), slotRetainCap)
+		}
 	}
 }

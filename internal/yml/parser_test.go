@@ -136,6 +136,38 @@ processes:
 	}
 }
 
+// Entries and Items must return defensive copies: a caller mutating the
+// returned slice must not corrupt the parser's internal node tree.
+func TestEntriesItemsReturnCopies(t *testing.T) {
+	t.Parallel()
+
+	seq, err := Parse([]byte("items: [a, b, c]"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := seq.Get("items").Items()
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items, got %d", len(items))
+	}
+	items[0] = nil // mutate the returned slice
+	if again := seq.Get("items").Items(); again[0] == nil {
+		t.Error("Items() exposed the internal slice; mutation leaked")
+	}
+
+	m, err := Parse([]byte("checks:\n  a:\n    type: tcp\n  b:\n    type: http\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := m.Get("checks").Entries()
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+	entries[0] = MapEntry{} // mutate the returned slice
+	if again := m.Get("checks").Entries(); again[0].Key == "" {
+		t.Error("Entries() exposed the internal slice; mutation leaked")
+	}
+}
+
 func TestParseMapOfMappings(t *testing.T) {
 	t.Parallel()
 	yml := `

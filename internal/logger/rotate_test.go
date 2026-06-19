@@ -46,6 +46,10 @@ func TestParseByteSize(t *testing.T) {
 		{"10TiB", 0, true}, // unsupported unit
 		{"0MiB", 0, true},  // non-positive
 		{"-5MiB", 0, true}, // leading '-' not accepted
+		// Overflow: num*mul exceeds int64 range. Must error rather than wrap to
+		// a negative size (which would silently disable rotation).
+		{"99999999999999999999GB", 0, true}, // ~1e29 bytes
+		{"10000000000000000000", 0, true},   // 1e19 bare bytes > math.MaxInt64
 	}
 	for _, tc := range tests {
 		got, err := parseByteSize(tc.in)
@@ -349,5 +353,47 @@ func TestRotatingFileWriterReloadConfigCloseAndReopen(t *testing.T) {
 	w2.Write([]byte(strings.Repeat("b", 49) + "\n"))
 	if _, err := os.Stat(path + ".1"); err != nil {
 		t.Errorf("post-reload writer did not rotate (seed size lost?): %v", err)
+	}
+}
+
+// TestRotateRefusesSymlinkedAncestor verifies rotate() refuses when an ancestor
+// directory is swapped for a symlink after the writer opened.
+func TestRotateRefusesSymlinkedAncestor(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	realDir := filepath.Join(dir, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(realDir, "app.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &rotatingFileWriter{f: f, path: logPath, maxSize: 10, maxFiles: 3}
+	defer fw.Close()
+
+	// Attacker dir the symlink will point at, pre-seeded so a vulnerable
+	// rotate() would succeed (renaming evil/app.log -> evil/app.log.1).
+	evil := filepath.Join(dir, "evil")
+	if err := os.Mkdir(evil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(evil, "app.log"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Swap the real directory for a symlink to evil.
+	if err := os.RemoveAll(realDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(evil, realDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fw.rotate(); err == nil {
+		t.Fatal("rotate should refuse a symlinked ancestor directory")
+	}
+	if _, err := os.Stat(filepath.Join(evil, "app.log.1")); err == nil {
+		t.Error("rotate redirected through the symlink into the attacker dir")
 	}
 }

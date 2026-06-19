@@ -107,7 +107,7 @@ func (cs *Server) Start() error {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("control socket: %s is a symlink, refusing to replace", cs.SocketPath)
 		}
-		os.Remove(cs.SocketPath)
+		_ = os.Remove(cs.SocketPath)
 	}
 
 	// Set a restrictive umask before Listen so the socket is never
@@ -125,12 +125,12 @@ func (cs *Server) Start() error {
 	// regular file. Fail closed if hijacked.
 	postInfo, err := os.Lstat(cs.SocketPath)
 	if err != nil {
-		ln.Close()
+		_ = ln.Close()
 		return fmt.Errorf("control socket: post-bind lstat %s: %w", cs.SocketPath, err)
 	}
 	if postInfo.Mode()&os.ModeSymlink != 0 || postInfo.Mode()&os.ModeSocket == 0 {
-		ln.Close()
-		os.Remove(cs.SocketPath)
+		_ = ln.Close()
+		_ = os.Remove(cs.SocketPath)
 		return fmt.Errorf("control socket: %s is not a socket after bind (mode %s); refusing to serve", cs.SocketPath, postInfo.Mode())
 	}
 	if err := os.Chmod(cs.SocketPath, cs.socketMode); err != nil {
@@ -175,7 +175,7 @@ func (cs *Server) acceptLoop() {
 			})
 		default:
 			// At capacity — reject the connection.
-			conn.Close()
+			_ = conn.Close()
 		}
 	}
 }
@@ -212,10 +212,10 @@ func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 			log.Printf("control: handleConn panic: %v", r)
 		}
 		releaseCmd()
-		conn.Close()
+		_ = conn.Close()
 	}()
 
-	conn.SetReadDeadline(time.Now().Add(connReadTimeout))
+	_ = conn.SetReadDeadline(time.Now().Add(connReadTimeout))
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {
 		return
@@ -232,14 +232,14 @@ func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 	// and access control falls back to filesystem permissions alone.
 	if uid != -1 && uid != 0 && uid != os.Geteuid() {
 		log.Printf("control: uid=%d rejected: permission denied", uid)
-		conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
+		_ = conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 		fmt.Fprintf(conn, "error: permission denied\n")
 		return
 	}
 	log.Printf("control: uid=%d cmd=%q", uid, line)
 
 	// Clear deadline for command handling (logs -f may stream indefinitely).
-	conn.SetReadDeadline(time.Time{})
+	_ = conn.SetReadDeadline(time.Time{})
 
 	parts := strings.Fields(line)
 	// Streaming commands release the command slot and acquire a streaming
@@ -251,14 +251,14 @@ func (cs *Server) handleConn(conn net.Conn, cmdSem, streamSem chan struct{}) {
 			defer func() { <-streamSem }()
 			cs.handleLogs(conn, parts)
 		default:
-			conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
+			_ = conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 			fmt.Fprintf(conn, "error: too many streaming connections\n")
 		}
 		return
 	}
 
 	resp := cs.handleCommand(parts)
-	conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
+	_ = conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 	fmt.Fprintf(conn, "%s\n", resp)
 }
 
@@ -386,7 +386,7 @@ func (cs *Server) handleCommand(parts []string) string {
 
 func (cs *Server) handleLogs(conn net.Conn, parts []string) {
 	if len(parts) < 2 {
-		conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
+		_ = conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 		fmt.Fprintf(conn, "error: logs requires a service name\n")
 		return
 	}
@@ -394,14 +394,14 @@ func (cs *Server) handleLogs(conn net.Conn, parts []string) {
 	follow := len(parts) >= 3 && parts[2] == "-f"
 
 	if cs.LogsFn == nil {
-		conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
+		_ = conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 		fmt.Fprintf(conn, "error: logs not supported\n")
 		return
 	}
 
 	recent, ch, unsub, err := cs.LogsFn(name, follow)
 	if err != nil {
-		conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
+		_ = conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 		fmt.Fprintf(conn, "error: %v\n", err)
 		return
 	}
@@ -411,7 +411,7 @@ func (cs *Server) handleLogs(conn net.Conn, parts []string) {
 
 	// Send recent buffered lines.
 	for _, line := range recent {
-		conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
+		_ = conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 		if _, err := conn.Write(line); err != nil {
 			return
 		}
@@ -436,7 +436,7 @@ func (cs *Server) handleLogs(conn net.Conn, parts []string) {
 			if !ok {
 				return
 			}
-			conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
+			_ = conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 			if _, err := conn.Write(line); err != nil {
 				return
 			}
@@ -472,10 +472,10 @@ func (cs *Server) Stop() {
 		close(cs.done)
 	}
 	if cs.listener != nil {
-		cs.listener.Close()
+		_ = cs.listener.Close()
 	}
 	// Closing the listener wakes up Accept(); wait for all in-flight handlers
 	// to return before the caller proceeds to tear down shared state.
 	cs.handlersWg.Wait()
-	os.Remove(cs.SocketPath)
+	_ = os.Remove(cs.SocketPath)
 }

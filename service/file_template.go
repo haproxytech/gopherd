@@ -25,30 +25,19 @@ import (
 	"syscall"
 )
 
-// fileRe matches {{file "/abs/path"}} with optional modifiers ("trim",
-// "follow", in any order) and an optional ":-default" suffix.
-// Submatches: (1) absolute path, (2) modifier words, (3) default text.
-// The default may not contain "}" because the closing "}}" cannot appear inside.
+// fileRe matches {{file "/abs/path"}} with optional trim/follow modifiers and
+// a ":-default" fallback. The default cannot contain "}" (closes the "}}").
 var fileRe = regexp.MustCompile(`\{\{\s*file\s+"([^"]+)"((?:\s+(?:trim|follow))*)(?::-([^}]*))?\s*\}\}`)
 
-// maxFileSize caps how many bytes ExpandFileRefs will pull from any single
-// referenced file. Secrets and license keys are well under this; the cap
-// exists to make {{file "/var/log/huge.log"}} fail loudly rather than OOM
-// PID 1.
+// maxFileSize caps a single {{file}} read so a huge file fails loudly instead
+// of OOMing PID 1.
 const maxFileSize = 1 << 20
 
-// ExpandFileRefs replaces {{file "/path"}} placeholders in s with the file's
-// contents. Optional modifiers: "trim" right-trims trailing whitespace/
-// newline (common for Docker/K8s secret files); "follow" permits symlinks
-// for this reference (K8s secret volumes deliver keys as symlinks into
-// ..data/); ":-default" supplies a fallback when the file does not exist.
-// A missing file with no default is a hard error. Read errors other than
-// ENOENT (permission denied, dir-not-file, etc.) are hard errors even with
-// a default — a present-but-unreadable file is an operator mistake, not a
-// fallback case.
+// ExpandFileRefs replaces {{file "/path"}} placeholders with file contents.
+// Modifiers: "trim" right-trims trailing whitespace; "follow" permits symlinks
+// (K8s ..data/ secret volumes); ":-default" is a fallback for a missing file.
 //
-// Runs before env-var expansion so file contents containing "{{...}}" are not
-// re-expanded.
+// Runs before env expansion so file contents with "{{...}}" are not re-expanded.
 func ExpandFileRefs(s string) (string, error) {
 	if !strings.Contains(s, "{{") {
 		return s, nil
@@ -81,19 +70,28 @@ func ExpandFileRefs(s string) (string, error) {
 	return b.String(), nil
 }
 
-// openFileTemplate opens clean for reading. Without follow it rejects
-// symlinks (leaf and ancestors): running as root, the contents go into a
-// child's argv/env, and a symlink could redirect the read to a root-only
-// file. With follow the operator opts out of that hardening for this one
-// reference (K8s secret volumes deliver keys as symlinks into ..data/).
+// openFileTemplate opens clean for reading. As root, contents flow into a
+// child's argv/env, so a symlink must not redirect the read to a root-only
+// file. Without follow, leaf and ancestor symlinks are rejected. With follow
+// (for K8s ..data/ secret symlinks), os.Root confines resolution to clean's
+// directory so a swapped symlink cannot escape to e.g. /etc/shadow; since
+// os.Root maps absolute targets relative to the root, follow requires relative
+// symlinks. O_NONBLOCK keeps a FIFO target from blocking PID 1's config load
+// before the not-a-regular-file check rejects it.
 func openFileTemplate(clean string, follow bool) (*os.File, error) {
 	if follow {
-		return os.Open(clean)
+		root, err := os.OpenRoot(filepath.Dir(clean))
+		if err != nil {
+			return nil, err
+		}
+		defer root.Close()
+
+		return root.OpenFile(filepath.Base(clean), os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	}
 	if err := checkAncestorsNotSymlinked(clean); err != nil {
 		return nil, err
 	}
-	fd, err := syscall.Open(clean, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	fd, err := syscall.Open(clean, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		if err == syscall.ELOOP {
 			return nil, fmt.Errorf("is a symlink; refusing to open (add the follow modifier to permit)")
@@ -109,11 +107,8 @@ func readFileTemplate(path string, doTrim, follow, hasDefault bool, defaultVal s
 	}
 	f, err := openFileTemplate(filepath.Clean(path), follow)
 	if err != nil {
-		// ENOENT (including a dangling symlink with follow) with a default
-		// falls back to the literal default text. Any other open error
-		// (EACCES, ELOOP, ...) is a hard error even with a default: a
-		// present-but-unreadable file is an operator mistake, not a
-		// fallback case.
+		// ENOENT (incl. a dangling follow symlink) with a default falls back;
+		// any other error is fatal even with a default (unreadable != missing).
 		if os.IsNotExist(err) && hasDefault {
 			return defaultVal, nil
 		}
@@ -124,8 +119,7 @@ func readFileTemplate(path string, doTrim, follow, hasDefault bool, defaultVal s
 	if err != nil {
 		return "", fmt.Errorf("{{file %q}}: stat: %w", path, err)
 	}
-	// A FIFO would block io.ReadAll forever; a device would return
-	// unexpected bytes. Reject anything that is not a regular file.
+	// Reject non-regular files: a FIFO blocks io.ReadAll, a device returns junk.
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("{{file %q}}: not a regular file (mode %s)", path, info.Mode())
 	}
@@ -136,8 +130,7 @@ func readFileTemplate(path string, doTrim, follow, hasDefault bool, defaultVal s
 	if int64(len(data)) > maxFileSize {
 		return "", fmt.Errorf("{{file %q}}: exceeds %d-byte size cap", path, maxFileSize)
 	}
-	// NUL bytes cannot survive cmd.Env or argv; fail early with a clearer
-	// message than the runtime's generic "invalid argument".
+	// Reject NUL early: it cannot survive argv/env, with a clearer error.
 	if bytes.IndexByte(data, 0) >= 0 {
 		return "", fmt.Errorf("{{file %q}}: contains NUL byte", path)
 	}

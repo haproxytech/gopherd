@@ -152,7 +152,7 @@ func cgroupV1CFSCPUs() int {
 			continue
 		}
 		cpus := v1CFSFromRoot(root, cgPath)
-		root.Close()
+		_ = root.Close()
 		if cpus > 0 {
 			return cpus
 		}

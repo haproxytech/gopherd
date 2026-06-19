@@ -633,3 +633,23 @@ func BenchmarkExecuteTCPSuccess(b *testing.B) {
 		}
 	}
 }
+
+// TestHTTPCheckIsolatedTransport verifies a non-socket HTTP check gets its own
+// transport, not the shared http.DefaultTransport — so Stop() cannot evict
+// other checkers' idle connections.
+func TestHTTPCheckIsolatedTransport(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+	c, err := New("http-iso", Config{HTTP: &HTTP{URL: ts.URL}, Period: "1s", Timeout: "2s"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.httpClient.Transport == nil {
+		t.Fatal("non-socket HTTP check has nil Transport (shares http.DefaultTransport)")
+	}
+	if c.httpClient.Transport == http.DefaultTransport {
+		t.Error("HTTP check shares http.DefaultTransport; pool must be isolated")
+	}
+}

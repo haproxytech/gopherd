@@ -15,6 +15,7 @@
 package service
 
 import (
+	"math"
 	"os"
 	"os/exec"
 	"os/user"
@@ -68,12 +69,14 @@ func TestResolveCredentialByID(t *testing.T) {
 	}
 }
 
-func TestResolveCredentialRejectsNegativeIDs(t *testing.T) {
+func TestResolveCredentialRejectsOutOfRangeIDs(t *testing.T) {
 	t.Parallel()
 	validID := 1000
 	negID := -1
 	negUID := -42
 	negGID := -7
+	// 2^32 passes a naive ">= 0" check but truncates to 0 (root) via uint32.
+	bigID := math.MaxUint32 + 1
 
 	tests := []struct {
 		userID  *int
@@ -81,16 +84,18 @@ func TestResolveCredentialRejectsNegativeIDs(t *testing.T) {
 		name    string
 		wantSub string
 	}{
-		{&negID, &validID, "negative user-id", "user-id must be >= 0"},
-		{&validID, &negID, "negative group-id", "group-id must be >= 0"},
-		{&negUID, &negGID, "negative both", "user-id must be >= 0"},
+		{&negID, &validID, "negative user-id", "user-id must be in range"},
+		{&validID, &negID, "negative group-id", "group-id must be in range"},
+		{&negUID, &negGID, "negative both", "user-id must be in range"},
+		{&bigID, &validID, "overflow user-id", "user-id must be in range"},
+		{&validID, &bigID, "overflow group-id", "group-id must be in range"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			cred, err := ResolveCredential("", "", tc.userID, tc.groupID, false)
 			if err == nil {
-				t.Fatalf("expected error for negative id, got cred=%+v", cred)
+				t.Fatalf("expected error for out-of-range id, got cred=%+v", cred)
 			}
 			if cred != nil {
 				t.Errorf("expected nil credential on error, got %+v", cred)

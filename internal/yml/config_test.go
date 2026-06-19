@@ -1043,3 +1043,29 @@ processes:
 		t.Errorf("startup = %q, want disabled", cfg.Processes[0].Startup)
 	}
 }
+
+func TestArgSecretTemplateRe(t *testing.T) {
+	t.Parallel()
+	flagged := []string{
+		`{{file "/run/secrets/db"}}`,
+		`{{ file "/run/secrets/db" }}`,
+		`--pass={{.DB_PASS}}`,
+		`{{ .TOKEN }}`,
+	}
+	clean := []string{
+		"plain",
+		"--flag=value",
+		"{{cpu}}",
+		"{{mem 50%}}",
+	}
+	for _, s := range flagged {
+		if !argSecretTemplateRe.MatchString(s) {
+			t.Errorf("%q should be flagged as argv-secret exposure", s)
+		}
+	}
+	for _, s := range clean {
+		if argSecretTemplateRe.MatchString(s) {
+			t.Errorf("%q should NOT be flagged", s)
+		}
+	}
+}

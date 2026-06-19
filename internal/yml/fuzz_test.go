@@ -17,112 +17,193 @@ package yml
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// addCorpusFromExamples seeds the fuzzer with the project's real config files.
-// Real configs cover the YAML subset gopherd uses far better than synthetic seeds.
-func addCorpusFromExamples(f *testing.F) {
-	f.Helper()
-	matches, err := filepath.Glob("../example/*.yml")
-	if err != nil {
-		return
+// parseSeeds are YAML fragments hitting the parser's fragile paths: BOM, CR/
+// CRLF, quote state machines, indentation math, duplicate keys, depth guard.
+// Shared by the fuzzer and the convergence oracle (TestEncodeRoundTrip).
+var parseSeeds = func() [][]byte {
+	strs := []string{
+		"",
+		"\n",
+		"\r\n",
+		"\r",
+		"   ",
+		"\xEF\xBB\xBFname: bom", // UTF-8 BOM prefix
+		"name: hello",
+		"name: \"hello world\"",
+		"name: 'single quoted'",
+		"key:",
+		"key: ",
+		":",
+		"  : value",
+		"\t: value",
+		"a: 1\r\nb: 2\r\n", // CRLF line endings
+		"a: 1\rb: 2\r",     // bare-CR (classic Mac) line endings
+		"list: [a, b, c]",
+		"list: [\"a, b\", 'c,d', e]", // commas inside quotes must not split
+		"value: http://host:8080/x",  // "://" must not match findColon
+		"key: value # trailing comment",
+		"# whole-line comment\nname: x",
+		"key: '#not a comment'",
+		"key: 'unterminated",
+		"key: \"unterminated",
+		"esc: \"a\\nb\\t\\\"c\\\\d\"",  // double-quote escape sequences
+		"trailingbackslash: \"abc\\\"", // backslash at end of quoted string
+		"parent:\n  child: 1\n  other: 2",
+		"items:\n  - command: a\n  - command: b",
+		"a:\n  - 1\n  - 2",
+		"a:\n  b:\n    c: d",
+		"a: b\na: c",            // duplicate key
+		"nokey",                 // mapping line with no colon
+		"a:\n - x\n  - y",       // inconsistent indent
+		"a: b\n   c: d\n  e: f", // inconsistent sibling indent
+		"deep:\n  - a:\n      - b:\n          - c: 1",
+		"processes:\n  - command: /bin/true\n    args: [--flag, value]\n    stop-signal: SIGTERM",
 	}
+	seeds := make([][]byte, 0, len(strs)+2)
+	for _, s := range strs {
+		seeds = append(seeds, []byte(s))
+	}
+	// Near the maxParseDepth (64) guard: a chain just under and just over the
+	// limit, so the depth-exceeded branch is actually exercised (mutation from
+	// shallow seeds rarely synthesizes 60+ levels on its own).
+	seeds = append(seeds, []byte(nestedMapping(60)), []byte(nestedMapping(70)))
+	return seeds
+}()
+
+// nestedMapping builds `k:` nested depth levels deep with a scalar leaf.
+func nestedMapping(depth int) string {
+	var b strings.Builder
+	for i := range depth {
+		b.WriteString(strings.Repeat(" ", i*2) + "k:\n")
+	}
+	b.WriteString(strings.Repeat(" ", depth*2) + "v: 1")
+	return b.String()
+}
+
+// exampleConfigs loads the repo's real config files as seeds (better coverage
+// than synthetic ones). go test's CWD is this package, so ../../example hits
+// the repo-root dir; ../example silently matched nothing after the internal/ move.
+func exampleConfigs(tb testing.TB) [][]byte {
+	tb.Helper()
+	matches, err := filepath.Glob("../../example/*.yml")
+	if err != nil {
+		return nil
+	}
+	var out [][]byte
 	for _, p := range matches {
 		data, err := os.ReadFile(p)
 		if err != nil {
 			continue
 		}
-		f.Add(data)
+		out = append(out, data)
 	}
+	return out
 }
 
-// FuzzParse fuzzes the low-level YAML parser. The contract: Parse must
-// either return a non-nil Node or a non-nil error, and must never panic
-// regardless of input — gopherd runs as PID 1 and a parser panic during
-// hot-reload would take down the whole container.
-func FuzzParse(f *testing.F) {
-	seeds := [][]byte{
-		nil,
-		[]byte(""),
-		[]byte("\n"),
-		[]byte("\r\n"),
-		[]byte("\r"),
-		[]byte("\xef\xbb\xbfkey: value"), // UTF-8 BOM
-		[]byte("key: value"),
-		[]byte("key:"),
-		[]byte("key: "),
-		[]byte(":"),
-		[]byte("  : value"),
-		[]byte("\t: value"),
-		[]byte("key: 'unterminated"),
-		[]byte(`key: "unterminated`),
-		[]byte(`key: "esc \" inside"`),
-		[]byte("a: [1, 2, 3]"),
-		[]byte("a: [\"x\", 'y', z]"),
-		[]byte("a:\n  - 1\n  - 2"),
-		[]byte("a:\n  b:\n    c: d"),
-		[]byte("a: b\na: c"), // duplicate key
-		[]byte("# only a comment"),
-		[]byte("key: value # trailing"),
-		[]byte("key: '#not a comment'"),
-		[]byte("a:\n - x\n  - y"),         // inconsistent indent
-		[]byte("a: b\n   c: d\n  e: f"),   // inconsistent sibling indent
-		[]byte("url: http://host:8080/x"), // colon-not-followed-by-space
-	}
-	for _, s := range seeds {
-		f.Add(s)
-	}
-	addCorpusFromExamples(f)
-
-	f.Fuzz(func(t *testing.T, data []byte) {
-		n, err := Parse(data)
-		if err == nil && n == nil {
-			t.Fatalf("Parse returned nil node and nil error for %q", data)
-		}
-		if err != nil {
-			return
-		}
-		// Exercise the accessor surface so allocator/indexing bugs in
-		// Get/String/Strings/Entries surface alongside parser bugs.
-		walk(n)
-	})
-}
-
-// FuzzUnmarshal fuzzes the full config decoder (Parse + semantic validation).
-// Same panic-freedom contract as FuzzParse.
-func FuzzUnmarshal(f *testing.F) {
-	addCorpusFromExamples(f)
-	f.Add([]byte("prefix: '['"))
-	f.Add([]byte("processes:\n  svc:\n    command: /bin/true"))
-	f.Add([]byte("init-stop-signal: [SIGTERM, SIGKILL]")) // rejected
-	f.Add([]byte("shutdown-order: bogus"))
-	f.Add([]byte("processes:\n  svc:\n    command: /bin/true\n    depends-on: [missing]"))
-
-	f.Fuzz(func(_ *testing.T, data []byte) {
-		_, _ = Unmarshal(data)
-	})
-}
-
+// walk invokes every accessor on every node to surface panics the parser
+// plants in the tree — e.g. a node whose kind and contents disagree.
 func walk(n *Node) {
 	if n == nil {
 		return
 	}
-	switch n.kind {
-	case kindScalar:
-		_ = n.String()
-		_, _ = n.Int()
-		_, _ = n.Float()
-		_ = n.Bool()
-	case kindMapping:
-		for _, e := range n.Entries() {
-			walk(e.Val)
-		}
-		_ = n.StringMap()
-	case kindSequence:
-		for _, it := range n.Items() {
-			walk(it)
-		}
-		_ = n.Strings()
+	_ = n.String()
+	_, _ = n.Int()
+	_, _ = n.Float()
+	_ = n.Bool()
+	_ = n.BoolPtr()
+	_ = n.IntPtr()
+	_ = n.Strings()
+	_ = n.StringMap()
+	_ = n.Get("anything")
+	for _, e := range n.Entries() {
+		walk(e.Val)
 	}
+	for _, item := range n.Items() {
+		walk(item)
+	}
+}
+
+// FuzzParse asserts the parser's invariants: never panic (a panic is a PID 1
+// crash), no node returned alongside an error, every returned tree is safe to
+// traverse, and parsing converges (deterministic, CR/CRLF/BOM-invariant, and
+// round-trip idempotent via assertConvergence).
+func FuzzParse(f *testing.F) {
+	for _, s := range parseSeeds {
+		f.Add(s)
+	}
+	for _, data := range exampleConfigs(f) {
+		f.Add(data)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		n, err := Parse(data)
+		if err != nil {
+			if n != nil {
+				t.Errorf("Parse returned both a node and an error: %v", err)
+			}
+			return
+		}
+		if n == nil {
+			t.Fatalf("Parse returned nil node and nil error for %q", data)
+		}
+		walk(n)
+		assertConvergence(t, data)
+	})
+}
+
+// FuzzUnmarshal fuzzes the full config decoder (Parse + validation). It touches
+// no filesystem or network, so the only outcomes are a *Config or an error —
+// never a panic.
+func FuzzUnmarshal(f *testing.F) {
+	for _, s := range parseSeeds {
+		f.Add(s)
+	}
+	for _, data := range exampleConfigs(f) {
+		f.Add(data)
+	}
+	f.Add([]byte("prefix: '['"))
+	f.Add([]byte("init-stop-signal: [SIGTERM, SIGKILL]"))
+	f.Add([]byte("shutdown-order: bogus"))
+	f.Add([]byte("processes:\n  svc:\n    command: /bin/true\n    depends-on: [missing]"))
+	f.Add([]byte(strings.Join([]string{
+		"prefix: app",
+		"shutdown-order: reverse-dep",
+		"init-stop-signal: [SIGTERM, SIGINT]",
+		"control:",
+		"  socket: /tmp/x.sock",
+		"  socket-mode: \"0660\"",
+		"processes:",
+		"  - command: /bin/true",
+		"    stop-signal: SIGTERM",
+		"    backoff-factor: 1.5",
+		"    exit-code-map:",
+		"      SIGTERM: 0",
+		"    signal-rewrite:",
+		"      SIGUSR1: SIGUSR2",
+	}, "\n")))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		cfg, err := Unmarshal(data)
+		if err != nil {
+			return // malformed/invalid config is an expected outcome
+		}
+		if cfg == nil {
+			t.Fatal("Unmarshal returned nil config and nil error")
+		}
+		// A loaded config must have >=1 process, each with a command.
+		if len(cfg.Processes) == 0 {
+			t.Error("Unmarshal succeeded but produced zero processes")
+		}
+		for i, p := range cfg.Processes {
+			if p.Command == "" {
+				t.Errorf("process %d has empty command after successful Unmarshal", i)
+			}
+		}
+		// ShutdownSignals runs on every signal PID 1 receives; must not panic.
+		_ = cfg.ShutdownSignals()
+	})
 }

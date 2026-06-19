@@ -92,7 +92,7 @@ func run(entrypointArgs []string) int {
 		fmt.Fprintf(os.Stderr, "  gopherd version\n")
 		fmt.Fprintf(os.Stderr, "  gopherd tag\n")
 		fmt.Fprintf(os.Stderr, "\ncurrent status:\n")
-		os.Setenv("GOPHERD_SOCKET", socketPath)
+		_ = os.Setenv("GOPHERD_SOCKET", socketPath)
 		control.RunClient([]string{"status"})
 		return 1
 	}
@@ -601,7 +601,7 @@ func runLayerOneshots(d *daemon, layer []string) {
 		if err != nil {
 			for _, p := range procs {
 				if p.pid > 0 {
-					syscall.Kill(-p.pid, syscall.SIGKILL)
+					_ = syscall.Kill(-p.pid, syscall.SIGKILL)
 				}
 			}
 			log.Fatalf("oneshot %s: %v", svc.Name, err)
@@ -626,7 +626,7 @@ func runLayerOneshots(d *daemon, layer []string) {
 			code, err := waitOneshot(pp.pid, pp.svc.Proc.StartupTimeout)
 			if err != nil && pp.pid > 0 {
 				// Timeout (or wait4 error) — make sure the process is gone.
-				syscall.Kill(-pp.pid, syscall.SIGKILL)
+				_ = syscall.Kill(-pp.pid, syscall.SIGKILL)
 			}
 			results <- result{name: pp.svc.Name, pid: pp.pid, code: code, err: err}
 		}(p)

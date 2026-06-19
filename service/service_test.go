@@ -146,6 +146,29 @@ func TestStartStop(t *testing.T) {
 	}
 }
 
+// MarkExited may be called more than once for the same exit (defensive against
+// reap-path races); the second call must not panic by double-closing s.done.
+func TestMarkExitedIdempotent(t *testing.T) {
+	t.Parallel()
+	svc := mustNew(t, Process{Command: "sleep", Args: []string{"10"}}, "")
+	pid, err := svc.Start()
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	svc.Stop()
+	var ws syscall.WaitStatus
+	syscall.Wait4(pid, &ws, 0, nil)
+
+	svc.MarkExited()
+	svc.MarkExited() // must not panic
+
+	select {
+	case <-svc.Done():
+	default:
+		t.Error("Done() should be closed after MarkExited")
+	}
+}
+
 func TestWasStoppedFlag(t *testing.T) {
 	t.Parallel()
 	svc := mustNew(t, Process{Command: "sleep", Args: []string{"10"}}, "")

@@ -20,6 +20,7 @@ package yml
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -476,20 +477,22 @@ func (n *Node) StringMap() map[string]string {
 	return m
 }
 
-// Entries returns the mapping entries (for iterating maps of objects).
+// Entries returns a defensive copy of the mapping entries; mutating it cannot
+// corrupt the node tree.
 func (n *Node) Entries() []MapEntry {
 	if n == nil || n.kind != kindMapping {
 		return nil
 	}
-	return n.mapping
+	return slices.Clone(n.mapping)
 }
 
-// Items returns the sequence items (for iterating lists).
+// Items returns a defensive copy of the sequence items; mutating it cannot
+// corrupt the node tree.
 func (n *Node) Items() []*Node {
 	if n == nil || n.kind != kindSequence {
 		return nil
 	}
-	return n.sequence
+	return slices.Clone(n.sequence)
 }
 
 // IntPtr returns a pointer to int, or nil if not present.

@@ -909,6 +909,7 @@ func (s *Service) MarkExited() time.Duration {
 	defer s.mu.Unlock()
 	if s.done != nil {
 		close(s.done)
+		s.done = nil
 	}
 	if s.killTimer != nil {
 		s.killTimer.Stop()

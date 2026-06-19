@@ -193,7 +193,7 @@ func RunClient(args []string) {
 	for {
 		// Refresh the read deadline before each line so that a hung daemon
 		// unblocks the CLI after clientReadIdleTimeout instead of forever.
-		conn.SetReadDeadline(time.Now().Add(clientReadIdleTimeout))
+		_ = conn.SetReadDeadline(time.Now().Add(clientReadIdleTimeout))
 		if !scanner.Scan() {
 			break
 		}

@@ -59,6 +59,10 @@ func TestEval(t *testing.T) {
 		// float→int64 overflow path.
 		{"101%", 3000, 0, true},
 		{"1e20%", 3000, 0, true},
+		// toMiB float→int64 overflow must error explicitly, not depend on an
+		// implementation-defined saturating conversion landing negative.
+		{"99999999999999999999GiB", 3000, 0, true},
+		{"100% - 99999999999999999999GiB", 3000, 0, true},
 	}
 
 	for _, tt := range tests {
