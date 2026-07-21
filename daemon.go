@@ -43,6 +43,11 @@ const maxConfigFileSize = 4 << 20
 // readConfigFile opens path, verifies it is not a symlink and passes permission
 // checks, then returns its contents. All checks run on the open file descriptor
 // to eliminate the TOCTOU window of a separate Lstat+Stat preceding ReadFile.
+//
+// Unlike dotenv/{{file}} refs, this guards only the leaf (O_NOFOLLOW) and does
+// not walk ancestors: the operator-supplied config path (GOPHERD_CONFIG/default)
+// often sits under a system symlink like /var/run that an ancestor walk would
+// wrongly reject.
 func readConfigFile(path string) ([]byte, error) {
 	// O_NOFOLLOW fails with ELOOP if path is a symlink, making the symlink
 	// check atomic with the open (no separate Lstat needed).
@@ -102,6 +107,11 @@ var errShuttingDown = fmt.Errorf("daemon is shutting down")
 // the current instance in d.services (replaced or removed by a reload). The
 // restart goroutine must silently skip it, not treat it as fatal.
 var errServiceReplaced = fmt.Errorf("service replaced or removed by reload")
+
+// errAlreadyRunning is returned (with the running PID) when concurrent callers
+// race past their pre-call IsRunning() check into startService; the loser bails
+// rather than double-forking. Callers must not treat it as fatal.
+var errAlreadyRunning = fmt.Errorf("service already running")
 
 // daemon holds all mutable daemon state so reload can update it.
 type daemon struct {
@@ -210,9 +220,9 @@ func (d *daemon) handleRestartReq(req restartReq) {
 			timer.Stop()
 		}
 	}
-	// errServiceReplaced means a reload replaced this service while queued; not fatal.
+	// errServiceReplaced (reload) and errAlreadyRunning (lost start race) are benign.
 	if _, err := d.startService(req.svc); err != nil {
-		if err != errShuttingDown && err != errServiceReplaced {
+		if err != errShuttingDown && err != errServiceReplaced && err != errAlreadyRunning {
 			log.Printf("restart %s failed: %v", req.svc.Name, err)
 			d.initiateShutdown(1)
 		}
@@ -220,6 +230,14 @@ func (d *daemon) handleRestartReq(req restartReq) {
 }
 
 func (d *daemon) startService(svc *service.Service) (int, error) {
+	// Prepare env/credentials/templates OFF d.mu: ResolveCredential can block on
+	// NSS (LDAP/SSSD) and dotenv hits disk; under d.mu that would stall the reap
+	// loop, control handlers, and shutdown. Lock-free is safe because a running
+	// instance's svc.Proc is immutable (config changes fork a new instance).
+	plan, err := svc.PrepareStart()
+	if err != nil {
+		return 0, err
+	}
 	// Hold mu across the shuttingDown check, fork/exec, and pidMap write: the
 	// reap loop can't observe the exit before the PID is recorded, and a
 	// concurrent initiateShutdown can't slip stopAll() in between (which would
@@ -236,7 +254,15 @@ func (d *daemon) startService(svc *service.Service) (int, error) {
 		d.mu.Unlock()
 		return 0, errServiceReplaced
 	}
-	pid, err := svc.Start()
+	// Recheck under d.mu: callers test IsRunning() unlocked, so concurrent starts
+	// can both reach here. The loser bails rather than double-forking (which would
+	// orphan the first PID in pidMap and leak its done channel).
+	if svc.IsRunning() {
+		pid := int(svc.Pid.Load())
+		d.mu.Unlock()
+		return pid, errAlreadyRunning
+	}
+	pid, err := svc.FinishStart(plan)
 	if err != nil {
 		d.mu.Unlock()
 		return 0, err
@@ -387,9 +413,14 @@ func (d *daemon) handleCheckFailure(checkName string) {
 			// OnSuccess=ActionShutdown would shut the daemon down when the stopped
 			// service exits with effectiveCode=0.
 			done := svc.Done()
-			svc.Stop()
+			// Guard on IsRunning() (like RestartFn): marking a stopped service's
+			// restart pending leaves the flag set with no matching exit, which then
+			// suppresses ServiceExited on its next genuine crash.
+			if svc.IsRunning() {
+				svc.Stop()
+				d.markRestartPending(svc.Name)
+			}
 			d.m.ServiceRestarted(svc.Name)
-			d.markRestartPending(svc.Name)
 			d.pendingRestarts.Add(1)
 			d.senderWg.Go(func() {
 				d.restartCh <- restartReq{svc: svc, done: done, delay: 0}
@@ -636,10 +667,27 @@ func (d *daemon) reload() (string, error) {
 	}
 	d.logTargets = nil
 
+	// The shutdown signal set and control socket are bound once at startup and
+	// can't be safely re-applied by a reload, so warn rather than silently ignore
+	// a change. (shutdown-order and per-service policy ARE re-read below.)
+	if !slices.Equal(d.cfg.InitStopSignal, newCfg.InitStopSignal) {
+		log.Printf("reload: init-stop-signal change ignored (takes effect only on restart)")
+	}
+	if d.cfg.Control != newCfg.Control {
+		log.Printf("reload: control socket change ignored (takes effect only on restart)")
+	}
+
+	// Snapshot old check names to unregister metrics for checks this reload drops;
+	// startChecks re-registers the survivors below.
+	oldCheckNames := make([]string, 0, len(d.cfg.Checks))
+	for name := range d.cfg.Checks {
+		oldCheckNames = append(oldCheckNames, name)
+	}
+
 	d.cfg = newCfg
 	d.buildLogTargets()
-	// Pre-validated above, so this cannot fail in practice. Defence-in-depth: if
-	// it does, abort with d.mu still held so partial state stays consistent.
+	// Pre-validated above; on the off chance it still fails, unlock and abort
+	// rather than crashing PID 1.
 	if err := d.buildServices(); err != nil {
 		d.mu.Unlock()
 		return "", fmt.Errorf("reload: %w", err)
@@ -722,7 +770,7 @@ func (d *daemon) reload() (string, error) {
 	}
 
 	for _, svc := range toStart {
-		if _, err := d.startService(svc); err != nil && err != errShuttingDown && err != errServiceReplaced {
+		if _, err := d.startService(svc); err != nil && err != errShuttingDown && err != errServiceReplaced && err != errAlreadyRunning {
 			log.Printf("reload: start %s failed: %v", svc.Name, err)
 		}
 	}
@@ -731,6 +779,12 @@ func (d *daemon) reload() (string, error) {
 	// d.checkers or d.cfg.
 	d.mu.Lock()
 	d.startChecks()
+	// Drop metrics for checks this reload removed (survivors just re-registered).
+	for _, name := range oldCheckNames {
+		if _, ok := d.cfg.Checks[name]; !ok {
+			d.m.UnregisterCheck(name)
+		}
+	}
 	d.mu.Unlock()
 
 	return "reload: ok", nil
@@ -790,6 +844,10 @@ func (d *daemon) setupControl() *control.Server {
 		}
 		pid, err := d.startService(svc)
 		if err != nil {
+			// Lost a start race: report running, not an error.
+			if err == errAlreadyRunning {
+				return fmt.Sprintf("%s: already running (pid %d)", name, pid), nil
+			}
 			return "", fmt.Errorf("start %s: %w", name, err)
 		}
 		return fmt.Sprintf("%s: started (pid %d)", name, pid), nil
@@ -955,6 +1013,9 @@ func processConfigChanged(oldp, newp service.Process) bool {
 		return true
 	}
 	if oldp.DotEnv != newp.DotEnv {
+		return true
+	}
+	if oldp.DotEnvFollow != newp.DotEnvFollow {
 		return true
 	}
 	if oldp.ReadyCheck != newp.ReadyCheck {

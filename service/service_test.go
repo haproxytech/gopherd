@@ -315,6 +315,27 @@ func TestCustomKillDelay(t *testing.T) {
 	}
 }
 
+// TestZeroKillDelay confirms 0 is accepted as the explicit "never escalate to
+// SIGKILL" value (Stop skips the timer when killDelay is not > 0).
+func TestZeroKillDelay(t *testing.T) {
+	t.Parallel()
+	svc := mustNew(t, Process{Command: "true", KillDelay: "0s"}, "")
+	if svc.killDelay != 0 {
+		t.Errorf("killDelay = %v, want 0", svc.killDelay)
+	}
+}
+
+// TestNegativeKillDelayRejected guards the fix for the silent SIGKILL-escalation
+// bug: time.ParseDuration accepts "-5s", which would slip past Stop()'s
+// `killDelay > 0` check and never force-kill a process that ignores the stop
+// signal, hanging shutdown. New must reject it.
+func TestNegativeKillDelayRejected(t *testing.T) {
+	t.Parallel()
+	if _, err := New(Process{Command: "true", KillDelay: "-5s"}, ""); err == nil {
+		t.Error("expected error for negative kill-delay, got nil")
+	}
+}
+
 func TestExpandEnvTemplates(t *testing.T) {
 	t.Setenv("MEMLIMIT", "1024")
 	t.Setenv("HOST", "localhost")
@@ -374,7 +395,7 @@ func TestExpandEnvTemplates(t *testing.T) {
 			t.Parallel()
 			// This test relies on OS env (t.Setenv MEMLIMIT / HOST), so
 			// opt in to pass-env.
-			env, _, err := buildEnvMap(tt.dotenv, tt.procEnv, true)
+			env, _, err := buildEnvMap(tt.dotenv, false, tt.procEnv, true)
 			if err != nil {
 				t.Fatalf("buildEnvMap: %v", err)
 			}
@@ -400,7 +421,7 @@ func TestDotEnv(t *testing.T) {
 	envFile := dir + "/app.env"
 	os.WriteFile(envFile, []byte("MEMLIMIT=1024\nHOST=example.com\n# comment\n\nEMPTY=\n"), 0o644)
 
-	env, _, err := buildEnvMap(envFile, nil, false)
+	env, _, err := buildEnvMap(envFile, false, nil, false)
 	if err != nil {
 		t.Fatalf("buildEnvMap: %v", err)
 	}
@@ -427,7 +448,7 @@ func TestDotEnvProcEnvOverrides(t *testing.T) {
 	envFile := dir + "/app.env"
 	os.WriteFile(envFile, []byte("MEMLIMIT=1024\n"), 0o644)
 
-	env, _, err := buildEnvMap(envFile, map[string]string{"MEMLIMIT": "2048"}, false)
+	env, _, err := buildEnvMap(envFile, false, map[string]string{"MEMLIMIT": "2048"}, false)
 	if err != nil {
 		t.Fatalf("buildEnvMap: %v", err)
 	}
@@ -462,7 +483,7 @@ func TestDotEnvHashInValueNoSpace(t *testing.T) {
 			"SPACED=value # trailing\n", // space before # → strip
 	), 0o644)
 
-	env, _, err := buildEnvMap(envFile, nil, false)
+	env, _, err := buildEnvMap(envFile, false, nil, false)
 	if err != nil {
 		t.Fatalf("buildEnvMap: %v", err)
 	}
@@ -576,7 +597,7 @@ func TestDotEnvEmptyKeySkipped(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	env, _, err := buildEnvMap(envFile, nil, false)
+	env, _, err := buildEnvMap(envFile, false, nil, false)
 	if err != nil {
 		t.Fatalf("buildEnvMap: %v", err)
 	}
@@ -595,7 +616,7 @@ func TestDotEnvEmptyKeySkipped(t *testing.T) {
 func TestBuildEnvMapDefaultPassEnv(t *testing.T) {
 	t.Setenv("GOPHERD_TEST_ONLY_IN_OS", "leakme")
 	// passEnv=false (default) → OS env is dropped
-	env, _, err := buildEnvMap("", nil, false)
+	env, _, err := buildEnvMap("", false, nil, false)
 	if err != nil {
 		t.Fatalf("buildEnvMap: %v", err)
 	}
@@ -603,7 +624,7 @@ func TestBuildEnvMapDefaultPassEnv(t *testing.T) {
 		t.Error("OS env leaked into child env despite default pass-env:false")
 	}
 	// Explicit opt-in: pass-env:true forwards OS env
-	env, _, err = buildEnvMap("", nil, true)
+	env, _, err = buildEnvMap("", false, nil, true)
 	if err != nil {
 		t.Fatalf("buildEnvMap: %v", err)
 	}
@@ -676,7 +697,7 @@ func TestParseDotEnvRejectsOversizedFile(t *testing.T) {
 	if err := os.WriteFile(path, huge, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if _, err := parseDotEnv(path); err == nil {
+	if _, err := parseDotEnv(path, false); err == nil {
 		t.Fatal("expected error for oversized dotenv, got nil")
 	} else if !strings.Contains(err.Error(), "size cap") {
 		t.Errorf("error %q does not mention size cap", err.Error())
@@ -702,10 +723,42 @@ func TestParseDotEnvRejectsSymlinkedAncestor(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	if _, err := parseDotEnv(filepath.Join(link, "app.env")); err == nil {
+	if _, err := parseDotEnv(filepath.Join(link, "app.env"), false); err == nil {
 		t.Fatal("expected error for symlinked ancestor, got nil")
 	} else if !strings.Contains(err.Error(), "symlink") {
 		t.Errorf("error %q does not mention symlink", err.Error())
+	}
+}
+
+// TestParseDotEnvFollowAllowsSymlinkedAncestor verifies the dotenv-follow escape
+// hatch: with follow set, a symlinked ancestor (e.g. the K8s /var/run -> /run or
+// ..data/ secret pattern) is accepted and the file is parsed, while follow off
+// still rejects it.
+func TestParseDotEnvFollowAllowsSymlinkedAncestor(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir real: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "app.env"), []byte("K=v\n"), 0o600); err != nil {
+		t.Fatalf("write dotenv: %v", err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	path := filepath.Join(link, "app.env")
+
+	if _, err := parseDotEnv(path, false); err == nil {
+		t.Fatal("follow=false: expected rejection of symlinked ancestor, got nil")
+	}
+	env, err := parseDotEnv(path, true)
+	if err != nil {
+		t.Fatalf("follow=true: unexpected error: %v", err)
+	}
+	if env["K"] != "v" {
+		t.Errorf("follow=true: K = %q, want %q", env["K"], "v")
 	}
 }
 

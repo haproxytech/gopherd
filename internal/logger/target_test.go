@@ -220,3 +220,30 @@ func TestOpenFileAcceptsRealAncestors(t *testing.T) {
 		t.Errorf("close: %v", err)
 	}
 }
+
+// captureWriteCloser records everything written, for label-writer tests.
+type captureWriteCloser struct{ b strings.Builder }
+
+func (c *captureWriteCloser) Write(p []byte) (int, error) { return c.b.Write(p) }
+func (c *captureWriteCloser) Close() error                { return nil }
+
+// TestLabelWriterPrependsLabels verifies target labels are prepended as sorted
+// logfmt key=value pairs, quoting values that contain whitespace.
+func TestLabelWriterPrependsLabels(t *testing.T) {
+	t.Parallel()
+	cw := &captureWriteCloser{}
+	lw := newLabelWriter(cw, map[string]string{"region": "us east", "env": "production"})
+	line := []byte("[app] hello\n")
+	n, err := lw.Write(line)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if n != len(line) {
+		t.Errorf("n = %d, want %d (bytes of caller input)", n, len(line))
+	}
+	got := cw.b.String()
+	want := `env=production region="us east" [app] hello` + "\n"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

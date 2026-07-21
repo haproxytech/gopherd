@@ -70,15 +70,15 @@ func ExpandFileRefs(s string) (string, error) {
 	return b.String(), nil
 }
 
-// openFileTemplate opens clean for reading. As root, contents flow into a
-// child's argv/env, so a symlink must not redirect the read to a root-only file.
-// Without follow, leaf and ancestor symlinks are rejected. With follow (for K8s
-// ..data/ secret symlinks), os.Root confines resolution to clean's directory so
-// a swapped symlink cannot escape to e.g. /etc/shadow; os.Root maps absolute
-// targets relative to the root, so follow requires relative symlinks. O_NONBLOCK
-// keeps a FIFO target from blocking PID 1's config load before the
-// not-a-regular-file check rejects it.
-func openFileTemplate(clean string, follow bool) (*os.File, error) {
+// openConfined opens clean for reading with symlink protection, returning the
+// raw error so callers add their own context. As root the contents may flow into
+// a child's argv/env, so a symlink must not redirect the read to a root-only
+// file. Without follow, a leaf (syscall.ELOOP) or ancestor symlink is rejected.
+// With follow, os.Root confines resolution to clean's directory so a swapped
+// symlink can't escape (e.g. to /etc/shadow); it maps absolute targets into the
+// root, so follow requires relative symlinks. O_NONBLOCK stops a FIFO from
+// blocking before the not-a-regular-file check. Shared by {{file}} and dotenv.
+func openConfined(clean string, follow bool) (*os.File, error) {
 	if follow {
 		root, err := os.OpenRoot(filepath.Dir(clean))
 		if err != nil {
@@ -93,12 +93,19 @@ func openFileTemplate(clean string, follow bool) (*os.File, error) {
 	}
 	fd, err := syscall.Open(clean, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		if err == syscall.ELOOP {
-			return nil, fmt.Errorf("is a symlink; refusing to open (add the follow modifier to permit)")
-		}
 		return nil, err
 	}
 	return os.NewFile(uintptr(fd), clean), nil
+}
+
+// openFileTemplate opens a {{file}} reference, translating a symlinked leaf into
+// a hint to add the follow modifier.
+func openFileTemplate(clean string, follow bool) (*os.File, error) {
+	f, err := openConfined(clean, follow)
+	if err == syscall.ELOOP {
+		return nil, fmt.Errorf("is a symlink; refusing to open (add the follow modifier to permit)")
+	}
+	return f, err
 }
 
 func readFileTemplate(path string, doTrim, follow, hasDefault bool, defaultVal string) (string, error) {

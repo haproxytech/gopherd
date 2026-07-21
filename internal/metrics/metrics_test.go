@@ -93,6 +93,7 @@ func TestUnregisterServiceSuppressesLateExit(t *testing.T) {
 func TestCheckResult(t *testing.T) {
 	t.Parallel()
 	m := New()
+	m.RegisterCheck("health")
 	m.CheckResult("health", true)
 	out := m.Format()
 	if !strings.Contains(out, "healthy") {
@@ -106,6 +107,31 @@ func TestCheckResult(t *testing.T) {
 	}
 	if !strings.Contains(out, "failures=1") {
 		t.Errorf("expected failures=1, got:\n%s", out)
+	}
+}
+
+// TestCheckResultIgnoresUnregistered guards the no-resurrect fix: a late
+// in-flight probe result for a check that was never registered (or was
+// unregistered by a reload) must not recreate its metrics entry.
+func TestCheckResultIgnoresUnregistered(t *testing.T) {
+	t.Parallel()
+	m := New()
+	m.CheckResult("gone", false)
+	if out := m.Format(); strings.Contains(out, "gone") {
+		t.Errorf("unregistered check should not appear in stats, got:\n%s", out)
+	}
+}
+
+// TestUnregisterCheck verifies a dropped check's stats do not linger after a
+// reload removes it.
+func TestUnregisterCheck(t *testing.T) {
+	t.Parallel()
+	m := New()
+	m.RegisterCheck("health")
+	m.CheckResult("health", false)
+	m.UnregisterCheck("health")
+	if out := m.Format(); strings.Contains(out, "health") {
+		t.Errorf("unregistered check should not appear in stats, got:\n%s", out)
 	}
 }
 

@@ -17,6 +17,7 @@ package yml
 import (
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"regexp"
 	"slices"
@@ -214,6 +215,11 @@ func Unmarshal(data []byte) (*Config, error) {
 			}
 			return nil, fmt.Errorf("process %q: command is required", name)
 		}
+		// The control protocol is space-delimited, so a whitespace name would be
+		// unaddressable (start/stop/status unreachable for it).
+		if strings.ContainsAny(name, " \t\r\n\v\f") {
+			return nil, fmt.Errorf("process %q: name must not contain whitespace (used in the space-delimited control protocol); set an explicit name", name)
+		}
 		if err := service.ValidateExitAction(p.OnSuccess); err != nil {
 			return nil, fmt.Errorf("process %q on-success: %w", name, err)
 		}
@@ -321,6 +327,7 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		UseEntrypointArgs: n.Get("use-entrypoint-args").Bool(),
 		PassEnv:           n.Get("pass-env").BoolPtr(),
 		DotEnv:            n.Get("dotenv").String(),
+		DotEnvFollow:      n.Get("dotenv-follow").Bool(),
 		After:             n.Get("after").Strings(),
 		Before:            n.Get("before").Strings(),
 		Requires:          n.Get("requires").Strings(),
@@ -411,6 +418,12 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 	// Surface unparseable numeric fields rather than silently defaulting.
 	if raw := n.Get("backoff-factor").String(); raw != "" {
 		v, err := strconv.ParseFloat(raw, 64)
+		// ParseFloat accepts "NaN"/"Inf". A NaN factor slips past backoff.New's
+		// factor <= 0 guard and collapses later delays to zero (crash loop → fork
+		// storm), so reject non-finite/non-positive factors at load.
+		if err == nil && (math.IsNaN(v) || math.IsInf(v, 0) || v <= 0) {
+			err = fmt.Errorf("must be a finite number greater than 0")
+		}
 		if err != nil {
 			name := p.Name
 			if name == "" {
@@ -461,7 +474,6 @@ func parseCheck(n *Node) (check.Config, error) {
 		Period:       n.Get("period").String(),
 		Timeout:      n.Get("timeout").String(),
 		InitialDelay: n.Get("initial-delay").String(),
-		Level:        n.Get("level").String(),
 	}
 	if raw := n.Get("threshold").String(); raw != "" {
 		v, err := strconv.Atoi(raw)

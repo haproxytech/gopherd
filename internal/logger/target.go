@@ -22,6 +22,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -29,9 +31,12 @@ import (
 
 // TargetConfig defines a log forwarding target.
 type TargetConfig struct {
-	Labels   map[string]string // custom metadata
-	Type     string            // "syslog" or "file"
-	Location string            // e.g. "udp://logs.example.com:514" or "/var/log/app.log"
+	// Labels are prepended to every forwarded line as logfmt-style key=value
+	// pairs (sorted by key), so syslog/file consumers can filter or attribute
+	// lines by target metadata. Empty = no label prefix.
+	Labels   map[string]string
+	Type     string // "syslog" or "file"
+	Location string // e.g. "udp://logs.example.com:514" or "/var/log/app.log"
 	// MaxSize is a human-readable byte size (e.g. "10MiB") at which a file
 	// target rotates. Empty = no rotation. File targets only; ignored for syslog.
 	MaxSize  string
@@ -82,7 +87,63 @@ func NewTarget(name string, cfg TargetConfig) (*Target, error) {
 		return nil, fmt.Errorf("log-target %s: unsupported type %q (supported: syslog, file)", name, cfg.Type)
 	}
 
+	// Prefix each forwarded line with the target's labels (syslog and file alike).
+	if len(cfg.Labels) > 0 {
+		lt.Writer = newLabelWriter(lt.Writer, cfg.Labels)
+	}
+
 	return lt, nil
+}
+
+// labelWriter prepends the target's labels to each line as sorted logfmt
+// key=value pairs (prefix built once). Each Write copies into a fresh buffer, so
+// it stays safe under the concurrent, alias-sensitive calls a target shared
+// across services receives.
+type labelWriter struct {
+	w      io.WriteCloser
+	prefix []byte
+}
+
+func newLabelWriter(w io.WriteCloser, labels map[string]string) *labelWriter {
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(logfmtValue(labels[k]))
+		b.WriteByte(' ')
+	}
+	return &labelWriter{w: w, prefix: []byte(b.String())}
+}
+
+// logfmtValue quotes a label value when it contains characters that would break
+// simple key=value parsing (whitespace, quotes, or "=").
+func logfmtValue(v string) string {
+	if v == "" {
+		return `""`
+	}
+	if strings.ContainsAny(v, " \t\"=") {
+		return strconv.Quote(v)
+	}
+	return v
+}
+
+func (lw *labelWriter) Write(p []byte) (int, error) {
+	buf := make([]byte, 0, len(lw.prefix)+len(p))
+	buf = append(buf, lw.prefix...)
+	buf = append(buf, p...)
+	if _, err := lw.w.Write(buf); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (lw *labelWriter) Close() error {
+	return lw.w.Close()
 }
 
 // AppliesTo returns whether this target should receive logs from the given service.

@@ -220,13 +220,19 @@ func run(entrypointArgs []string) int {
 		}
 	}()
 
-	// Handle restart requests from the reap loop.
+	// One goroutine per restart request so a slow backoff can't head-of-line
+	// block other services' restarts, and restartCh stays drained (senderWg.Go
+	// senders don't pile up behind the 64-deep buffer). Concurrent restarts are
+	// safe: startService rechecks IsRunning() under d.mu, and each handler waits
+	// on its own captured done channel.
 	go func() {
 		for req := range d.restartCh {
-			d.handleRestartReq(req)
-			// Decrement only after the request fully settles so the reap loop
-			// treats ECHILD as transient while a restart may still fork a child.
-			d.pendingRestarts.Add(-1)
+			go func(req restartReq) {
+				d.handleRestartReq(req)
+				// Decrement only after the request settles, so the reap loop keeps
+				// treating ECHILD as transient while a fork may still be pending.
+				d.pendingRestarts.Add(-1)
+			}(req)
 		}
 	}()
 
@@ -246,11 +252,18 @@ func run(entrypointArgs []string) int {
 				if d.shuttingDown.Load() {
 					break
 				}
-				// A restart is in flight: the handler is about to fork the
-				// replacement child. Retry briefly so a single-service daemon
-				// survives stop/restart.
+				// A restart is in flight: wait for the handler to fork (childStarted)
+				// instead of busy-polling Wait4 for the whole backoff. The fallback
+				// timer re-checks in case the fork failed (pendingRestarts hit 0 with
+				// no signal).
 				if d.pendingRestarts.Load() > 0 {
-					time.Sleep(10 * time.Millisecond)
+					timer := time.NewTimer(250 * time.Millisecond)
+					select {
+					case <-d.childStarted:
+					case <-d.shutdownCh:
+					case <-timer.C:
+					}
+					timer.Stop()
 					continue
 				}
 				// No children, not shutting down: idle as a live supervisor.
@@ -355,9 +368,16 @@ func run(entrypointArgs []string) int {
 				action = svc.OnSuccess
 			default:
 				action = svc.OnFailure
+				// A failed hard dependency stops its running dependents (systemd
+				// Requires= semantics). These dependents are NOT automatically
+				// brought back when the dependency recovers: like systemd, gopherd
+				// does not track a "was stopped because of X" edge to re-enqueue
+				// them. They stay down until manually restarted (or restarted by
+				// their own on-failure policy on a later crash). This is
+				// intentional; see the requires docs in README.
 				for _, other := range d.services {
 					if other.Requires[svc.Name] && other.IsRunning() {
-						log.Printf("stopping %s: required service %s failed", other.Name, svc.Name)
+						log.Printf("stopping %s: required service %s failed (will not auto-restart when %s recovers)", other.Name, svc.Name, svc.Name)
 						other.Stop()
 					}
 				}
@@ -445,6 +465,11 @@ func run(entrypointArgs []string) int {
 // to exit cleanly) and non-oneshots also start concurrently — they have no
 // ordering edge here, and each one's gating (ready-check, sd_notify) runs in
 // its own goroutine so a slow gate doesn't stall its siblings.
+//
+// The Wait4(-1) reap loop starts only after all layers finish, so a non-oneshot
+// that crashes mid-startup lingers as a zombie and its on-failure action is
+// deferred until startup completes. This is inherent to starting the reap loop
+// last: a concurrent Wait4(-1) would race the per-PID Wait4s used here.
 func (d *daemon) startServiceLayers(cfg *yml.Config, startLayers [][]string) {
 	for _, layer := range startLayers {
 		runLayerOneshots(d, layer)
@@ -521,7 +546,9 @@ func (d *daemon) startNonOneshot(cfg *yml.Config, svc *service.Service) {
 		log.Printf("%s: ready (check %s passed)", svc.Name, svc.Proc.ReadyCheck)
 	}
 
-	if _, err := d.startService(svc); err != nil {
+	// errAlreadyRunning: a control client started this service between the
+	// layer's IsRunning() check and here — not a startup failure.
+	if _, err := d.startService(svc); err != nil && err != errAlreadyRunning {
 		log.Fatalf("start %s: %v", svc.Name, err)
 	}
 

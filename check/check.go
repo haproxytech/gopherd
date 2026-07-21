@@ -22,6 +22,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -57,7 +58,6 @@ type Config struct {
 	Period       string
 	Timeout      string
 	InitialDelay string // delay before first check (default: 1x period)
-	Level        string // "alive" or "ready"
 	Threshold    int
 }
 
@@ -212,6 +212,12 @@ func (c *Checker) Run() {
 			// onFailureFn acquires d.mu, which is also held when stopChecks()
 			// calls c.Stop(). The stopped guard prevents a callback queued just
 			// before Stop() from firing after shutdown (B3).
+			//
+			// Residual window: Stop() can set stopped between this load and the
+			// call. Not closed by joining the goroutine in Stop() — Stop() runs
+			// under d.mu (reload's stopChecks) while this goroutine may block on
+			// d.mu inside onFailureFn, so joining would deadlock. handleCheckFailure
+			// re-validates under d.mu, so a stale post-Stop call is harmless.
 			if callFailure && c.onFailureFn != nil && !c.stopped.Load() {
 				c.onFailureFn(c.name)
 			}
@@ -344,7 +350,14 @@ func (c *Checker) checkExec(ctx context.Context) error {
 		if cmd.Process == nil {
 			return nil
 		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		// ESRCH means the process already exited (a probe that passed right at the
+		// deadline). Report ErrProcessDone, like the stdlib default Cancel, so
+		// os/exec keeps the real exit status instead of failing the probe.
+		if err == syscall.ESRCH {
+			return os.ErrProcessDone
+		}
+		return err
 	}
 	cmd.WaitDelay = c.timeout
 	if err := cmd.Run(); err != nil {

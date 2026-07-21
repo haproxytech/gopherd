@@ -787,6 +787,38 @@ processes:
 // TestUnmarshalRejectsInvalidOnSuccess covers O10: an invalid on-success value
 // must be caught by Unmarshal and returned as an error, not deferred to
 // ParseExitAction's log.Fatalf which would crash the daemon at service start.
+// TestUnmarshalRejectsNonFiniteBackoffFactor guards the NaN fork-bomb fix:
+// strconv.ParseFloat accepts "NaN"/"Inf", and a NaN factor slips past
+// backoff.New's factor <= 0 guard, collapsing restart delays to zero. These
+// must be rejected loudly at load, along with non-positive values.
+func TestUnmarshalRejectsNonFiniteBackoffFactor(t *testing.T) {
+	t.Parallel()
+	for _, factor := range []string{"NaN", "Inf", "+Inf", "-Inf", "0", "-2"} {
+		_, err := Unmarshal([]byte(`
+processes:
+  - command: /bin/app
+    backoff-factor: ` + factor + `
+`))
+		if err == nil {
+			t.Errorf("backoff-factor %q: expected error, got nil", factor)
+		}
+	}
+}
+
+// TestUnmarshalRejectsWhitespaceName guards the control-protocol fix: a service
+// name with whitespace would be unaddressable over the space-delimited protocol.
+func TestUnmarshalRejectsWhitespaceName(t *testing.T) {
+	t.Parallel()
+	_, err := Unmarshal([]byte(`
+processes:
+  - name: "my app"
+    command: /bin/app
+`))
+	if err == nil {
+		t.Error("expected error for whitespace in service name")
+	}
+}
+
 func TestUnmarshalRejectsInvalidOnSuccess(t *testing.T) {
 	t.Parallel()
 	_, err := Unmarshal([]byte(`

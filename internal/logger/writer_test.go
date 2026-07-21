@@ -581,3 +581,25 @@ func TestRingSlotCapacityReclaimed(t *testing.T) {
 		}
 	}
 }
+
+// TestLineBufCapacityReclaimed verifies the line buffer's oversized backing
+// array (grown by a one-off large burst) is released once the buffer drains, so
+// a single spike does not pin ~maxBufSize per stream for the process lifetime.
+func TestLineBufCapacityReclaimed(t *testing.T) {
+	t.Parallel()
+	pw := NewPrefixWriter(io.Discard, "svc", "none")
+	// A huge line (> slotRetainCap, < maxBufSize) grows pw.buf's backing array.
+	huge := append(bytes.Repeat([]byte("x"), 128<<10), '\n')
+	if _, err := pw.Write(huge); err != nil {
+		t.Fatal(err)
+	}
+	// A small terminated line drains the buffer fully.
+	if _, err := pw.Write([]byte("small\n")); err != nil {
+		t.Fatal(err)
+	}
+	pw.mu.Lock()
+	defer pw.mu.Unlock()
+	if cap(pw.buf) > slotRetainCap {
+		t.Errorf("line buffer retained cap %d > slotRetainCap %d after a spike", cap(pw.buf), slotRetainCap)
+	}
+}

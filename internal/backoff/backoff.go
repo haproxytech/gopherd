@@ -33,13 +33,16 @@ type Backoff struct {
 	attempt int
 }
 
-// New creates a new Backoff. Zero/negative values are replaced with defaults
-// (delay 500ms, factor 2.0, limit 30s).
+// New creates a new Backoff. Zero/negative/non-finite values are replaced with
+// defaults (delay 500ms, factor 2.0, limit 30s).
 func New(delay time.Duration, factor float64, limit time.Duration) *Backoff {
 	if delay <= 0 {
 		delay = 500 * time.Millisecond
 	}
-	if factor <= 0 {
+	// factor <= 0 alone misses NaN (all NaN comparisons are false), which makes
+	// Next() collapse to zero delays after the first attempt. yml rejects these
+	// at load too; this keeps the library safe for any caller.
+	if factor <= 0 || math.IsNaN(factor) || math.IsInf(factor, 0) {
 		factor = 2.0
 	}
 	if limit <= 0 {

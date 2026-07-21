@@ -97,7 +97,11 @@ func (m *Metrics) svcRegister(name string) *serviceStats {
 	return s
 }
 
-func (m *Metrics) chk(name string) *checkStats {
+// chkRegister returns the entry for name, creating it if absent. Only
+// RegisterCheck may create entries; event methods (CheckResult) must not, or a
+// check unregistered by reload would be resurrected by its own late in-flight
+// result. Mirrors svcRegister.
+func (m *Metrics) chkRegister(name string) *checkStats {
 	c, ok := m.checks[name]
 	if !ok {
 		c = &checkStats{Healthy: true}
@@ -187,14 +191,27 @@ func (m *Metrics) ServiceRestarted(name string) {
 func (m *Metrics) RegisterCheck(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.chk(name)
+	m.chkRegister(name)
 }
 
-// CheckResult records a health check result.
+// UnregisterCheck removes a check entry, e.g. after a reload drops it from the
+// config; stale counters would otherwise linger in stats output. Mirrors
+// UnregisterService.
+func (m *Metrics) UnregisterCheck(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.checks, name)
+}
+
+// CheckResult records a health check result. No-op if name was never registered
+// (e.g. a check unregistered by a reload before its in-flight probe landed).
 func (m *Metrics) CheckResult(name string, healthy bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	c := m.chk(name)
+	c, ok := m.checks[name]
+	if !ok {
+		return
+	}
 	c.Healthy = healthy
 	if !healthy {
 		c.Failures++

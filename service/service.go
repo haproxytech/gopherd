@@ -139,6 +139,11 @@ type Process struct {
 	// StrictGroups drops a named user's supplementary groups when an explicit
 	// group is set. Default false keeps the user's full membership.
 	StrictGroups bool
+	// DotEnvFollow permits symlinks when opening the dotenv file, confined to the
+	// file's directory (os.Root). Default false rejects any symlinked leaf or
+	// ancestor. Enable for K8s ..data/ mounts or paths under /var/run; mirrors
+	// the {{file}} follow modifier.
+	DotEnvFollow bool
 }
 
 // Service wraps a Process config with runtime state for lifecycle management.
@@ -201,6 +206,12 @@ func New(p Process, globalPrefix string) (*Service, error) {
 		killDelay, err = time.ParseDuration(p.KillDelay)
 		if err != nil {
 			return nil, fmt.Errorf("process %s: invalid kill-delay %q: %w", name, p.KillDelay, err)
+		}
+		// A negative delay would pass ParseDuration but silently disable Stop()'s
+		// SIGKILL escalation (its killDelay > 0 guard), hanging shutdown. 0 is the
+		// explicit "never escalate" value.
+		if killDelay < 0 {
+			return nil, fmt.Errorf("process %s: invalid kill-delay %q: must not be negative (use 0 to never escalate to SIGKILL)", name, p.KillDelay)
 		}
 	}
 
@@ -380,12 +391,12 @@ func checkAncestorsNotSymlinked(path string) error {
 // OOM-kill PID 1. Real dotenv files are typically under 10 KiB.
 const maxDotEnvSize = 1 << 20
 
-// parseDotEnv reads a dotenv file and returns KEY=value pairs; empty lines and
-// lines starting with # are skipped. O_NOFOLLOW rejects a symlinked leaf, and
-// the Lstat ancestor walk rejects symlinks above it: otherwise an attacker with
-// write access to a directory on the path could swap an intermediate component
-// for a symlink and redirect the open, since O_NOFOLLOW only guards the leaf.
-func parseDotEnv(path string) (map[string]string, error) {
+// parseDotEnv reads a dotenv file into KEY=value pairs (empty and #-comment
+// lines skipped). Without follow, a symlinked leaf or ancestor is rejected —
+// else an attacker with write access to a path directory could redirect the
+// open. With follow, os.Root confines resolution to the file's directory (K8s
+// ..data/ symlinks, /var/run -> /run), like the {{file}} follow modifier.
+func parseDotEnv(path string, follow bool) (map[string]string, error) {
 	// Absolute path so the ancestor walker has a stable start even for a
 	// relative configured path.
 	abs, err := filepath.Abs(path)
@@ -393,17 +404,13 @@ func parseDotEnv(path string) (map[string]string, error) {
 		return nil, fmt.Errorf("dotenv %s: %w", path, err)
 	}
 	abs = filepath.Clean(abs)
-	if err := checkAncestorsNotSymlinked(abs); err != nil {
-		return nil, fmt.Errorf("dotenv %s: %w", path, err)
-	}
-	fd, err := syscall.Open(abs, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openConfined(abs, follow)
 	if err != nil {
 		if err == syscall.ELOOP {
-			return nil, fmt.Errorf("dotenv %s is a symlink; refusing to open", path)
+			return nil, fmt.Errorf("dotenv %s is a symlink; refusing to open (set dotenv-follow: true to permit)", path)
 		}
 		return nil, fmt.Errorf("dotenv %s: %w", path, err)
 	}
-	f := os.NewFile(uintptr(fd), path)
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
@@ -473,7 +480,7 @@ func parseDotEnv(path string) (map[string]string, error) {
 // children. The returned userKeys set marks keys from dotenv or procEnv; only
 // those values are eligible for {{...}} expansion, so inherited OS env values
 // containing "{{" pass through verbatim.
-func buildEnvMap(dotenvPath string, procEnv map[string]string, passEnv bool) (map[string]string, map[string]bool, error) {
+func buildEnvMap(dotenvPath string, dotenvFollow bool, procEnv map[string]string, passEnv bool) (map[string]string, map[string]bool, error) {
 	env := make(map[string]string)
 	if passEnv {
 		for _, e := range os.Environ() {
@@ -484,7 +491,7 @@ func buildEnvMap(dotenvPath string, procEnv map[string]string, passEnv bool) (ma
 	}
 	userKeys := make(map[string]bool)
 	if dotenvPath != "" {
-		dotenv, err := parseDotEnv(dotenvPath)
+		dotenv, err := parseDotEnv(dotenvPath, dotenvFollow)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -604,16 +611,27 @@ func expandTemplates(values []string, env map[string]string, totalMiB int64, tot
 	return out, nil
 }
 
-// Start launches the process. Returns the PID on success.
-func (s *Service) Start() (pid int, err error) {
-	// Build env, resolve credentials, and expand templates before locking to
-	// minimize the critical section. PassEnv defaults to false (nil): gopherd
-	// does not forward its own OS env to children unless the operator opts in,
-	// so operator secrets do not silently leak into every child.
+// StartPlan is the output of PrepareStart, consumed by FinishStart. It owns no
+// OS resources (nothing forked, no listener yet), so an unused plan needs no
+// cleanup.
+type StartPlan struct {
+	cmd        *exec.Cmd
+	allowedUID int
+	sdNotify   bool
+}
+
+// PrepareStart does the pre-fork work that must NOT hold the daemon lock:
+// dotenv disk reads, credential resolution (NSS lookups can block on LDAP/SSSD),
+// and template expansion. It takes no lock and mutates no service state, so a
+// hanging lookup here can't stall the reap loop, control handlers, or shutdown.
+// FinishStart spawns the returned plan.
+func (s *Service) PrepareStart() (*StartPlan, error) {
+	// PassEnv nil/false: don't forward gopherd's OS env, so operator secrets
+	// don't leak into children unless opted in.
 	passEnv := s.Proc.PassEnv != nil && *s.Proc.PassEnv
-	env, userKeys, err := buildEnvMap(s.Proc.DotEnv, s.Proc.Environment, passEnv)
+	env, userKeys, err := buildEnvMap(s.Proc.DotEnv, s.Proc.DotEnvFollow, s.Proc.Environment, passEnv)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	// Drop remove-env keys after the merge so a shared dotenv key can be
 	// suppressed for one service without editing the dotenv file.
@@ -623,42 +641,15 @@ func (s *Service) Start() (pid int, err error) {
 	}
 
 	// Resolved up front: the sd_notify listener needs the child's uid to
-	// authenticate READY datagrams.
+	// authenticate READY datagrams. Trust only the child's resolved uid (or
+	// gopherd's euid when no privilege drop applies) or root for READY=1.
 	cred, err := ResolveCredential(s.Proc.User, s.Proc.Group, s.Proc.UserID, s.Proc.GroupID, s.Proc.StrictGroups)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-
-	// Allocate the sd_notify listener before exec so NOTIFY_SOCKET is in the
-	// child env. On restart, replace any existing listener: the old socket may
-	// hold stale READY state, and dependents must wait for the new instance to
-	// re-notify readiness.
-	if s.Proc.SDNotify {
-		if s.sdNotifyListener != nil {
-			_ = s.sdNotifyListener.Close()
-			s.sdNotifyListener = nil
-		}
-		// Trust only the child's resolved uid (or gopherd's euid when no
-		// privilege drop applies) or root for READY=1.
-		allowedUID := os.Geteuid()
-		if cred != nil {
-			allowedUID = int(cred.Uid)
-		}
-		l, lerr := sdnotify.Listen(s.Name, os.Getpid(), allowedUID)
-		if lerr != nil {
-			return 0, fmt.Errorf("sd_notify: %w", lerr)
-		}
-		s.sdNotifyListener = l
-		env["NOTIFY_SOCKET"] = l.Path()
-		// Not a userKey: a literal socket path must not be template-expanded.
-		// Release the listener on any later error so the abstract socket name
-		// is not leaked; MarkExited handles the success path.
-		defer func() {
-			if err != nil && s.sdNotifyListener != nil {
-				_ = s.sdNotifyListener.Close()
-				s.sdNotifyListener = nil
-			}
-		}()
+	allowedUID := os.Geteuid()
+	if cred != nil {
+		allowedUID = int(cred.Uid)
 	}
 
 	totalMiB, _ := memory.Available()
@@ -666,7 +657,7 @@ func (s *Service) Start() (pid int, err error) {
 
 	args, err := expandTemplates(s.Proc.Args, env, totalMiB, totalCPUs)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	cmd := exec.Command(s.Proc.Command, args...)
 	cmd.Stdout = s.Stdout
@@ -682,7 +673,7 @@ func (s *Service) Start() (pid int, err error) {
 	if s.Proc.ParentDeathSignal != "" {
 		pdeathSig, perr := ParseSignal(s.Proc.ParentDeathSignal)
 		if perr != nil {
-			return 0, fmt.Errorf("parent-death-signal: %w", perr)
+			return nil, fmt.Errorf("parent-death-signal: %w", perr)
 		}
 		setPdeathsig(cmd.SysProcAttr, pdeathSig)
 	}
@@ -693,6 +684,7 @@ func (s *Service) Start() (pid int, err error) {
 
 	// Set cmd.Env explicitly unless pass-env is on with no other env config:
 	// a nil cmd.Env makes Go inherit the parent env, which is only safe then.
+	// SDNotify forces an explicit env so FinishStart can append NOTIFY_SOCKET.
 	if !passEnv || s.Proc.DotEnv != "" || len(s.Proc.Environment) > 0 || len(s.Proc.RemoveEnv) > 0 || s.Proc.SDNotify {
 		// Expand templates only in user-defined values (dotenv + procEnv).
 		// Inherited OS env passes through verbatim so incidental "{{" does not
@@ -711,7 +703,7 @@ func (s *Service) Start() (pid int, err error) {
 		}
 		expanded, err := expandTemplates(userVals, env, totalMiB, totalCPUs)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 		for i, idx := range userIdx {
 			envVals[idx] = expanded[i]
@@ -736,21 +728,60 @@ func (s *Service) Start() (pid int, err error) {
 		cmd.SysProcAttr.Credential = cred
 	}
 
-	// Lock only for fork/exec and the state update.
+	return &StartPlan{cmd: cmd, allowedUID: allowedUID, sdNotify: s.Proc.SDNotify}, nil
+}
+
+// FinishStart forks/execs a prepared plan and records running state, holding
+// svc.mu only for the listener swap, spawn, and state update. The daemon calls
+// it under d.mu so the fork stays serialized with shutdown.
+func (s *Service) FinishStart(plan *StartPlan) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := cmd.Start(); err != nil {
+	// Create the listener under svc.mu, serialized with MarkExited (which closes
+	// it on exit), so on restart the abstract socket name is already free.
+	// Replacing any lingering listener drops stale READY so dependents re-wait.
+	if plan.sdNotify {
+		if s.sdNotifyListener != nil {
+			_ = s.sdNotifyListener.Close()
+			s.sdNotifyListener = nil
+		}
+		l, err := sdnotify.Listen(s.Name, os.Getpid(), plan.allowedUID)
+		if err != nil {
+			return 0, fmt.Errorf("sd_notify: %w", err)
+		}
+		s.sdNotifyListener = l
+		// Appended here, not in the prepared env, so listener creation stays
+		// under svc.mu. Literal path — never template-expanded.
+		plan.cmd.Env = append(plan.cmd.Env, "NOTIFY_SOCKET="+l.Path())
+	}
+
+	if err := plan.cmd.Start(); err != nil {
+		// Don't leak the abstract socket name on a failed spawn.
+		if plan.sdNotify && s.sdNotifyListener != nil {
+			_ = s.sdNotifyListener.Close()
+			s.sdNotifyListener = nil
+		}
 		return 0, err
 	}
 
-	s.cmd = cmd
-	s.Pid.Store(int64(cmd.Process.Pid))
+	s.cmd = plan.cmd
+	s.Pid.Store(int64(plan.cmd.Process.Pid))
 	s.done = make(chan struct{})
 	s.running.Store(true)
 	s.stopped.Store(false)
 	s.startedAt = time.Now()
-	return cmd.Process.Pid, nil
+	return plan.cmd.Process.Pid, nil
+}
+
+// Start is PrepareStart followed by FinishStart, for callers with no lock to
+// keep off the blocking prep (the daemon splits the two halves instead).
+func (s *Service) Start() (int, error) {
+	plan, err := s.PrepareStart()
+	if err != nil {
+		return 0, err
+	}
+	return s.FinishStart(plan)
 }
 
 // Stop signals the process group (negative PID, so forked children are hit too)

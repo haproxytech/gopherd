@@ -15,6 +15,7 @@
 package backoff
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -24,6 +25,28 @@ func TestDefaults(t *testing.T) {
 	b := New(0, 0, 0)
 	if b.Limit != 30*time.Second {
 		t.Errorf("default limit = %v, want 30s", b.Limit)
+	}
+}
+
+// TestNonFiniteFactor guards the fix for the NaN fork-bomb: a NaN factor slips
+// past the plain factor <= 0 check (every NaN comparison is false) and would
+// otherwise collapse every delay after the first to zero. New must default such
+// factors so Next() keeps producing sane, growing delays.
+func TestNonFiniteFactor(t *testing.T) {
+	t.Parallel()
+	for _, factor := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), 0, -2} {
+		b := New(100*time.Millisecond, factor, 10*time.Second)
+		for i := range 5 {
+			d := b.Next()
+			if d < 0 {
+				t.Fatalf("factor %v: Next[%d] = %v, want a non-negative finite delay", factor, i, d)
+			}
+		}
+		// After several attempts the defaulted factor (2.0) must have grown the
+		// delay beyond the initial value — proving it is not stuck at zero.
+		if got := b.Next(); got <= 0 {
+			t.Errorf("factor %v: delay collapsed to %v after several attempts", factor, got)
+		}
 	}
 }
 

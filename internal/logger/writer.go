@@ -245,7 +245,13 @@ func (pw *PrefixWriter) Write(p []byte) (int, error) {
 			// Reset to the start of the backing array when possible so
 			// append reuses capacity instead of allocating.
 			if len(rest) == 0 {
-				pw.buf = pw.buf[:0]
+				// Release a backing array inflated by a rare large burst so one
+				// spike doesn't pin ~maxBufSize per stream (cf. slotRetainCap).
+				if cap(pw.buf) > slotRetainCap {
+					pw.buf = nil
+				} else {
+					pw.buf = pw.buf[:0]
+				}
 			} else {
 				pw.buf = rest
 			}

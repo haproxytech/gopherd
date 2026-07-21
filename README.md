@@ -180,6 +180,11 @@ Typos in `startup` (e.g. `enable` instead of `enabled`) now fail at config load.
 
 Hot reload (`SIGHUP` / `reload`) re-reads the config and picks up env-var changes; gopherd does not watch the environment for changes between reloads.
 
+Two settings are bound once at startup and are **not** applied by a hot reload — changing them requires a full restart (gopherd logs a warning if a reload changes either):
+
+- `init-stop-signal` — the shutdown signal set is subscribed at startup.
+- `control.socket` / `control.socket-mode` — the control socket is bound at startup.
+
 A runnable example lives in [documentation/service-gating/](documentation/service-gating/).
 
 #### sd_notify readiness (systemd-compatible)
@@ -503,6 +508,8 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `max-files` | 5 (when `max-size` set) | Number of rotated files to retain. Older files are deleted on rotation. |
 | `compress` | false | gzip rotated files. Rotated names become `<path>.1.gz`, `<path>.2.gz`, … |
 
+`labels` (optional, any target type) prepends metadata to every forwarded line as sorted logfmt-style `key=value` pairs (values containing spaces or `"` are quoted). For example `labels: {env: production}` turns `[app] 2026-… started` into `env=production [app] 2026-… started`, so downstream syslog/file consumers can filter or attribute lines by target.
+
 ### Configuration Reference
 
 #### Global fields
@@ -524,7 +531,8 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `command` | string | *required* | Executable path |
 | `args` | string[] | `[]` | Command arguments (supports `{{.VAR}}` / `{{.VAR:-default}}`, `{{mem EXPR}}`, `{{cpu EXPR}}`, and `{{file "/path"}}` templates) |
 | `environment` | map | inherited | Extra environment variables (values support the same template forms as `args`) |
-| `dotenv` | string | | Path to env file (`KEY=value` per line), loaded into templates and child env |
+| `dotenv` | string | | Path to env file (`KEY=value` per line), loaded into templates and child env. Symlinks (leaf and ancestors) are refused by default, same as `{{file}}` |
+| `dotenv-follow` | bool | `false` | Permit symlinks when opening `dotenv`, confining resolution to the file's directory. Enable for K8s `..data/` secret mounts or paths under system symlinks like `/var/run` → `/run`. Mirrors the `{{file}}` `follow` modifier |
 | `working-dir` | string | inherited | Working directory |
 | `user` | string | inherited | Run as user (name) |
 | `group` | string | inherited | Run as group (name) |
@@ -544,7 +552,7 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `backoff-limit` | duration | `"30s"` | Max backoff delay |
 | `after` | string[] | `[]` | Start after these services |
 | `before` | string[] | `[]` | Start before these services |
-| `requires` | string[] | `[]` | Hard dependencies |
+| `requires` | string[] | `[]` | Hard dependencies. If a required service fails, its running dependents are stopped (systemd `Requires=` semantics). Dependents are **not** automatically restarted when the dependency recovers — they stay stopped until manually restarted |
 | `on-check-failure` | map | `{}` | Check name -> action mapping |
 | `use-entrypoint-args` | bool | `false` | append Docker/K8s entrypoint args to this service |
 | `ready-check` | string | | Health check name that gates dependents |
