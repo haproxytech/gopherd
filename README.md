@@ -52,7 +52,7 @@ go install -trimpath -ldflags="-s" github.com/haproxytech/gopherd@v1.2.3     # s
 
 The binary lands in `$(go env GOBIN)` (or `$(go env GOPATH)/bin`).
 
-Pre-built release binaries (no Go toolchain needed) are published on the [releases page](https://github.com/haproxytech/gopherd/releases) for linux/darwin/freebsd across amd64/arm64/arm/386/ppc64le/riscv64/s390x. Archive names follow `gopherd_<version>_<OS>_<arch>.tar.gz` (e.g. `Linux_x86_64`, `Linux_arm64`, `Darwin_arm64`):
+Pre-built release binaries (no Go toolchain needed) are published on the [releases page](https://github.com/haproxytech/gopherd/releases) for Linux, macOS, and FreeBSD on all architectures Go supports. Archive names follow `gopherd_<version>_<OS>_<arch>.tar.gz` (e.g. `Linux_x86_64`, `Linux_arm64`, `Darwin_arm64`):
 
 ```bash
 VERSION=1.2.3
@@ -614,7 +614,7 @@ Core design:
 - When no children remain and no shutdown is in progress, the reap loop idles (stays a live supervisor) rather than exiting, so stopping the last service does not take gopherd down
 - Graceful shutdown ordering is configurable: `reverse-dep` (dependents first, default), `dep` (dependencies first), or `simultaneous` (all at once)
 - Forwards SIGTERM/SIGINT to all children using per-service stop signals; SIGHUP triggers reload. Other received signals (SIGUSR1/SIGUSR2/etc.) are forwarded to a service **only if** that service declares a `signal-rewrite` entry for them (opt-in)
-- Each child gets its own process group (`Setpgid`)
+- Each child starts in its own session (`Setsid`): own process group (group-wide signals via `Kill(-pid)`) and no controlling TTY (blocks TIOCSTI injection)
 - Services start in topological order based on dependency graph; independent oneshots in the same dependency layer run in parallel (and the next layer waits for the layer above to complete)
 - Restart requests are handled asynchronously via a channel with backoff delays
 - Control socket uses one-command-per-connection protocol over Unix domain socket (streaming for `logs -f`)
@@ -652,15 +652,7 @@ gopherd is designed for Linux containers. It also compiles and runs on macOS and
 
 #### Build targets
 
-Release binaries cover all architectures used by the official `haproxy` Docker Library image and all `haproxytech/*` Docker images:
-
-| OS | Architectures |
-|:---|:-------------|
-| Linux | amd64, arm64, arm/v5, arm/v6, arm/v7, 386, ppc64le, riscv64, s390x |
-| macOS | amd64, arm64, arm, 386, ppc64le, s390x |
-| FreeBSD | amd64, arm64, arm, 386, ppc64le, s390x |
-
-Windows is not supported. See `.goreleaser.yml` for the full build matrix.
+Release binaries are built for Linux, macOS, and FreeBSD on every architecture Go supports — including all architectures used by the official `haproxy` Docker Library image and the `haproxytech/*` Docker images. Windows is not supported. See `.goreleaser.yml` for the full build matrix.
 
 ### Contributing
 
