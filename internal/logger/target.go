@@ -203,15 +203,22 @@ func (sw *syslogWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// sanitize strips control characters (except newline and tab) to block
-// services from injecting ANSI escapes or carriage returns into log entries.
-// Fast path: zero-alloc unsafe.String aliasing p. Slow path: builds a clean
-// copy only from the first bad byte onward.
+// sanitize strips control characters (except newline and tab) and whole ANSI
+// escape sequences to block services from injecting terminal escapes or
+// forged lines into log entries. Consuming full sequences avoids leaving
+// "[31m" fragments behind. Fast path: zero-alloc unsafe.String aliasing p.
 //
 // When no control chars are present the result aliases p, so callers must
 // consume it synchronously before p is mutated. syslog.Writer.Info satisfies
 // this; it retains nothing past return.
-func sanitize(p []byte) string {
+func sanitize(p []byte) string { return sanitizeSeq(p, false) }
+
+// sanitizeKeepColors is sanitize but passes through SGR color sequences
+// (ESC[...m, digit/;/: params only). SGR cannot move the cursor or forge
+// lines, so operator-facing streams (logs ring) keep colors safely.
+func sanitizeKeepColors(p []byte) string { return sanitizeSeq(p, true) }
+
+func sanitizeSeq(p []byte, keepSGR bool) string {
 	firstBad := -1
 	for i, b := range p {
 		if b < 0x20 && b != '\n' && b != '\t' {
@@ -227,12 +234,76 @@ func sanitize(p []byte) string {
 	}
 	buf := make([]byte, firstBad, len(p))
 	copy(buf, p[:firstBad])
-	for i := firstBad; i < len(p); i++ {
-		if p[i] >= 0x20 || p[i] == '\n' || p[i] == '\t' {
-			buf = append(buf, p[i])
+	for i := firstBad; i < len(p); {
+		b := p[i]
+		switch {
+		case b >= 0x20 || b == '\n' || b == '\t':
+			buf = append(buf, b)
+			i++
+		case b == 0x1b:
+			n, sgr := ansiSeqLen(p[i:])
+			if keepSGR && sgr {
+				buf = append(buf, p[i:i+n]...)
+			}
+			i += n
+		default:
+			i++
 		}
 	}
 	return unsafe.String(unsafe.SliceData(buf), len(buf))
+}
+
+// ansiSeqLen returns the length of the escape sequence at p (p[0] == ESC) and
+// whether it is a pure SGR color sequence. A control byte aborts the scan so
+// newlines inside malformed sequences survive; incomplete sequences consume
+// to end of input.
+func ansiSeqLen(p []byte) (n int, sgr bool) {
+	if len(p) < 2 {
+		return len(p), false
+	}
+	switch p[1] {
+	case '[': // CSI: params/intermediates, then final byte 0x40-0x7E
+		sgr = true
+		for i := 2; i < len(p); i++ {
+			b := p[i]
+			switch {
+			case b >= 0x40 && b <= 0x7e:
+				return i + 1, sgr && b == 'm'
+			case b >= '0' && b <= '9' || b == ';' || b == ':':
+				// SGR-compatible param byte
+			case b < 0x20:
+				return i, false
+			default:
+				sgr = false
+			}
+		}
+		return len(p), false
+	case ']': // OSC: terminated by BEL or ST (ESC \)
+		for i := 2; i < len(p); i++ {
+			b := p[i]
+			switch {
+			case b == 0x07:
+				return i + 1, false
+			case b == 0x1b:
+				if i+1 < len(p) && p[i+1] == '\\' {
+					return i + 2, false
+				}
+				return i, false
+			case b < 0x20 && b != '\t':
+				return i, false
+			}
+		}
+		return len(p), false
+	default: // two-char escape, allowing 0x20-0x2F intermediates
+		i := 1
+		for i < len(p) && p[i] >= 0x20 && p[i] <= 0x2f {
+			i++
+		}
+		if i < len(p) && p[i] >= 0x30 && p[i] <= 0x7e {
+			i++
+		}
+		return i, false
+	}
 }
 
 func (sw *syslogWriter) Close() error {

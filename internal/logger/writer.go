@@ -266,10 +266,10 @@ func (pw *PrefixWriter) Write(p []byte) (int, error) {
 			}
 
 			// The ring feeds the control socket (Recent/Subscribe), which
-			// writes to an operator's terminal — strip control chars here to
-			// block ANSI/forged-line injection. The stdout passthrough above
-			// stays raw to keep colored container logs.
-			clean := sanitize(prefixed)
+			// writes to an operator's terminal — strip escapes here to block
+			// forged-line injection, keeping harmless SGR colors. The stdout
+			// passthrough above stays raw.
+			clean := sanitizeKeepColors(prefixed)
 			slot := pw.ring[pw.ringPos]
 			// Reuse the slot unless too small or an oversized leftover
 			// (cap > slotRetainCap) a small line would pin; else realloc.

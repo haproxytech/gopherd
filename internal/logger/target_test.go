@@ -141,6 +141,48 @@ func TestSanitizePreservesNewlines(t *testing.T) {
 	}
 }
 
+// TestSanitizeStripsFullSequences verifies whole ANSI sequences are consumed,
+// not just the ESC byte — no "[31m" fragments may leak into targets.
+func TestSanitizeStripsFullSequences(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ in, want string }{
+		{"a\x1b[31mred\x1b[0m b\n", "ared b\n"},            // SGR pair
+		{"x\x1b[2A\x1b[Kup\n", "xup\n"},                    // cursor move + erase
+		{"t\x1b]0;title\x07text\n", "ttext\n"},             // OSC via BEL
+		{"t\x1b]0;title\x1b\\text\n", "ttext\n"},           // OSC via ST
+		{"c\x1b(Bfoo\n", "cfoo\n"},                         // charset select
+		{"end\x1b[", "end"},                                // incomplete CSI
+		{"end\x1b", "end"},                                 // lone trailing ESC
+		{"m\x1b[31\nrest\n", "m\nrest\n"},                  // newline aborts CSI
+		{"line1\x01line2\nline3\n", "line1line2\nline3\n"}, // non-ESC control
+		{"bell\x07cr\rdone\n", "bellcrdone\n"},             // BEL and CR dropped
+		{"keep\ttab\nplain\n", "keep\ttab\nplain\n"},       // fast path untouched
+	}
+	for _, c := range cases {
+		if got := sanitize([]byte(c.in)); got != c.want {
+			t.Errorf("sanitize(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestSanitizeKeepColors verifies SGR color sequences survive while every
+// other escape (cursor motion, OSC, CR, BEL) is still stripped.
+func TestSanitizeKeepColors(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ in, want string }{
+		{"a\x1b[31mred\x1b[0m\n", "a\x1b[31mred\x1b[0m\n"},     // colors kept
+		{"b\x1b[1;95mbold\x1b[m\n", "b\x1b[1;95mbold\x1b[m\n"}, // multi-param + empty
+		{"x\x1b[2Aup\x07\rdone\n", "xupdone\n"},                // motion/BEL/CR dropped
+		{"t\x1b]0;title\x07text\n", "ttext\n"},                 // OSC dropped
+		{"e\x1b[31;xmno\n", "emno\n"},                          // 'x' final: not SGR, dropped
+	}
+	for _, c := range cases {
+		if got := sanitizeKeepColors([]byte(c.in)); got != c.want {
+			t.Errorf("sanitizeKeepColors(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // errOnCloseWriter is a fake io.WriteCloser whose Close always returns an error.
 type errOnCloseWriter struct{ err error }
 

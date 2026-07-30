@@ -219,31 +219,30 @@ func TestRecentSanitizesControlChars(t *testing.T) {
 	var buf bytes.Buffer
 	pw := NewPrefixWriter(&buf, "svc", "none")
 
-	// ESC (0x1b, ANSI), BEL (0x07) and CR (0x0d) are terminal-injection bytes.
-	pw.Write([]byte("ok\x1b[31mRED\x07\rEVIL\n"))
+	// BEL (0x07), CR (0x0d) and cursor motion are injection bytes; SGR colors
+	// are harmless and must survive for `logs` streaming.
+	pw.Write([]byte("ok\x1b[31mRED\x1b[2A\x07\rEVIL\n"))
 
 	recent := pw.Recent()
 	if len(recent) != 1 {
 		t.Fatalf("expected 1 recent line, got %d", len(recent))
 	}
-	for _, b := range recent[0] {
-		if b < 0x20 && b != '\n' && b != '\t' {
-			t.Errorf("Recent() retained control byte %#x: %q", b, recent[0])
-		}
+	if bytes.ContainsAny(recent[0], "\x07\r") || bytes.Contains(recent[0], []byte("\x1b[2A")) {
+		t.Errorf("Recent() retained injection bytes: %q", recent[0])
 	}
-	if !bytes.Contains(recent[0], []byte("RED")) || !bytes.Contains(recent[0], []byte("EVIL")) {
-		t.Errorf("Recent() should keep printable text: %q", recent[0])
+	if !bytes.Contains(recent[0], []byte("\x1b[31mRED")) || !bytes.Contains(recent[0], []byte("EVIL")) {
+		t.Errorf("Recent() should keep text and SGR colors: %q", recent[0])
 	}
 
 	// A subscriber must also receive sanitized bytes.
 	pwSub := NewPrefixWriter(io.Discard, "svc", "none")
 	ch, unsub := pwSub.Subscribe()
 	defer unsub()
-	pwSub.Write([]byte("clean\x1bEVIL\n"))
+	pwSub.Write([]byte("clean\x1b]0;evil\x07EVIL\n"))
 	select {
 	case line := <-ch:
-		if bytes.IndexByte(line, 0x1b) >= 0 {
-			t.Errorf("subscriber retained ESC: %q", line)
+		if bytes.IndexByte(line, 0x1b) >= 0 || bytes.IndexByte(line, 0x07) >= 0 {
+			t.Errorf("subscriber retained OSC bytes: %q", line)
 		}
 	case <-time.After(time.Second):
 		t.Error("subscriber did not receive line")
