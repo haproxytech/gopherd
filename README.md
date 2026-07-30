@@ -64,6 +64,11 @@ sudo install -m 0755 gopherd /usr/local/bin/gopherd
 
 Verify the download against `checksums.txt` from the same release before installing.
 
+> **Note:** release binaries for an existing tag may be rebuilt in place when the Go
+> toolchain ships a security fix (CVE). The tag and source stay identical, but the
+> binaries and `checksums.txt` are replaced — if a pinned checksum stops matching,
+> re-fetch `checksums.txt` from the release page.
+
 #### Build
 
 ```bash

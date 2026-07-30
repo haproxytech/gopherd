@@ -67,6 +67,8 @@ snapshot:
   name_template: "{{ .Tag }}-next"
 release:
   draft: false
+  # Re-releases (workflow_dispatch rebuilds) must supersede old binaries.
+  replace_existing_artifacts: true
   header: |
     ## Release Notes
     gopherd {{.Tag}} {{.ShortCommit}}
