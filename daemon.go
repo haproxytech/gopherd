@@ -922,6 +922,9 @@ func (d *daemon) setupControl() *control.Server {
 		if !ok {
 			return nil, nil, nil, fmt.Errorf("unknown service %q", name)
 		}
+		if !svc.LogCapture {
+			return nil, nil, nil, fmt.Errorf("log capture disabled for %q (set log-capture: true)", name)
+		}
 		// Merge recent lines from both streams (stdout first).
 		recent := append(svc.Stdout.Recent(), svc.Stderr.Recent()...)
 		if !follow {
@@ -1004,6 +1007,10 @@ func processConfigChanged(oldp, newp service.Process) bool {
 		return true
 	}
 	if boolPtrDiffers(oldp.PassEnv, newp.PassEnv) {
+		return true
+	}
+	// log-capture picks the FD wiring at fork time, so a change needs a restart.
+	if boolPtrDiffers(oldp.LogCapture, newp.LogCapture) {
 		return true
 	}
 	if !maps.Equal(oldp.Environment, newp.Environment) {

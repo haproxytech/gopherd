@@ -27,6 +27,7 @@ func TestLogsFollow(t *testing.T) {
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
 no-logo: true
+log-capture: true
 processes:
   - name: ticker
     command: /bin/sh

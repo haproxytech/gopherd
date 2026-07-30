@@ -595,6 +595,66 @@ processes:
 	}
 }
 
+func TestLogCaptureResolution(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "capture.yml")
+	os.WriteFile(cfgPath, []byte(`
+log-capture: true
+
+processes:
+  - name: inherits
+    command: /bin/a
+
+  - name: optout
+    command: /bin/b
+    log-capture: false
+`), 0o644)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LogCapture == nil || !*cfg.LogCapture {
+		t.Error("global log-capture should be true")
+	}
+	if p := cfg.Processes[0].LogCapture; p == nil || !*p {
+		t.Error("inherits should get global log-capture true")
+	}
+	if p := cfg.Processes[1].LogCapture; p == nil || *p {
+		t.Error("optout should keep its explicit log-capture false")
+	}
+}
+
+func TestLogCaptureDefaultUnset(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "capture-unset.yml")
+	os.WriteFile(cfgPath, []byte(`
+processes:
+  - name: app
+    command: /bin/app
+
+  - name: captured
+    command: /bin/c
+    log-capture: true
+`), 0o644)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LogCapture != nil {
+		t.Error("global log-capture should be nil when unset")
+	}
+	if cfg.Processes[0].LogCapture != nil {
+		t.Error("app log-capture should stay nil (treated as false)")
+	}
+	if p := cfg.Processes[1].LogCapture; p == nil || !*p {
+		t.Error("captured should have explicit log-capture true")
+	}
+}
+
 func TestUseEntrypointArgs(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

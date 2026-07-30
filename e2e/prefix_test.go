@@ -24,6 +24,7 @@ func TestGlobalPrefixTimestampService(t *testing.T) {
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
 no-logo: true
+log-capture: true
 prefix: "timestamp service"
 processes:
   - name: greeter
@@ -60,6 +61,7 @@ func TestPerProcessPrefixOverride(t *testing.T) {
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
 no-logo: true
+log-capture: true
 prefix: "timestamp service"
 processes:
   - name: svc1
@@ -111,6 +113,7 @@ func TestPrefixNone(t *testing.T) {
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
 no-logo: true
+log-capture: true
 prefix: "none"
 processes:
   - name: raw
@@ -144,6 +147,7 @@ func TestPrefixServiceOnly(t *testing.T) {
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
 no-logo: true
+log-capture: true
 prefix: "service"
 processes:
   - name: svc
@@ -181,6 +185,7 @@ func TestPrefixTimestampOnly(t *testing.T) {
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
 no-logo: true
+log-capture: true
 prefix: "timestamp"
 processes:
   - name: svc

@@ -52,6 +52,7 @@ go test ./documentation/...
 
 ## Logging
 
+- [log-capture](log-capture/) — opt-in output capture vs direct FD passthrough (default)
 - [log-prefix](log-prefix/) — per-line timestamp + service prefix
 - [log-file-rotation](log-file-rotation/) — size-based file rotation
 - [syslog-target](syslog-target/) — forward logs to syslog

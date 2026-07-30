@@ -1,0 +1,14 @@
+# Log capture is opt-in. Default (false): children inherit gopherd's
+# stdout/stderr FDs and write directly to the OS — zero supervision overhead,
+# but no prefixes, no `gopherd logs`, no log-targets for that service.
+processes:
+  - name: raw
+    command: /bin/sh
+    args: ["-c", "echo raw-passthrough; sleep 300"]
+    on-failure: shutdown
+
+  - name: captured
+    command: /bin/sh
+    args: ["-c", "echo captured-line; sleep 300"]
+    on-failure: shutdown
+    log-capture: true

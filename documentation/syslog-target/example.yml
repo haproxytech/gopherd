@@ -1,4 +1,6 @@
 # Forward service logs to a remote syslog server.
+# Log-targets require log-capture (capture is off by default).
+log-capture: true
 processes:
   - name: app
     command: /usr/local/bin/app

@@ -86,6 +86,10 @@ type Process struct {
 	Environment    map[string]string
 	OnCheckFailure map[string]string
 	PassEnv        *bool
+	// LogCapture pipes child stdout/stderr through gopherd (enables prefixes,
+	// the logs command, and log-targets). nil/false: the child inherits
+	// gopherd's stdout/stderr FDs and gopherd never touches its output.
+	LogCapture     *bool
 	Name           string
 	Command        string
 	WorkingDir     string
@@ -182,6 +186,8 @@ type Service struct {
 	stopped atomic.Bool // true if Stop() was called (we initiated the exit)
 	Enabled bool
 	Oneshot bool
+	// LogCapture resolved from Proc.LogCapture; false = direct FD passthrough.
+	LogCapture bool
 }
 
 // New creates a new Service from a Process config. globalPrefix is the
@@ -274,6 +280,7 @@ func New(p Process, globalPrefix string) (*Service, error) {
 		Backoff:        backoff.New(backoffDelay, p.BackoffFactor, backoffLimit),
 		Requires:       reqSet,
 		OnCheckFailure: checkFailMap,
+		LogCapture:     p.LogCapture != nil && *p.LogCapture,
 		Stdout:         logger.NewPrefixWriter(os.Stdout, name, prefix),
 		Stderr:         logger.NewPrefixWriter(os.Stderr, name, prefix),
 	}, nil
@@ -660,8 +667,15 @@ func (s *Service) PrepareStart() (*StartPlan, error) {
 		return nil, err
 	}
 	cmd := exec.Command(s.Proc.Command, args...)
-	cmd.Stdout = s.Stdout
-	cmd.Stderr = s.Stderr
+	if s.LogCapture {
+		cmd.Stdout = s.Stdout
+		cmd.Stderr = s.Stderr
+	} else {
+		// *os.File makes os/exec pass the FD to the child directly — no pipe,
+		// no copy goroutine, gopherd stays out of the output path.
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
 	cmd.Stdin = nil // each child gets /dev/null as stdin (exec.Cmd default)
 	// Setsid: own process group (pgid == pid) keeps Kill(-pid) working; no
 	// controlling TTY stops a dropped-priv child TIOCSTI-injecting under -t.

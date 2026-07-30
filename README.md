@@ -25,8 +25,9 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Oneshot tasks** — run-once init tasks (e.g. config generation, permission setup) that complete before dependents start, with optional `startup-timeout`
 - **Health checks** — HTTP (including over Unix socket), TCP, and exec-based checks with configurable period, timeout, and threshold
 - **Readiness gates** — block dependent services until a health check passes or the service writes `READY=1` to `$NOTIFY_SOCKET` (systemd-compatible sd_notify)
-- **Log prefixing** — service name and timestamp on every output line (configurable format)
-- **Log targets** — forward logs to syslog (UDP/TCP) or files
+- **Zero-overhead output by default** — children write directly to the container's stdout/stderr; opt in with `log-capture: true` to enable prefixing, `logs`, and log-targets
+- **Log prefixing** — service name and timestamp on every output line (configurable format; requires `log-capture`)
+- **Log targets** — forward logs to syslog (UDP/TCP) or files (requires `log-capture`)
 - **Status reporting** — service uptime, restarts, exits, and health check results via `gopherd status`
 - **Control socket** — start/stop/restart/status/signal/reload/logs services at runtime via Unix socket
 - **Log streaming** — `gopherd logs <service> -f` for live log tailing via control socket
@@ -385,7 +386,16 @@ Configuration is a single YAML file (no external YAML library — built-in parse
 Below is a full example showing all available options:
 
 ```yaml
+# Capture child stdout/stderr through gopherd (default: false).
+# false: children write directly to the container's stdout/stderr — gopherd
+#        stays out of the output path entirely (no pipe, zero per-line CPU),
+#        but prefixes, `gopherd logs`, and log-targets are unavailable.
+# true:  gopherd pipes and processes output (prefixes, logs command,
+#        log-targets, rotation). Can be overridden per process.
+# log-capture: false
+
 # Global log prefix format (space-separated tokens, applied in order).
+# Only applied when log-capture is true.
 # Tokens: "timestamp" (UTC timestamp), "service" ([name] tag).
 #   "service timestamp"  — [app] 2021-05-13T03:16:51.001Z line  (default)
 #   "timestamp service"  — 2021-05-13T03:16:51.001Z [app] line
@@ -516,7 +526,8 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 
 | Field | Type | Default | Description |
 |:------|:-----|:--------|:------------|
-| `prefix` | string | `"service timestamp"` | Log prefix format for all services |
+| `log-capture` | bool | `false` | Global default: pipe child stdout/stderr through gopherd (enables prefixes, `logs` command, log-targets). When false, children write directly to the OS stdout/stderr with zero supervision overhead |
+| `prefix` | string | `"service timestamp"` | Log prefix format for all services (requires `log-capture: true`) |
 | `pass-env` | bool | `false` | Global default: forward gopherd's OS environment to children (false = empty env, children see only dotenv + per-process `environment`) |
 | `no-logo` | bool | `false` | Suppress ASCII art banner at startup |
 | `shutdown-order` | string | `"reverse-dep"` | Shutdown strategy: `reverse-dep`, `dep`, or `simultaneous` |
@@ -540,6 +551,7 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `group-id` | int | inherited | Run as group (numeric, takes precedence) |
 | `strict-groups` | bool | `false` | When an explicit group is set, drop the named user's supplementary groups instead of keeping full membership |
 | `pass-env` | bool | global default | Forward gopherd's OS environment to this service (false = empty env + only dotenv/environment vars) |
+| `log-capture` | bool | global default | Pipe this service's stdout/stderr through gopherd; false = direct FD passthrough (no prefix, no `logs`, no log-targets for this service) |
 | `remove-env` | list | `[]` | Env keys to delete from the final child environment, regardless of source (OS env / dotenv / `environment:`) |
 | `startup` | string | `"enabled"` | `"enabled"`, `"disabled"`, or `"oneshot"`. Supports `{{.VAR}}` / `{{.VAR:-default}}` and `{{file "/path"}}`; empty after expansion → disabled. Oneshots with no `after`/`requires` edge between them run concurrently; dependents wait for all oneshots in the prior layer to exit cleanly |
 | `startup-timeout` | duration | | Max time for oneshot to complete (kills and fails if exceeded) |

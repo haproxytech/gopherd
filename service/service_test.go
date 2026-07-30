@@ -58,6 +58,37 @@ func TestNewDefaults(t *testing.T) {
 	}
 }
 
+func TestPrepareStartLogCaptureWiring(t *testing.T) {
+	t.Parallel()
+	boolPtr := func(v bool) *bool { return &v }
+
+	// Default (nil): direct FD passthrough, gopherd out of the output path.
+	svc := mustNew(t, Process{Command: "/bin/true"}, "")
+	if svc.LogCapture {
+		t.Error("LogCapture should default to false")
+	}
+	plan, err := svc.PrepareStart()
+	if err != nil {
+		t.Fatalf("PrepareStart: %v", err)
+	}
+	if plan.cmd.Stdout != os.Stdout || plan.cmd.Stderr != os.Stderr {
+		t.Error("capture off: cmd should inherit os.Stdout/os.Stderr directly")
+	}
+
+	// Opted in: output flows through the PrefixWriters.
+	svc = mustNew(t, Process{Command: "/bin/true", LogCapture: boolPtr(true)}, "")
+	if !svc.LogCapture {
+		t.Error("LogCapture should resolve to true")
+	}
+	plan, err = svc.PrepareStart()
+	if err != nil {
+		t.Fatalf("PrepareStart: %v", err)
+	}
+	if plan.cmd.Stdout != svc.Stdout || plan.cmd.Stderr != svc.Stderr {
+		t.Error("capture on: cmd should use the service PrefixWriters")
+	}
+}
+
 func TestNewCustomName(t *testing.T) {
 	t.Parallel()
 	svc := mustNew(t, Process{Name: "myapp", Command: "/usr/bin/myapp"}, "")

@@ -1,5 +1,7 @@
 # Global log prefix: each child log line is tagged with the configured tokens.
 # Tokens (space-separated, applied in order): "timestamp", "service", "none".
+# Prefixes require log-capture (capture is off by default).
+log-capture: true
 prefix: "timestamp service"
 processes:
   - name: app

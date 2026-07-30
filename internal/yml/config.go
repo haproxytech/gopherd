@@ -62,6 +62,11 @@ type Config struct {
 	// gopherd's environment, so operator secrets cannot silently leak into
 	// every child. Explicit true opts in to inheritance.
 	PassEnv *bool
+	// LogCapture is the global default for the per-service log-capture flag.
+	// nil means "not set", treated as false: children write directly to
+	// gopherd's stdout/stderr FDs with zero supervision overhead. Explicit
+	// true opts in to capture (prefixes, logs command, log-targets).
+	LogCapture *bool
 
 	ShutdownOrder string
 	// InitStopSignal lists signals that trigger gopherd's own graceful
@@ -131,6 +136,9 @@ func Unmarshal(data []byte) (*Config, error) {
 	if n := root.Get("pass-env"); n != nil {
 		cfg.PassEnv = n.BoolPtr()
 	}
+	if n := root.Get("log-capture"); n != nil {
+		cfg.LogCapture = n.BoolPtr()
+	}
 	if n := root.Get("init-stop-signal"); n != nil {
 		cfg.InitStopSignal = n.Strings()
 		// Reject SIGKILL/SIGSTOP: the kernel never delivers them to a
@@ -182,6 +190,10 @@ func Unmarshal(data []byte) (*Config, error) {
 		if p.PassEnv == nil && cfg.PassEnv != nil {
 			v := *cfg.PassEnv
 			p.PassEnv = &v
+		}
+		if p.LogCapture == nil && cfg.LogCapture != nil {
+			v := *cfg.LogCapture
+			p.LogCapture = &v
 		}
 		cfg.Processes = append(cfg.Processes, p)
 	}
@@ -326,6 +338,7 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		StartupTimeout:    n.Get("startup-timeout").String(),
 		UseEntrypointArgs: n.Get("use-entrypoint-args").Bool(),
 		PassEnv:           n.Get("pass-env").BoolPtr(),
+		LogCapture:        n.Get("log-capture").BoolPtr(),
 		DotEnv:            n.Get("dotenv").String(),
 		DotEnvFollow:      n.Get("dotenv-follow").Bool(),
 		After:             n.Get("after").Strings(),

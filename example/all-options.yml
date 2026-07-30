@@ -1,6 +1,16 @@
 # Complete example showing every available option (YAML format).
 
+# Capture child stdout/stderr through gopherd (default: false).
+# false: children write directly to the container's stdout/stderr — zero
+#        supervision overhead, but prefixes, `gopherd logs`, and log-targets
+#        are unavailable for that service.
+# true:  gopherd pipes and processes output (prefixes, logs command,
+#        log-targets, rotation).
+# Can be overridden per process.
+# log-capture: true
+
 # Global log prefix format (space-separated tokens, applied in order).
+# Only applied when log-capture is true.
 # Tokens: "timestamp" (UTC timestamp), "service" ([name] tag).
 # Examples:
 #   "service timestamp"  — [app] 2021-05-13T03:16:51.001Z line  (default)
@@ -88,6 +98,7 @@ processes:
     # forwarding branch. Invalid configs are rejected at load.
     # prefix: "service"                  # per-process prefix override (see global prefix)
     # pass-env: true                     # opt in to inheriting gopherd's OS env (default: false)
+    # log-capture: true                  # capture output through gopherd (see global log-capture)
     # remove-env:                        # strip these keys from the final child env
     #   - DB_PASSWORD                    #   (useful for shared dotenv files)
     #   - AWS_SECRET_ACCESS_KEY

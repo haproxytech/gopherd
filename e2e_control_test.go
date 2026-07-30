@@ -265,6 +265,7 @@ processes:
 
 func TestE2EControlLogs(t *testing.T) {
 	td := startDaemon(t, `
+log-capture: true
 processes:
   - name: talker
     command: /bin/sh
@@ -279,6 +280,27 @@ processes:
 	resp := td.sendCommand("logs talker")
 	if !strings.Contains(resp, "hello-from-talker") {
 		t.Errorf("expected 'hello-from-talker' in logs, got: %s", resp)
+	}
+
+	td.stop()
+}
+
+func TestE2EControlLogsCaptureDisabled(t *testing.T) {
+	td := startDaemon(t, `
+processes:
+  - name: talker
+    command: /bin/sh
+    args: ["-c", "echo hello-from-talker && sleep 300"]
+    on-failure: shutdown
+`)
+	defer td.kill()
+
+	time.Sleep(500 * time.Millisecond)
+
+	// Capture defaults to off: logs must fail with a clear reason, not silence.
+	resp := td.sendCommand("logs talker")
+	if !strings.Contains(resp, "log capture disabled") {
+		t.Errorf("expected 'log capture disabled' error, got: %s", resp)
 	}
 
 	td.stop()
