@@ -89,17 +89,17 @@ commit-policy:
   stage: lint
   allow_failure: true
   needs: []
+  variables:
+    GIT_DEPTH: "0"
   rules:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
   image:
-    name: $HAPROXY_REGISTRY_GO/golang:latest-alpine
+    name: $HAPROXY_REGISTRY_GO/commit-check:latest
     entrypoint: [""]
   tags:
     - go
-  before_script:
-    - go version
   script:
-    - task check-commit
+    - /check
   after_script:
     - |
       if [ "$CI_JOB_STATUS" == "success" ]; then
