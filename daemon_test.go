@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/haproxytech/gopherd/control"
 	"github.com/haproxytech/gopherd/internal/metrics"
 	"github.com/haproxytech/gopherd/internal/yml"
 	"github.com/haproxytech/gopherd/service"
@@ -59,6 +60,36 @@ func TestBuildServices(t *testing.T) {
 	}
 	if _, ok := d.services["worker"]; !ok {
 		t.Error("missing service 'worker'")
+	}
+}
+
+// TestBuildServicesControlSocket verifies the daemon hands its resolved control
+// socket path to every service so children can reach the control socket.
+func TestBuildServicesControlSocket(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon([]service.Process{
+		{Name: "web", Command: "/bin/web"},
+	})
+	if got := d.services["web"].ControlSocket; got != control.DefaultSocketPath {
+		t.Errorf("default: ControlSocket = %q, want %q", got, control.DefaultSocketPath)
+	}
+
+	// The startup-bound path wins over the current config: reload re-parses the
+	// file without the GOPHERD_SOCKET env override, and the socket is bind-once.
+	d2 := &daemon{
+		controlSocket: "/bound/at/startup.sock",
+		cfg: &yml.Config{
+			Control:   control.Config{SocketPath: "/from/reparsed/config.sock"},
+			Processes: []service.Process{{Name: "web", Command: "/bin/web"}},
+		},
+		m:        metrics.New(),
+		services: make(map[string]*service.Service),
+	}
+	if err := d2.buildServices(); err != nil {
+		t.Fatalf("buildServices: %v", err)
+	}
+	if got := d2.services["web"].ControlSocket; got != "/bound/at/startup.sock" {
+		t.Errorf("reload: ControlSocket = %q, want /bound/at/startup.sock", got)
 	}
 }
 

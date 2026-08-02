@@ -79,6 +79,50 @@ processes:
 	td.stop()
 }
 
+// export-socket: true hands the child the daemon's control socket path so
+// client commands work from inside services (rootless sockets); services
+// without the flag keep an untouched env.
+func TestE2EControlSocketExport(t *testing.T) {
+	dir := t.TempDir()
+	optIn := filepath.Join(dir, "opt-in.log")
+	plain := filepath.Join(dir, "plain.log")
+
+	td := startDaemon(t, fmt.Sprintf(`
+processes:
+  - name: opt-in
+    command: /bin/sh
+    args: ["-c", "echo sock=$GOPHERD_SOCKET > %s && sleep 300"]
+    export-socket: true
+    on-failure: shutdown
+
+  - name: plain
+    command: /bin/sh
+    args: ["-c", "echo sock=$GOPHERD_SOCKET > %s && sleep 300"]
+    on-failure: shutdown
+`, optIn, plain))
+	defer td.kill()
+
+	time.Sleep(1 * time.Second)
+
+	data, err := os.ReadFile(optIn)
+	if err != nil {
+		t.Fatalf("read opt-in log: %v", err)
+	}
+	if !strings.Contains(string(data), "sock="+td.SocketPath()) {
+		t.Errorf("opt-in: expected GOPHERD_SOCKET=%s, got: %s", td.SocketPath(), data)
+	}
+
+	data, err = os.ReadFile(plain)
+	if err != nil {
+		t.Fatalf("read plain log: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "sock=" {
+		t.Errorf("plain: expected empty GOPHERD_SOCKET by default, got: %s", data)
+	}
+
+	td.stop()
+}
+
 func TestE2EEnvironmentTemplate(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "tmpl.log")

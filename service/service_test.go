@@ -1109,3 +1109,69 @@ func TestExpandCPUTemplates(t *testing.T) {
 		})
 	}
 }
+
+// TestPrepareStartExportSocket verifies export-socket: true hands children the
+// daemon's control socket path so client commands work from inside services,
+// and that the default keeps the child env untouched.
+func TestPrepareStartExportSocket(t *testing.T) {
+	// Not parallel: unsets GOPHERD_SOCKET so the pass-env case is deterministic.
+	if v, ok := os.LookupEnv("GOPHERD_SOCKET"); ok {
+		os.Unsetenv("GOPHERD_SOCKET")
+		t.Cleanup(func() { os.Setenv("GOPHERD_SOCKET", v) })
+	}
+	const sock = "/tmp/gopherd-test.sock"
+	boolPtr := func(v bool) *bool { return &v }
+
+	envValue := func(plan *StartPlan, key string) (string, bool) {
+		for _, kv := range plan.cmd.Env {
+			if k, v, ok := strings.Cut(kv, "="); ok && k == key {
+				return v, true
+			}
+		}
+		return "", false
+	}
+	prepare := func(p Process, controlSocket string) *StartPlan {
+		t.Helper()
+		svc := mustNew(t, p, "")
+		svc.ControlSocket = controlSocket
+		plan, err := svc.PrepareStart()
+		if err != nil {
+			t.Fatalf("PrepareStart: %v", err)
+		}
+		return plan
+	}
+
+	// Default (nil) and explicit false: nothing injected.
+	if v, ok := envValue(prepare(Process{Command: "/bin/true"}, sock), "GOPHERD_SOCKET"); ok {
+		t.Errorf("default: GOPHERD_SOCKET = %q, want absent", v)
+	}
+	if v, ok := envValue(prepare(Process{Command: "/bin/true", ExportSocket: boolPtr(false)}, sock), "GOPHERD_SOCKET"); ok {
+		t.Errorf("false: GOPHERD_SOCKET = %q, want absent", v)
+	}
+
+	// Opted in: injected.
+	if v, _ := envValue(prepare(Process{Command: "/bin/true", ExportSocket: boolPtr(true)}, sock), "GOPHERD_SOCKET"); v != sock {
+		t.Errorf("opt-in: GOPHERD_SOCKET = %q, want %q", v, sock)
+	}
+
+	// Explicit user value wins over injection.
+	custom := map[string]string{"GOPHERD_SOCKET": "/custom.sock"}
+	if v, _ := envValue(prepare(Process{Command: "/bin/true", ExportSocket: boolPtr(true), Environment: custom}, sock), "GOPHERD_SOCKET"); v != "/custom.sock" {
+		t.Errorf("user override: GOPHERD_SOCKET = %q, want /custom.sock", v)
+	}
+
+	// remove-env strips it.
+	if v, ok := envValue(prepare(Process{Command: "/bin/true", ExportSocket: boolPtr(true), RemoveEnv: []string{"GOPHERD_SOCKET"}}, sock), "GOPHERD_SOCKET"); ok {
+		t.Errorf("remove-env: GOPHERD_SOCKET = %q, want absent", v)
+	}
+
+	// pass-env true with no other env config must still force an explicit env.
+	if v, _ := envValue(prepare(Process{Command: "/bin/true", ExportSocket: boolPtr(true), PassEnv: boolPtr(true)}, sock), "GOPHERD_SOCKET"); v != sock {
+		t.Errorf("pass-env: GOPHERD_SOCKET = %q, want %q", v, sock)
+	}
+
+	// No control socket known: nothing to inject even when opted in.
+	if v, ok := envValue(prepare(Process{Command: "/bin/true", ExportSocket: boolPtr(true)}, ""), "GOPHERD_SOCKET"); ok {
+		t.Errorf("unset path: GOPHERD_SOCKET = %q, want absent", v)
+	}
+}

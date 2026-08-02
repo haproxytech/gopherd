@@ -1,3 +1,42 @@
+# Docker-based e2e suite (e2e/). The plain test job has no Docker daemon, so
+# the suite self-skips there; this job supplies one via dind (same image combo
+# as kubernetes-ingress-ee). Matrix mirrors the GitHub root/rootless legs.
+test-e2e:
+  stage: test
+  needs: []
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_PIPELINE_SOURCE == 'push'
+  image: $CI_REGISTRY_GO/docker:$DOCKER_VERSION-go$GO_VERSION
+  services:
+    - name: $CI_REGISTRY_GO/docker:$DOCKER_VERSION-dind
+      alias: docker
+      variables:
+        DOCKER_INSECURE_NO_IPTABLES_RAW: "1"
+  tags:
+    - go
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_DRIVER: overlay2
+    GO_VERSION: "1.26"
+    DOCKER_VERSION: "29.1"
+    # dind resolves `docker run -v` paths on its own filesystem; only /builds
+    # is shared with the job container, so bind-mounted test dirs must live
+    # under the project dir.
+    TMPDIR: $CI_PROJECT_DIR/tmp
+  parallel:
+    matrix:
+      - GOPHERD_E2E_ROOTLESS: ["0", "1"]
+  before_script:
+    - docker login -u='$app' -p $CI_REGISTRY_TOKEN $CI_REGISTRY_GO
+    # Pre-seed the e2e Dockerfile base from the mirror; on a miss, docker build
+    # falls back to Docker Hub through dind.
+    - docker pull -q $CI_REGISTRY_GO/alpine:3.21 && docker image tag $CI_REGISTRY_GO/alpine:3.21 alpine:3.21 || true
+    - mkdir -p "$TMPDIR"
+    - go version
+  script:
+    - go test -count=1 -v ./e2e/
+
 test:
   stage: test
   needs: []

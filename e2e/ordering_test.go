@@ -90,6 +90,7 @@ func TestRequiresCascade(t *testing.T) {
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
 no-logo: true
+export-socket: true
 processes:
   - name: db
     command: /bin/sh

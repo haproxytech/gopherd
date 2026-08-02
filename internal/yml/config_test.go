@@ -208,6 +208,55 @@ processes:
 	}
 }
 
+// TestLoadExportSocket verifies the global export-socket default is inherited
+// by services that don't set it, and a per-service value overrides it.
+func TestLoadExportSocket(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "export-socket.yml")
+	os.WriteFile(cfgPath, []byte(`
+export-socket: true
+processes:
+  - name: inherits
+    command: /bin/app
+  - name: opts-out
+    command: /bin/app
+    export-socket: false
+`), 0o644)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if p := cfg.Processes[0]; p.ExportSocket == nil || !*p.ExportSocket {
+		t.Error("inherits: expected ExportSocket=true from global default")
+	}
+	if p := cfg.Processes[1]; p.ExportSocket == nil || *p.ExportSocket {
+		t.Error("opts-out: expected per-service ExportSocket=false to win")
+	}
+}
+
+// TestLoadExportSocketDefault verifies export-socket stays unset (off) when
+// neither global nor per-service config mentions it.
+func TestLoadExportSocketDefault(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "export-socket-default.yml")
+	os.WriteFile(cfgPath, []byte(`
+processes:
+  - name: app
+    command: /bin/app
+`), 0o644)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Processes[0].ExportSocket != nil {
+		t.Error("expected ExportSocket=nil (off) by default")
+	}
+}
+
 func TestLoadInvalidSDNotifyTimeout(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

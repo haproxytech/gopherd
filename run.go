@@ -113,6 +113,7 @@ func run(entrypointArgs []string) int {
 	d := &daemon{
 		configPath:     configPath,
 		cfg:            cfg,
+		controlSocket:  socketPath,
 		entrypointArgs: entrypointArgs,
 		pidMap:         make(map[int]*service.Service),
 		restartCh:      make(chan restartReq, 64),

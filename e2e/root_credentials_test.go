@@ -347,6 +347,7 @@ func TestRootKillDelay(t *testing.T) {
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
 no-logo: true
+export-socket: true
 processes:
   - name: keeper
     command: sleep

@@ -111,6 +111,8 @@ The `start`/`stop`/`restart`/`status` actions accept either order: `gopherd app 
 
 Override the control socket path with the `GOPHERD_SOCKET` env var (default: `/run/gopherd.sock`). It applies to both the daemon and the client, and takes precedence over `control: socket:` in the config — handy for rootless deployments where `/run` is not writable (point it at a writable path).
 
+To run client commands from *inside* a managed service, set `export-socket: true` (global or per-service): the daemon then sets `GOPHERD_SOCKET` in that service's environment to its resolved socket path (like `NOTIFY_SOCKET` for sd-notify). Off by default — the child environment is left untouched. An explicit `environment: GOPHERD_SOCKET` value wins, and `remove-env: [GOPHERD_SOCKET]` strips it.
+
 #### Entrypoint passthrough
 
 When invoked with arguments that aren't known client commands, `gopherd` execs the command directly (replacing the process). This is useful for debugging containers:
@@ -417,6 +419,12 @@ Below is a full example showing all available options:
 # can override with per-service pass-env: true/false.
 # pass-env: false
 
+# Global export-socket default. When true, each service's environment gets
+# GOPHERD_SOCKET set to the daemon's control socket path, so gopherd client
+# commands work from inside services (e.g. relocated socket in rootless
+# containers). Individual services can override with export-socket: true/false.
+# export-socket: false
+
 # Control socket
 control:
   socket: /run/gopherd.sock          # Unix socket path for runtime control
@@ -534,6 +542,7 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `log-capture` | bool | `false` | Global default: pipe child stdout/stderr through gopherd (enables prefixes, `logs` command, log-targets). When false, children write directly to the OS stdout/stderr with zero supervision overhead |
 | `prefix` | string | `"service timestamp"` | Log prefix format for all services (requires `log-capture: true`) |
 | `pass-env` | bool | `false` | Global default: forward gopherd's OS environment to children (false = empty env, children see only dotenv + per-process `environment`) |
+| `export-socket` | bool | `false` | Global default: set `GOPHERD_SOCKET` in each child's env to the daemon's control socket path, so client commands work from inside services |
 | `no-logo` | bool | `false` | Suppress ASCII art banner at startup |
 | `shutdown-order` | string | `"reverse-dep"` | Shutdown strategy: `reverse-dep`, `dep`, or `simultaneous` |
 | `init-stop-signal` | string[] | `[SIGTERM, SIGINT]` | Signals that trigger gopherd's own graceful shutdown. `SIGKILL` and `SIGSTOP` are rejected at load (cannot be caught). |
@@ -556,6 +565,7 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `group-id` | int | inherited | Run as group (numeric, takes precedence) |
 | `strict-groups` | bool | `false` | When an explicit group is set, drop the named user's supplementary groups instead of keeping full membership |
 | `pass-env` | bool | global default | Forward gopherd's OS environment to this service (false = empty env + only dotenv/environment vars) |
+| `export-socket` | bool | global default | Set `GOPHERD_SOCKET` in this service's env to the daemon's control socket path (client commands work from inside the service) |
 | `log-capture` | bool | global default | Pipe this service's stdout/stderr through gopherd; false = direct FD passthrough (no prefix, no `logs`, no log-targets for this service) |
 | `remove-env` | list | `[]` | Env keys to delete from the final child environment, regardless of source (OS env / dotenv / `environment:`) |
 | `startup` | string | `"enabled"` | `"enabled"`, `"disabled"`, or `"oneshot"`. Supports `{{.VAR}}` / `{{.VAR:-default}}` and `{{file "/path"}}`; empty after expansion → disabled. Oneshots with no `after`/`requires` edge between them run concurrently; dependents wait for all oneshots in the prior layer to exit cleanly |

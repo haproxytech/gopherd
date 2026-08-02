@@ -67,6 +67,11 @@ type Config struct {
 	// gopherd's stdout/stderr FDs with zero supervision overhead. Explicit
 	// true opts in to capture (prefixes, logs command, log-targets).
 	LogCapture *bool
+	// ExportSocket is the global default for the per-service export-socket
+	// flag. nil means "not set", treated as false: children do not receive
+	// GOPHERD_SOCKET. Explicit true exposes the control socket path so client
+	// commands work from inside services.
+	ExportSocket *bool
 
 	ShutdownOrder string
 	// InitStopSignal lists signals that trigger gopherd's own graceful
@@ -139,6 +144,9 @@ func Unmarshal(data []byte) (*Config, error) {
 	if n := root.Get("log-capture"); n != nil {
 		cfg.LogCapture = n.BoolPtr()
 	}
+	if n := root.Get("export-socket"); n != nil {
+		cfg.ExportSocket = n.BoolPtr()
+	}
 	if n := root.Get("init-stop-signal"); n != nil {
 		cfg.InitStopSignal = n.Strings()
 		// Reject SIGKILL/SIGSTOP: the kernel never delivers them to a
@@ -194,6 +202,10 @@ func Unmarshal(data []byte) (*Config, error) {
 		if p.LogCapture == nil && cfg.LogCapture != nil {
 			v := *cfg.LogCapture
 			p.LogCapture = &v
+		}
+		if p.ExportSocket == nil && cfg.ExportSocket != nil {
+			v := *cfg.ExportSocket
+			p.ExportSocket = &v
 		}
 		cfg.Processes = append(cfg.Processes, p)
 	}
@@ -339,6 +351,7 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		UseEntrypointArgs: n.Get("use-entrypoint-args").Bool(),
 		PassEnv:           n.Get("pass-env").BoolPtr(),
 		LogCapture:        n.Get("log-capture").BoolPtr(),
+		ExportSocket:      n.Get("export-socket").BoolPtr(),
 		DotEnv:            n.Get("dotenv").String(),
 		DotEnvFollow:      n.Get("dotenv-follow").Bool(),
 		After:             n.Get("after").Strings(),

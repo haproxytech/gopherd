@@ -28,6 +28,7 @@ func TestLogsFollow(t *testing.T) {
 		"gopherd.yml": `
 no-logo: true
 log-capture: true
+export-socket: true
 processes:
   - name: ticker
     command: /bin/sh
@@ -73,6 +74,7 @@ func TestClientForm(t *testing.T) {
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
 no-logo: true
+export-socket: true
 processes:
   - name: keeper
     command: sleep
@@ -171,6 +173,7 @@ func TestControlStartStopRestart(t *testing.T) {
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
 no-logo: true
+export-socket: true
 processes:
   - name: keeper
     command: sleep

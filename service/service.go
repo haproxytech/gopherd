@@ -89,7 +89,11 @@ type Process struct {
 	// LogCapture pipes child stdout/stderr through gopherd (enables prefixes,
 	// the logs command, and log-targets). nil/false: the child inherits
 	// gopherd's stdout/stderr FDs and gopherd never touches its output.
-	LogCapture     *bool
+	LogCapture *bool
+	// ExportSocket sets GOPHERD_SOCKET in the child env to the daemon's control
+	// socket path, so client commands work from inside the service (relocated
+	// socket, rootless). nil/false: the child env is left untouched.
+	ExportSocket   *bool
 	Name           string
 	Command        string
 	WorkingDir     string
@@ -169,9 +173,12 @@ type Service struct {
 	// by svc.mu.
 	sdNotifyListener *sdnotify.Listener
 
-	Name      string
-	OnSuccess ExitAction
-	OnFailure ExitAction
+	Name string
+	// ControlSocket is the daemon's resolved control socket path, exported to
+	// children as GOPHERD_SOCKET so client commands work from inside services.
+	ControlSocket string
+	OnSuccess     ExitAction
+	OnFailure     ExitAction
 
 	Proc Process
 
@@ -640,6 +647,16 @@ func (s *Service) PrepareStart() (*StartPlan, error) {
 	if err != nil {
 		return nil, err
 	}
+	// export-socket opt-in: expose the control socket so the gopherd client
+	// works from inside the service (relocated socket, rootless). User-set
+	// values win; injected before remove-env so operators can strip it. Not a
+	// userKey: literal path, never template-expanded.
+	exportSocket := s.Proc.ExportSocket != nil && *s.Proc.ExportSocket && s.ControlSocket != ""
+	if exportSocket {
+		if _, ok := env["GOPHERD_SOCKET"]; !ok {
+			env["GOPHERD_SOCKET"] = s.ControlSocket
+		}
+	}
 	// Drop remove-env keys after the merge so a shared dotenv key can be
 	// suppressed for one service without editing the dotenv file.
 	for _, k := range s.Proc.RemoveEnv {
@@ -698,8 +715,9 @@ func (s *Service) PrepareStart() (*StartPlan, error) {
 
 	// Set cmd.Env explicitly unless pass-env is on with no other env config:
 	// a nil cmd.Env makes Go inherit the parent env, which is only safe then.
-	// SDNotify forces an explicit env so FinishStart can append NOTIFY_SOCKET.
-	if !passEnv || s.Proc.DotEnv != "" || len(s.Proc.Environment) > 0 || len(s.Proc.RemoveEnv) > 0 || s.Proc.SDNotify {
+	// SDNotify forces an explicit env so FinishStart can append NOTIFY_SOCKET;
+	// export-socket forces it so the GOPHERD_SOCKET injection reaches the child.
+	if !passEnv || s.Proc.DotEnv != "" || len(s.Proc.Environment) > 0 || len(s.Proc.RemoveEnv) > 0 || s.Proc.SDNotify || exportSocket {
 		// Expand templates only in user-defined values (dotenv + procEnv).
 		// Inherited OS env passes through verbatim so incidental "{{" does not
 		// trigger expansion failures.

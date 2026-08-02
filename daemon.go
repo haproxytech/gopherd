@@ -136,7 +136,11 @@ type daemon struct {
 	// counts as restarts+1 only, not also exits+1). Guarded by d.mu.
 	restartPending map[string]bool
 
-	configPath     string
+	configPath string
+	// controlSocket is the socket path bound at startup (config + GOPHERD_SOCKET
+	// override, defaulted). Injected into children; stable across reloads since
+	// the socket itself is bind-once.
+	controlSocket  string
 	shutdownMode   string // "reverse-dep" (default), "dep", "simultaneous"
 	checkers       []*check.Checker
 	logTargets     []*logger.Target
@@ -462,6 +466,10 @@ func (d *daemon) buildLogTargets() {
 // before applying partial state.
 func (d *daemon) buildServices() error {
 	d.services = make(map[string]*service.Service)
+	controlSocket := d.controlSocket
+	if controlSocket == "" {
+		controlSocket = control.DefaultSocketPath
+	}
 	for _, p := range d.cfg.Processes {
 		if p.UseEntrypointArgs && len(d.entrypointArgs) > 0 {
 			p.Args = append(p.Args, d.entrypointArgs...)
@@ -475,6 +483,7 @@ func (d *daemon) buildServices() error {
 		if err != nil {
 			return err
 		}
+		svc.ControlSocket = controlSocket
 		d.services[svc.Name] = svc
 		d.m.RegisterService(svc.Name, svc.Enabled)
 		for _, lt := range d.logTargets {
@@ -1011,6 +1020,10 @@ func processConfigChanged(oldp, newp service.Process) bool {
 	}
 	// log-capture picks the FD wiring at fork time, so a change needs a restart.
 	if boolPtrDiffers(oldp.LogCapture, newp.LogCapture) {
+		return true
+	}
+	// export-socket is applied to the env at fork time.
+	if boolPtrDiffers(oldp.ExportSocket, newp.ExportSocket) {
 		return true
 	}
 	if !maps.Equal(oldp.Environment, newp.Environment) {
