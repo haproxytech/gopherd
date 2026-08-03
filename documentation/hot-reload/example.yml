@@ -1,0 +1,9 @@
+# Hot reload: edit this file, then run `gopherd reload` (or send SIGHUP).
+# gopherd re-reads it and reconciles: added services start, removed services
+# stop, policy-only changes (on-failure, exit-code-map, signal-rewrite)
+# apply in place without restarting the running service.
+processes:
+  - name: app
+    command: /usr/local/bin/myapp
+    args: ["300"]
+    on-failure: shutdown

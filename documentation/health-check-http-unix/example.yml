@@ -1,0 +1,16 @@
+# HTTP health check over a Unix domain socket: `socket` points at the unix
+# socket to connect through; `url` supplies the request path (the host part
+# is ignored by the server behind a socket).
+processes:
+  - name: app
+    command: /usr/local/bin/app
+    args: ["300"]
+    on-failure: shutdown
+
+checks:
+  app-http:
+    http:
+      url: http://localhost/health
+      socket: SOCKETFILE
+    period: 300ms
+    threshold: 1

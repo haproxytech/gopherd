@@ -1,0 +1,17 @@
+# remove-env strips keys from the final child environment after the merge of
+# OS env, dotenv, and environment: — share one dotenv, hide the secret from
+# the child that must not see it.
+processes:
+  - name: worker
+    command: /bin/sh
+    args: ["-c", "test \"$API_TOKEN\" = s3cr3t && test \"$PORT\" = 9090 && sleep 300 || exit 9"]
+    dotenv: .env
+    on-failure: shutdown
+
+  # same dotenv, but the token is stripped from this child
+  - name: metrics
+    command: /bin/sh
+    args: ["-c", "test -z \"$API_TOKEN\" && test \"$PORT\" = 9090 && sleep 300 || exit 9"]
+    dotenv: .env
+    remove-env: [API_TOKEN]
+    on-failure: shutdown

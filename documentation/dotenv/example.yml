@@ -1,0 +1,13 @@
+# dotenv: KEY=value pairs loaded from a file into template expansion and the
+# child environment (pass-env stays false: children see only these plus
+# `environment:`). Re-read at every service start, so a restart picks up
+# rotated values. Symlinked paths are refused unless dotenv-follow: true
+# (K8s secret mounts, /var/run -> /run).
+processes:
+  - name: app
+    command: /bin/sh
+    # PORT feeds the {{.PORT:-8080}} template; API_TOKEN arrives via child env.
+    args: ["-c", "test {{.PORT:-8080}} = 9090 && test \"$API_TOKEN\" = s3cr3t && sleep 300 || exit 9"]
+    # relative to gopherd's working directory; prefer absolute in containers
+    dotenv: .env
+    on-failure: shutdown

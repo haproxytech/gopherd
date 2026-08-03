@@ -1,0 +1,15 @@
+# Restart policy: on-failure: restart relaunches a crashing service with
+# exponential backoff (delay doubles each attempt, capped at backoff-limit)
+# instead of shutting the container down.
+processes:
+  - name: app
+    command: /usr/local/bin/myapp
+    args: ["300"]
+    on-failure: shutdown
+
+  - name: flaky
+    command: /usr/local/bin/flaky-worker
+    on-failure: restart
+    backoff-delay: 500ms
+    backoff-factor: 2.0
+    backoff-limit: 5s

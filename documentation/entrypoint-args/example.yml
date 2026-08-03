@@ -1,0 +1,11 @@
+# Entrypoint args: with gopherd as the image ENTRYPOINT, extra `docker run`
+# arguments are appended to the one service marked use-entrypoint-args.
+# A bare command instead (docker run image /bin/sh) bypasses the init system
+# entirely and execs directly (passthrough).
+processes:
+  - name: app
+    command: /bin/sh
+    # entrypoint args land after the listed args: here as $1 $2 ...
+    args: ["-c", "echo $* > ARGSFILE; exec sleep 300", "app"]
+    use-entrypoint-args: true
+    on-failure: shutdown

@@ -1,0 +1,9 @@
+# Log streaming: `gopherd logs <svc>` prints recent lines from the ring
+# buffer; `gopherd logs <svc> -f` follows live output. Requires log-capture.
+log-capture: true
+
+processes:
+  - name: ticker
+    command: /bin/sh
+    args: ["-c", "i=0; while true; do i=$((i+1)); echo tick $i; sleep 0.2; done"]
+    on-failure: shutdown

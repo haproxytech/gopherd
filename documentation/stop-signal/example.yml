@@ -1,0 +1,18 @@
+# Per-service shutdown contract: stop-signal is sent to the process group,
+# and after kill-delay anything still alive gets SIGKILL.
+processes:
+  # nginx-style: wants a specific signal for graceful shutdown. The trap must
+  # kill the child: non-interactive shells start background jobs with SIGINT
+  # ignored, so the group signal alone won't reach it.
+  - name: graceful
+    command: /bin/sh
+    args: ["-c", "trap 'kill $!; exit 0' INT; sleep 300 & wait"]
+    stop-signal: SIGINT
+    on-failure: shutdown
+
+  # ignores SIGTERM; escalated to SIGKILL after kill-delay
+  - name: stubborn
+    command: /bin/sh
+    args: ["-c", "trap '' TERM; while true; do sleep 1 || true; done"]
+    kill-delay: 2s
+    on-failure: shutdown

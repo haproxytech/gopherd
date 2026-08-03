@@ -1,0 +1,14 @@
+# requires: hard dependency (systemd Requires= semantics). Ordering like
+# `after:`, plus failure coupling: if db fails, web is stopped too and stays
+# stopped until manually restarted.
+processes:
+  - name: db
+    command: /usr/local/bin/db
+    args: ["300"]
+    on-failure: ignore
+
+  - name: web
+    command: /usr/local/bin/web
+    args: ["300"]
+    requires: [db]
+    on-failure: ignore

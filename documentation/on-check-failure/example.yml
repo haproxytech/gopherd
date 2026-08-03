@@ -1,0 +1,18 @@
+# on-check-failure ties a health check to an action: when the check trips
+# its threshold, gopherd restarts (or stops / shuts down on) the service.
+processes:
+  - name: app
+    command: /bin/sh
+    # healthy while its flag file exists; recreates it on every (re)start
+    args: ["-c", "touch FLAGFILE; exec sleep 300"]
+    on-check-failure:
+      app-alive: restart
+    on-failure: shutdown
+
+checks:
+  app-alive:
+    exec:
+      command: /bin/sh
+      args: ["-c", "test -f FLAGFILE"]
+    period: 300ms
+    threshold: 2

@@ -1,0 +1,23 @@
+# export-socket injects GOPHERD_SOCKET into the child environment, so gopherd
+# client commands (status/start/stop/restart/...) work from inside services.
+# Off by default. Global default here; per-service override below.
+export-socket: true
+
+processes:
+  - name: app
+    command: /usr/local/bin/myapp
+    args: ["300"]
+    on-failure: shutdown
+
+  # Sees GOPHERD_SOCKET: talks to its own supervisor via the client binary.
+  - name: sidecar
+    command: /bin/sh
+    args: ["-c", "gopherd status app > STATUSFILE 2>&1; echo ${GOPHERD_SOCKET:-unset} > SOCKFILE; exec sleep 300"]
+    on-failure: shutdown
+
+  # Per-service opt-out: this child's env has no GOPHERD_SOCKET.
+  - name: plain
+    command: /bin/sh
+    args: ["-c", "echo ${GOPHERD_SOCKET:-unset} > PLAINFILE; exec sleep 300"]
+    export-socket: false
+    on-failure: shutdown
