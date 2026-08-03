@@ -388,7 +388,7 @@ init-stop-signal: [SIGTERM, SIGINT, SIGQUIT]
 
 ### Configuration
 
-Configuration is a single YAML file (no external YAML library — built-in parser). See the [example/](example/) directory for ready-to-use configs including a minimal setup, HAProxy ingress pattern, and a comprehensive all-options reference. The [documentation/](documentation/) directory contains examples — one folder per feature, each with a runnable config, a README, and a Go test proving the documented behavior.
+Configuration is a single YAML file (no external YAML library — built-in parser). The [documentation/](documentation/) directory contains CI-tested examples — one folder per feature, each with a runnable config, a README, and a Go test proving the documented behavior — plus [documentation/all-options/](documentation/all-options/), a commented reference config listing every available option.
 
 Below is a full example showing all available options:
 

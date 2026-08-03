@@ -1,4 +1,0 @@
-# Minimal: single process
-processes:
-  - name: app
-    command: /usr/local/bin/myapp

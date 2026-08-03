@@ -1,4 +1,9 @@
-# Complete example showing every available option (YAML format).
+# Reference config showing every available option (YAML format).
+#
+# NOT a runnable config: commands, paths, and hosts are illustrative
+# placeholders. Use it as a lookup reference; copy what you need.
+# The test in this folder keeps it honest: the file must pass the real
+# config loader, and every option key the parser knows must appear here.
 
 # Capture child stdout/stderr through gopherd (default: false).
 # false: children write directly to the container's stdout/stderr — zero
@@ -21,6 +26,11 @@
 # Omit or leave empty to use the default ("service timestamp").
 # Can be overridden per process.
 # prefix: "service timestamp"
+
+# Global default for per-service export-socket (default: false).
+# When true, each service's environment gets GOPHERD_SOCKET pointing at the
+# daemon's control socket, so client commands work from inside services.
+# export-socket: false
 
 # Suppress the ASCII logo on daemon startup (default: false).
 # no-logo: true
@@ -45,6 +55,7 @@
 # Use `gopherd stats` to view service and check statistics.
 control:
   socket: /run/gopherd.sock
+  # socket-mode: "0660"                  # octal file mode (default: 0600, owner-only)
 
 # --- Processes ---
 processes:
@@ -53,6 +64,7 @@ processes:
     command: /bin/sh
     args: ["-c", "chown app:app /data && chmod 750 /data"]
     startup: oneshot
+    startup-timeout: 30s                 # kill the oneshot if it hangs past this
     on-failure: ignore
     working-dir: /
     user: root
@@ -64,12 +76,15 @@ processes:
     # {{.VAR}} expands to env value ("" if unset). {{.VAR:-default}} falls
     # back to the literal default text when VAR is unset or empty.
     args: ["--config", "/etc/app.conf", "--verbose", "-m", "{{.MEMLIMIT}}", "--threads", "{{cpu}}", "--log-level={{.LOG_LEVEL:-info}}"]
+    # use-entrypoint-args: true          # append docker run args to this service (one service only)
     dotenv: /etc/app.env                 # load KEY=value env vars from file
+    # dotenv-follow: true                # permit symlinked dotenv file (K8s ..data/ mounts)
     working-dir: /app
     user: app
     group: app
     # user-id: 1000
     # group-id: 1000
+    # strict-groups: true                # drop the user's supplementary groups when group is set
     startup: enabled                     # enabled (default), disabled, or oneshot
     stop-signal: SIGTERM                 # signal sent on shutdown (default: SIGTERM)
     kill-delay: 10s                      # grace period before SIGKILL (default: 5s)
@@ -99,6 +114,7 @@ processes:
     # prefix: "service"                  # per-process prefix override (see global prefix)
     # pass-env: true                     # opt in to inheriting gopherd's OS env (default: false)
     # log-capture: true                  # capture output through gopherd (see global log-capture)
+    # export-socket: true                # set GOPHERD_SOCKET in this child's env (see global export-socket)
     # remove-env:                        # strip these keys from the final child env
     #   - DB_PASSWORD                    #   (useful for shared dotenv files)
     #   - AWS_SECRET_ACCESS_KEY
@@ -150,7 +166,6 @@ checks:
     timeout: 3s
     threshold: 3
     initial-delay: 15s                   # wait before first check (default: 1x period)
-    level: ready
 
   # HTTP health check over Unix socket.
   app-unix:

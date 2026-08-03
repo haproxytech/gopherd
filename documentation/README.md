@@ -12,6 +12,12 @@ Run all example tests:
 go test ./documentation/...
 ```
 
+## Reference
+
+- [all-options](all-options/) — every option in one commented config; not
+  runnable, but CI-validated: it must pass the config loader and mention
+  every option key the parser reads
+
 ## Basics
 
 - [minimal](minimal/) — single process supervised by gopherd

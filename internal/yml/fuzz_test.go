@@ -85,11 +85,12 @@ func nestedMapping(depth int) string {
 }
 
 // exampleConfigs loads the repo's real config files as seeds (better coverage
-// than synthetic ones). go test's CWD is this package, so ../../example hits
-// the repo-root dir; ../example silently matched nothing after the internal/ move.
+// than synthetic ones). go test's CWD is this package, so ../../documentation
+// hits the repo-root dir. Empty result fails: a stale glob after a docs move
+// would otherwise silently drop all real-config seeds.
 func exampleConfigs(tb testing.TB) [][]byte {
 	tb.Helper()
-	matches, err := filepath.Glob("../../example/*.yml")
+	matches, err := filepath.Glob("../../documentation/*/example.yml")
 	if err != nil {
 		return nil
 	}
@@ -100,6 +101,9 @@ func exampleConfigs(tb testing.TB) [][]byte {
 			continue
 		}
 		out = append(out, data)
+	}
+	if len(out) == 0 {
+		tb.Fatalf("no example configs matched ../../documentation/*/example.yml")
 	}
 	return out
 }
