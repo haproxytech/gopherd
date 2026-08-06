@@ -794,9 +794,8 @@ func TestParseDotEnvFollowAllowsSymlinkedAncestor(t *testing.T) {
 }
 
 // TestDoubleStopCancelsFirstTimer verifies that calling Stop() twice before the
-// process exits does not leak the first kill timer. Without the fix a second
-// Stop() call would overwrite s.killTimer with a new timer, leaving the first
-// one running and unable to be cancelled by MarkExited().
+// process exits does not leak the first kill timer: a second Stop() must cancel
+// and replace it, so at most one escalation timer is ever pending per service.
 func TestDoubleStopCancelsFirstTimer(t *testing.T) {
 	t.Parallel()
 	// Use a non-zero kill-delay so the timer is actually created.
@@ -831,14 +830,15 @@ func TestDoubleStopCancelsFirstTimer(t *testing.T) {
 		t.Error("second Stop() must allocate a fresh timer; first timer was not cancelled")
 	}
 
-	// Clean up: wait for the process and call MarkExited which cancels secondTimer.
+	// Clean up: wait for the process and call MarkExited.
 	var ws syscall.WaitStatus
 	syscall.Wait4(pid, &ws, 0, nil)
 	svc.MarkExited()
 
-	// After MarkExited, no timer should remain.
-	if svc.killTimer != nil {
-		t.Error("expected killTimer to be nil after MarkExited()")
+	// MarkExited must NOT cancel the timer: it still owes surviving group
+	// members a SIGKILL at kill-delay (probe makes a dead group a no-op).
+	if svc.killTimer == nil {
+		t.Error("killTimer must stay armed after MarkExited() to kill surviving group members")
 	}
 }
 

@@ -126,6 +126,12 @@ type daemon struct {
 	// on this channel. A closed channel broadcasts to all receivers at once.
 	shutdownCh chan struct{}
 
+	// stopAllDone is closed by initiateShutdown after stopAll returns. The
+	// reap loop waits on it before teardown so the per-service SIGKILL
+	// escalation (WaitGroupExit) finishes before gopherd exits — otherwise
+	// group members that outlive their leader would leak to the host init.
+	stopAllDone chan struct{}
+
 	// childStarted wakes the reap loop from its idle wait when a new child is
 	// forked. Buffered so startService never blocks; a non-blocking send suffices
 	// since the reap loop re-checks via Wait4 once woken.
@@ -339,6 +345,10 @@ func (d *daemon) stopSequential(seq []string) {
 		stopped[name] = true
 		d.mu.Unlock()
 		<-done
+		// Leader is reaped; give the SIGKILL escalation time to catch group
+		// members that survived the stop signal, so they don't leak past
+		// gopherd's own exit.
+		svc.WaitGroupExit()
 		d.mu.Lock()
 	}
 	// Stop any services not covered by the ordered sequence.
@@ -350,6 +360,7 @@ func (d *daemon) stopSequential(seq []string) {
 		svc.Stop()
 		d.mu.Unlock()
 		<-done
+		svc.WaitGroupExit()
 		d.mu.Lock()
 	}
 }
@@ -362,9 +373,11 @@ func (d *daemon) stopSequential(seq []string) {
 func (d *daemon) stopSimultaneous() {
 	// Collect done channels and signal stops under d.mu, then release before waiting.
 	dones := make([]<-chan struct{}, 0, len(d.services))
+	svcs := make([]*service.Service, 0, len(d.services))
 	for _, svc := range d.services {
 		if svc.IsRunning() {
 			dones = append(dones, svc.Done())
+			svcs = append(svcs, svc)
 			svc.Stop()
 		}
 	}
@@ -372,8 +385,11 @@ func (d *daemon) stopSimultaneous() {
 		return
 	}
 	d.mu.Unlock()
-	for _, done := range dones {
+	for i, done := range dones {
 		<-done
+		// Leader is reaped; let the SIGKILL escalation catch surviving group
+		// members before gopherd exits.
+		svcs[i].WaitGroupExit()
 	}
 	d.mu.Lock()
 }
@@ -392,6 +408,7 @@ func (d *daemon) initiateShutdown(code int) {
 	d.mu.Lock()
 	d.stopAll()
 	d.mu.Unlock()
+	close(d.stopAllDone)
 }
 
 func (d *daemon) handleCheckFailure(checkName string) {

@@ -119,6 +119,7 @@ func run(entrypointArgs []string) int {
 		restartCh:      make(chan restartReq, 64),
 		restartPending: make(map[string]bool),
 		shutdownCh:     make(chan struct{}),
+		stopAllDone:    make(chan struct{}),
 		childStarted:   make(chan struct{}, 1),
 	}
 
@@ -301,8 +302,9 @@ func run(entrypointArgs []string) int {
 		if isManaged {
 			delete(d.pidMap, pid)
 			// MarkExited atomically invalidates svc.Pid/svc.running before taking
-			// svc.mu, so concurrent Stop/Signal/killTimer callers trip the
-			// stale-pid guard and never Kill a pid the kernel just freed.
+			// svc.mu, so concurrent Stop/Signal callers trip the stale-pid guard
+			// and never Kill a pid the kernel just freed. The kill timer stays
+			// armed: it probes group liveness itself before escalating.
 			runDuration := svc.MarkExited()
 			// Apply exit-code-map BEFORE the WasStopped fallback so an explicit
 			// mapping (e.g. 143 -> 42) wins over the implicit stop-becomes-0 rule.
@@ -443,6 +445,15 @@ func run(entrypointArgs []string) int {
 				break
 			}
 		}
+	}
+
+	// The reap loop breaks as soon as the last child is reaped, but stopAll
+	// (async goroutine) may still be waiting out SIGKILL escalations for
+	// group members that outlived their leader. Exiting now would kill those
+	// timers and leak the strays; stopAll is bounded (kill-delay + grace per
+	// service), so this wait is too.
+	if d.shuttingDown.Load() {
+		<-d.stopAllDone
 	}
 
 	ctrlServer.Stop()

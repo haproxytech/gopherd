@@ -3,7 +3,8 @@
 Every stop — control-socket `stop`, dependency shutdown, or gopherd's own
 graceful exit — follows the same per-service contract: send `stop-signal`
 (default `SIGTERM`) to the service's process group, wait `kill-delay`
-(default `5s`), then SIGKILL whatever is still alive.
+(default `10s`, matching Docker's stop timeout and well under the 30s
+Kubernetes pod grace period), then SIGKILL whatever is still alive.
 
 ## Config
 
@@ -27,9 +28,13 @@ processes:
 - The signal goes to the whole process group (each service runs in its own
   session), so shell wrappers and their children all receive it. Caveat:
   non-interactive shells start background jobs (`cmd &`) with SIGINT/SIGQUIT
-  ignored — a wrapper's trap must `kill` them itself, as above.
+  ignored — a wrapper's trap should `kill` them itself, as above.
+- The escalation covers the whole group even when the leader exits promptly:
+  members that survive the stop signal (ignored signal, forked workers) are
+  SIGKILLed at `kill-delay` — the trap pattern above is the graceful path,
+  the escalation is the backstop.
 - `kill-delay: 0` disables the SIGKILL escalation entirely — the service
-  gets unlimited time to exit.
+  gets unlimited time to exit, and surviving group members are tolerated.
 - A stop via the control socket is intentional: the exit does not trigger
   `on-success` / `on-failure` actions, and gopherd stays up.
 

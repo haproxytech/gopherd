@@ -52,7 +52,8 @@ const (
 )
 
 // DefaultKillDelay is the default grace period before sending SIGKILL.
-const DefaultKillDelay = 5 * time.Second
+// Matches Docker's stop timeout; under the 30s K8s pod grace default.
+const DefaultKillDelay = 10 * time.Second
 
 // ParseExitAction parses an exit action string, returning the default if empty.
 // An unknown action returns the default plus a non-nil error so callers can
@@ -156,7 +157,9 @@ type Process struct {
 
 // Service wraps a Process config with runtime state for lifecycle management.
 type Service struct {
-	startedAt      time.Time
+	startedAt    time.Time
+	killDeadline time.Time
+
 	Backoff        *backoff.Backoff
 	Requires       map[string]bool       // hard dependencies
 	OnCheckFailure map[string]ExitAction // check name -> action
@@ -165,7 +168,7 @@ type Service struct {
 	Stderr *logger.PrefixWriter
 
 	cmd       *exec.Cmd
-	killTimer *time.Timer // deferred SIGKILL; cancelled on exit to prevent PID reuse race
+	killTimer *time.Timer // deferred group SIGKILL; fires even after leader exit (probe guards pid reuse)
 	done      chan struct{}
 
 	// sdNotifyListener owns the sd_notify abstract socket when Proc.SDNotify
@@ -181,6 +184,10 @@ type Service struct {
 	OnFailure     ExitAction
 
 	Proc Process
+
+	// Escalation bookkeeping for WaitGroupExit: pgid the pending SIGKILL
+	// targets and when it will have fired. Guarded by mu.
+	killPgid int
 
 	stopSignal syscall.Signal
 	killDelay  time.Duration
@@ -818,8 +825,10 @@ func (s *Service) Start() (int, error) {
 
 // Stop signals the process group (negative PID, so forked children are hit too)
 // with the configured stop signal and schedules SIGKILL after kill-delay. Sets
-// the stopped flag so the reap loop knows the exit was intentional. MarkExited
-// cancels the deferred SIGKILL to avoid signalling a recycled PID.
+// the stopped flag so the reap loop knows the exit was intentional. The SIGKILL
+// timer always fires — even after the leader is reaped — so group members that
+// survive the stop signal are still killed; a liveness probe in the callback
+// keeps it from signalling a recycled pgid.
 func (s *Service) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -841,23 +850,26 @@ func (s *Service) Stop() {
 			s.killTimer.Stop()
 		}
 		kpid := int(s.Pid.Load())
+		s.killPgid = kpid
+		s.killDeadline = time.Now().Add(s.killDelay)
 		s.killTimer = time.AfterFunc(s.killDelay, func() {
 			if kpid <= 0 {
 				return
 			}
-			// Hold s.mu across the Kill to serialize with MarkExited:
-			// timer.Stop() does not wait if this callback is already running,
-			// so without the lock we could observe a still-running service and
-			// signal a PID the kernel has recycled. Under the lock, either
-			// MarkExited ran first (running=false, we return) or the Kill
-			// completes before it acquires the lock. MarkExited's caller has
-			// already reaped the PID via Wait4, so no recycling race remains.
+			// Escalate even after the leader was reaped: group members that
+			// survive the stop signal (forking daemons, background jobs with
+			// the signal ignored) must not outlive the service. s.mu serializes
+			// with Stop() re-arming and with a concurrent restart's FinishStart.
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			if !s.running.Load() || int(s.Pid.Load()) != kpid {
-				return
+			// Liveness probe: a pgid cannot be recycled while any member lives,
+			// so err == nil proves -kpid is still our group. EPERM means some
+			// process we may not signal exists — possibly a recycled pid; skip.
+			// Residual probe→kill TOCTOU needs the group to fully die and
+			// pid_max to wrap between the two syscalls; accepted as negligible.
+			if err := syscall.Kill(-kpid, 0); err == nil {
+				_ = syscall.Kill(-kpid, syscall.SIGKILL)
 			}
-			_ = syscall.Kill(-kpid, syscall.SIGKILL)
 		})
 	}
 }
@@ -882,15 +894,17 @@ func (s *Service) Signal(sig os.Signal) {
 	_ = syscall.Kill(-pid, sysSig)
 }
 
-// MarkExited marks the service as no longer running, cancels any pending
-// SIGKILL, and returns how long it ran.
+// MarkExited marks the service as no longer running and returns how long it
+// ran. A pending SIGKILL timer is deliberately NOT cancelled: group members
+// that survived the stop signal must still be killed at kill-delay; the
+// timer's liveness probe makes firing on a fully dead group a safe no-op.
 //
 // Clears s.running and s.Pid atomically BEFORE acquiring s.mu so concurrent
-// Stop, Signal, and killTimer callers (which re-read these atomics after
-// locking) trip their `pid <= 0` / `Pid.Load() != kpid` guards. Since Wait4 has
-// already freed the pid for reuse, this bounds the window in which a concurrent
-// signaller could Kill a just-recycled pid. The residual window cannot be
-// closed without pidfd_send_signal, which is not in the syscall stdlib.
+// Stop and Signal callers (which re-read these atomics after locking) trip
+// their `pid <= 0` guards. Since Wait4 has already freed the pid for reuse,
+// this bounds the window in which a concurrent signaller could Kill a
+// just-recycled pid. The residual window cannot be closed without
+// pidfd_send_signal, which is not in the syscall stdlib.
 func (s *Service) MarkExited() time.Duration {
 	s.running.Store(false)
 	s.Pid.Store(0)
@@ -901,15 +915,48 @@ func (s *Service) MarkExited() time.Duration {
 		close(s.done)
 		s.done = nil
 	}
-	if s.killTimer != nil {
-		s.killTimer.Stop()
-		s.killTimer = nil
-	}
 	if s.sdNotifyListener != nil {
 		_ = s.sdNotifyListener.Close()
 		s.sdNotifyListener = nil
 	}
 	return time.Since(s.startedAt)
+}
+
+// WaitGroupExit blocks until the stopped instance's whole process group is
+// gone or the SIGKILL escalation has had time to fire, bounded by kill-delay
+// plus a small grace. Called during daemon shutdown so group members that
+// outlive the leader are killed before gopherd exits instead of leaking to
+// the host init (non-PID-1). No-op when no escalation was armed
+// (kill-delay 0 tolerates survivors by design).
+func (s *Service) WaitGroupExit() {
+	s.mu.Lock()
+	pgid := s.killPgid
+	deadline := s.killDeadline.Add(500 * time.Millisecond)
+	s.mu.Unlock()
+	if pgid <= 0 {
+		return
+	}
+	// A stale deadline (previous instance) fails the loop condition
+	// immediately, so a recycled pgid is never waited on.
+	for time.Now().Before(deadline) {
+		// Reap dead members ourselves: the reap loop exits once the last
+		// managed pid is gone, and an unreaped zombie keeps the group visible
+		// to kill(), stalling this wait for the full delay. ECHILD (not our
+		// children, non-PID-1) is fine — the probe below still governs.
+		var ws syscall.WaitStatus
+		for {
+			pid, err := syscall.Wait4(-pgid, &ws, syscall.WNOHANG, nil)
+			if pid <= 0 || err != nil {
+				break
+			}
+		}
+		// nil: members still alive, keep waiting for the escalation.
+		// ESRCH (group gone) or EPERM (possibly recycled): done.
+		if err := syscall.Kill(-pgid, 0); err != nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // WaitSDNotifyReady blocks until the service writes "READY=1" to $NOTIFY_SOCKET

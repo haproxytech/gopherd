@@ -448,7 +448,7 @@ processes:
     group: appgroup                  # run as group (name or group-id)
     startup: enabled                 # enabled (default), disabled, or oneshot
     stop-signal: SIGTERM             # signal sent on shutdown (default: SIGTERM)
-    kill-delay: 10s                  # grace period before SIGKILL (default: 5s)
+    kill-delay: 30s                  # grace period before SIGKILL (default: 10s)
     on-success: ignore               # action on exit 0: restart|shutdown|ignore
     on-failure: restart              # action on non-zero exit: restart|shutdown|ignore
     backoff-delay: 500ms             # initial restart delay (default: 500ms)
@@ -571,7 +571,7 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `startup` | string | `"enabled"` | `"enabled"`, `"disabled"`, or `"oneshot"`. Supports `{{.VAR}}` / `{{.VAR:-default}}` and `{{file "/path"}}`; empty after expansion → disabled. Oneshots with no `after`/`requires` edge between them run concurrently; dependents wait for all oneshots in the prior layer to exit cleanly |
 | `startup-timeout` | duration | | Max time for oneshot to complete (kills and fails if exceeded) |
 | `stop-signal` | string | `"SIGTERM"` | Signal name (with or without SIG prefix) |
-| `kill-delay` | duration | `"5s"` | Grace period before SIGKILL |
+| `kill-delay` | duration | `"10s"` | Grace period before the whole process group is SIGKILLed — including members that outlive an already-exited leader. `0` disables escalation and tolerates survivors |
 | `on-success` | string | `"shutdown"` | Action on exit 0 |
 | `on-failure` | string | `"shutdown"` | Action on non-zero exit |
 | `backoff-delay` | duration | `"500ms"` | Initial restart backoff delay |

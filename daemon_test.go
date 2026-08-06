@@ -35,12 +35,13 @@ func newTestDaemon(procs []service.Process) *daemon {
 		Processes: procs,
 	}
 	d := &daemon{
-		cfg:        cfg,
-		m:          metrics.New(),
-		pidMap:     make(map[int]*service.Service),
-		restartCh:  make(chan restartReq, 64),
-		services:   make(map[string]*service.Service),
-		shutdownCh: make(chan struct{}),
+		cfg:         cfg,
+		m:           metrics.New(),
+		pidMap:      make(map[int]*service.Service),
+		restartCh:   make(chan restartReq, 64),
+		services:    make(map[string]*service.Service),
+		shutdownCh:  make(chan struct{}),
+		stopAllDone: make(chan struct{}),
 	}
 	d.buildServices()
 	return d
@@ -677,13 +678,14 @@ processes:
 	}
 
 	d := &daemon{
-		configPath: path,
-		cfg:        &yml.Config{Processes: []service.Process{{Name: "existing", Command: "/bin/sh"}}},
-		m:          metrics.New(),
-		pidMap:     make(map[int]*service.Service),
-		restartCh:  make(chan restartReq, 64),
-		services:   make(map[string]*service.Service),
-		shutdownCh: make(chan struct{}),
+		configPath:  path,
+		cfg:         &yml.Config{Processes: []service.Process{{Name: "existing", Command: "/bin/sh"}}},
+		m:           metrics.New(),
+		pidMap:      make(map[int]*service.Service),
+		restartCh:   make(chan restartReq, 64),
+		services:    make(map[string]*service.Service),
+		shutdownCh:  make(chan struct{}),
+		stopAllDone: make(chan struct{}),
 	}
 	d.buildServices()
 	d.started.Store(true) // reload validation runs post-startup

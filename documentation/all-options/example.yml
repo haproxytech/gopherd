@@ -87,7 +87,7 @@ processes:
     # strict-groups: true                # drop the user's supplementary groups when group is set
     startup: enabled                     # enabled (default), disabled, or oneshot
     stop-signal: SIGTERM                 # signal sent on shutdown (default: SIGTERM)
-    kill-delay: 10s                      # grace period before SIGKILL (default: 5s)
+    kill-delay: 30s                      # grace period before SIGKILL (default: 10s)
     on-success: restart                  # restart|shutdown|success-shutdown|failure-shutdown|ignore
     on-failure: restart
     backoff-delay: 500ms                 # initial restart delay (default: 500ms)
