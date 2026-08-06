@@ -42,13 +42,17 @@ func TestDependenciesExample(t *testing.T) {
 	// second running implies gopherd reached it in the start sequence.
 	d.WaitRunning("second", 5*time.Second)
 
-	// `after` guarantees gopherd's start order (fork/exec), not the order the
-	// two shells reach their echo, so assert on the daemon's own log.
+	// `after`/`before` guarantee gopherd's start order (fork/exec), not the
+	// order the shells reach their echo, so assert on the daemon's own log.
 	out := d.Output()
+	zi := strings.Index(out, "started zeroth")
 	fi := strings.Index(out, "started first")
 	si := strings.Index(out, "started second")
-	if fi == -1 || si == -1 {
-		t.Fatalf("expected both start lines in daemon output, got: %q", out)
+	if zi == -1 || fi == -1 || si == -1 {
+		t.Fatalf("expected all three start lines in daemon output, got: %q", out)
+	}
+	if zi > fi {
+		t.Errorf("expected zeroth (before: [first]) started before first, got: %q", out)
 	}
 	if fi > si {
 		t.Errorf("expected first started before second, got: %q", out)

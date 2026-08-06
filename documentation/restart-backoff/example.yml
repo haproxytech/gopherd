@@ -13,3 +13,11 @@ processes:
     backoff-delay: 500ms
     backoff-factor: 2.0
     backoff-limit: 5s
+
+  # batch worker: reruns after every clean exit, same backoff pacing
+  - name: batch
+    command: /usr/local/bin/batch-job
+    on-success: restart
+    on-failure: shutdown
+    backoff-delay: 500ms
+    backoff-limit: 5s

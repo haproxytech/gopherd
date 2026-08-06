@@ -19,6 +19,13 @@ processes:
     backoff-delay: 500ms
     backoff-factor: 2.0
     backoff-limit: 5s
+
+  - name: batch
+    command: /usr/local/bin/batch-job
+    on-success: restart
+    on-failure: shutdown
+    backoff-delay: 500ms
+    backoff-limit: 5s
 ```
 
 - `backoff-delay` — delay before the first restart (default `500ms`).
@@ -28,21 +35,26 @@ processes:
   continue at this fixed pace forever. There is no retry count limit.
 - A run that survives longer than `backoff-limit` resets the counter, so a
   service that crashes once a day always restarts after `backoff-delay`.
-- `on-success: restart` also exists for workers that should rerun after a
-  clean exit; the default `on-success` is `shutdown`.
+- `on-success: restart` (the `batch` service) reruns a worker after every
+  clean exit with the same backoff pacing — a poor man's cron loop. The
+  default `on-success` is `shutdown`, and a genuine failure still takes the
+  container down via `on-failure: shutdown`.
 
 ## Expected behavior
 
 - `flaky` crashes, gopherd logs the exit and restarts it after the backoff
   delay; `gopherd status` shows the `restarts=` counter climbing.
-- `app` and gopherd itself are unaffected by the crash loop.
+- `batch` exits 0, is rerun after the backoff delay, and its counter climbs
+  the same way.
+- `app` and gopherd itself are unaffected by either loop.
 
 ## Test
 
-Run level. The flaky placeholder is substituted with `/bin/false` (always
-exits 1) and the backoff shortened; the test polls `status` until the
-restart counter reaches 3, proving the restart loop, then checks the daemon
-is still healthy. SIGTERM yields a clean exit 0.
+Run level. The placeholders are substituted with `/bin/false` (flaky, always
+exits 1) and `/bin/true` (batch, always exits 0) and the backoff shortened;
+the test polls `status` until both restart counters reach 3, proving the
+crash-restart and clean-rerun loops, then checks the daemon is still
+healthy. SIGTERM yields a clean exit 0.
 
 ```bash
 go test ./documentation/restart-backoff/ -v

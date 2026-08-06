@@ -1,4 +1,4 @@
-# Order startup with `after`: `first` runs before `second`.
+# Order startup with `after` and `before`: zeroth -> first -> second.
 processes:
   - name: second
     command: /bin/sh
@@ -8,4 +8,10 @@ processes:
   - name: first
     command: /bin/sh
     args: ["-c", "echo first >> ORDERLOG && sleep 300"]
+    on-failure: shutdown
+  # before: the mirror edge — zeroth starts ahead of first
+  - name: zeroth
+    command: /bin/sh
+    args: ["-c", "echo zeroth >> ORDERLOG && sleep 300"]
+    before: [first]
     on-failure: shutdown
