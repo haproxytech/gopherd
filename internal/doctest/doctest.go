@@ -122,18 +122,45 @@ func repoRoot(t *testing.T) string {
 	return root
 }
 
-// doBuild performs the one-time binary build from the given repo root.
-func doBuild(root string) {
-	tmp, err := os.MkdirTemp("", "gopherd-doctest-*")
+// buildDir is a stable per-uid scratch dir: concurrent test processes each
+// rebuild (cheap via the go build cache) but disk holds one copy per artifact
+// instead of a leaked temp dir per process.
+func buildDir() (string, error) {
+	dir := filepath.Join(os.TempDir(), fmt.Sprintf("gopherd-doctest-%d", os.Getuid()))
+	return dir, os.MkdirAll(dir, 0o700)
+}
+
+// buildTo compiles pkg (relative to root) and atomically renames the result
+// onto the stable path name, so concurrent builders never expose a torn binary.
+func buildTo(root, pkg, name string) (string, error) {
+	dir, err := buildDir()
 	if err != nil {
-		buildErr = err
-		return
+		return "", err
 	}
-	binPath = filepath.Join(tmp, "gopherd")
-	cmd := exec.Command("go", "build", "-o", binPath, ".")
+	tmp, err := os.CreateTemp(dir, name+"-*")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	tmp.Close()
+	cmd := exec.Command("go", "build", "-o", tmpPath, pkg)
 	cmd.Dir = root
 	cmd.Stderr = os.Stderr
-	buildErr = cmd.Run()
+	if err := cmd.Run(); err != nil {
+		os.Remove(tmpPath)
+		return "", err
+	}
+	final := filepath.Join(dir, name)
+	if err := os.Rename(tmpPath, final); err != nil {
+		os.Remove(tmpPath)
+		return "", err
+	}
+	return final, nil
+}
+
+// doBuild performs the one-time binary build from the given repo root.
+func doBuild(root string) {
+	binPath, buildErr = buildTo(root, ".", "gopherd")
 }
 
 // BuildBinary builds the gopherd binary once and returns its path.
@@ -362,6 +389,29 @@ func (d *Daemon) SocketPath() string { return d.socketPath }
 
 // Binary returns the path to the built gopherd binary, building it if needed.
 func Binary(t *testing.T) string { return binary(t) }
+
+var (
+	toolMu   sync.Mutex
+	toolBins = map[string]string{}
+)
+
+// Tool builds internal/doctest/cmd/<name> once per test process and returns
+// its path. Helper stand-ins (HTTP responder, sd_notify sender) let example
+// configs run without external interpreters like python3.
+func Tool(t *testing.T, name string) string {
+	t.Helper()
+	toolMu.Lock()
+	defer toolMu.Unlock()
+	if p, ok := toolBins[name]; ok {
+		return p
+	}
+	bin, err := buildTo(repoRoot(t), "./internal/doctest/cmd/"+name, "tool-"+name)
+	if err != nil {
+		t.Fatalf("build tool %s: %v", name, err)
+	}
+	toolBins[name] = bin
+	return bin
+}
 
 // UpdateConfig rewrites the config file (for reload tests).
 func (d *Daemon) UpdateConfig(config string) {

@@ -1,8 +1,8 @@
 # sd-notify gate: dependents wait until the service writes READY=1.
 processes:
+  # mydaemon sends READY=1 to $NOTIFY_SOCKET once initialized (sd_notify).
   - name: notifier
-    command: /usr/bin/python3
-    args: ["-c", "import socket,os,time; a=os.environ['NOTIFY_SOCKET']; a=chr(0)+a[1:] if a.startswith('@') else a; socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM).sendto(b'READY=1',a); time.sleep(300)"]
+    command: /usr/local/bin/mydaemon
     sd-notify: true
     sd-notify-timeout: 10s
     on-failure: shutdown

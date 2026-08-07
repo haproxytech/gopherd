@@ -8,8 +8,8 @@ Probe a service by issuing an HTTP GET. The check passes when the server respond
 # HTTP health check: probe a service by issuing an HTTP GET.
 processes:
   - name: web
-    command: /usr/bin/python3
-    args: ["-m", "http.server", "PORT", "--bind", "127.0.0.1"]
+    command: /usr/local/bin/web
+    args: ["--listen", "127.0.0.1:PORT"]
     on-failure: shutdown
 
 checks:
@@ -23,14 +23,14 @@ checks:
 - `http.url` is fetched every `period`; a 2xx response is healthy.
 - `threshold` is the number of consecutive failures before the check is marked unhealthy.
 - For HTTP over a Unix socket, add `socket: /path/to.sock` under `http:` and keep a normal `url`.
-- In a real config, `command` is your web service and `url` is its health endpoint (e.g. `/healthz`). Here a Python `http.server` stands in so the example is self-contained.
+- In a real config, `command` is your web service and `url` is its health endpoint (e.g. `/healthz`). For a quick manual experiment, `python3 -m http.server 8080 --bind 127.0.0.1` works as a stand-in service.
 
 ## Expected behavior
 
-- gopherd starts `web` (a Python HTTP server) and the `web-http` check.
+- gopherd starts `web` and the `web-http` check.
 - Once the server binds, the GET probe returns 200 and the check reports `healthy`:
 
-  ```
+  ```text
   checks:
     web-http             healthy  failures=0
   ```
@@ -39,7 +39,7 @@ checks:
 
 ## Test
 
-Run level. `PORT` is substituted with an OS-assigned free port (e.g. 8080). The service is a real `python3 -m http.server` responder; the test waits for the probe to get a 2xx and asserts the `web-http` line is `healthy`. The test skips if `python3` is absent.
+Run level. `PORT` is substituted with an OS-assigned free port and the placeholder command with a small Go HTTP responder built by the test harness (`internal/doctest/cmd/httpok`) — no external interpreter needed. The test waits for the probe to get a 2xx and asserts the `web-http` line is `healthy`.
 
 ```bash
 go test ./documentation/health-check-http/ -v

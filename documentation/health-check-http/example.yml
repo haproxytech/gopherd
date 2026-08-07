@@ -1,8 +1,8 @@
 # HTTP health check: probe a service by issuing an HTTP GET.
 processes:
   - name: web
-    command: /usr/bin/python3
-    args: ["-m", "http.server", "PORT", "--bind", "127.0.0.1"]
+    command: /usr/local/bin/web
+    args: ["--listen", "127.0.0.1:PORT"]
     on-failure: shutdown
 
 checks:

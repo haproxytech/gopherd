@@ -15,7 +15,6 @@
 package sdnotify
 
 import (
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -24,11 +23,13 @@ import (
 )
 
 func TestSDNotifyExample(t *testing.T) {
-	if _, err := os.Stat("/usr/bin/python3"); err != nil {
-		t.Skip("python3 not available; sd-notify notifier unavailable")
-	}
+	// sdnotifyready sends READY=1 to $NOTIFY_SOCKET (abstract-namespace
+	// datagram) and stays running, standing in for a real sd_notify daemon.
 	d := doctest.RunFile(t, "example.yml", doctest.Options{
-		Commands: map[string]string{"/usr/local/bin/app": "sleep"},
+		Commands: map[string]string{
+			"/usr/local/bin/mydaemon": doctest.Tool(t, "sdnotifyready"),
+			"/usr/local/bin/app":      "sleep",
+		},
 	})
 
 	// app gates on notifier writing READY=1; a running app proves the gate opened.

@@ -55,13 +55,13 @@ func readExample(t *testing.T, path string) string {
 }
 
 func TestHealthCheckHTTPExample(t *testing.T) {
-	if _, err := os.Stat("/usr/bin/python3"); err != nil {
-		t.Skip("python3 not available; HTTP responder unavailable")
-	}
 	port := strconv.Itoa(freePort(t))
 	cfg := strings.ReplaceAll(readExample(t, "example.yml"), "PORT", port)
 
-	d := doctest.RunConfig(t, cfg, doctest.Options{})
+	// httpok answers every request with 200, standing in for the web service.
+	d := doctest.RunConfig(t, cfg, doctest.Options{
+		Commands: map[string]string{"/usr/local/bin/web": doctest.Tool(t, "httpok")},
+	})
 
 	d.WaitRunning("web", 5*time.Second)
 

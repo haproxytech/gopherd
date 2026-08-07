@@ -7,9 +7,9 @@ Hold dependents until a service signals readiness via the systemd sd_notify prot
 ```yaml
 # sd-notify gate: dependents wait until the service writes READY=1.
 processes:
+  # mydaemon sends READY=1 to $NOTIFY_SOCKET once initialized (sd_notify).
   - name: notifier
-    command: /usr/bin/python3
-    args: ["-c", "import socket,os,time; a=os.environ['NOTIFY_SOCKET']; a=chr(0)+a[1:] if a.startswith('@') else a; socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM).sendto(b'READY=1',a); time.sleep(300)"]
+    command: /usr/local/bin/mydaemon
     sd-notify: true
     sd-notify-timeout: 10s
     on-failure: shutdown
@@ -27,9 +27,29 @@ processes:
 
 ## NOTIFY_SOCKET details
 
-gopherd binds the notify socket in the Linux **abstract namespace**, so `$NOTIFY_SOCKET` is a `@`-prefixed name (e.g. `@gopherd-sd-notify-<pid>-notifier`), not a filesystem path. To send to it, a client must replace the leading `@` with a NUL byte and use a `SOCK_DGRAM` `AF_UNIX` socket. The Python notifier does exactly that with `chr(0)+a[1:]`.
+gopherd binds the notify socket in the Linux **abstract namespace**, so `$NOTIFY_SOCKET` is a `@`-prefixed name (e.g. `@gopherd-sd-notify-<pid>-notifier`), not a filesystem path. To send to it, a client must replace the leading `@` with a NUL byte and use a `SOCK_DGRAM` `AF_UNIX` socket — in Go:
 
-OpenBSD netcat (`nc -uU`) cannot address abstract-namespace datagram sockets, so a plain `nc` one-liner does **not** work here; Python (or any client that can write the NUL-prefixed address) is required.
+```go
+addr := os.Getenv("NOTIFY_SOCKET")
+if strings.HasPrefix(addr, "@") {
+    addr = "\x00" + addr[1:] // abstract namespace
+}
+conn, _ := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: addr, Net: "unixgram"})
+conn.Write([]byte("READY=1"))
+```
+
+or in Python:
+
+```python
+import os, socket
+
+addr = os.environ["NOTIFY_SOCKET"]
+if addr.startswith("@"):
+    addr = "\0" + addr[1:]  # abstract namespace
+socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM).sendto(b"READY=1", addr)
+```
+
+Any sd_notify library (systemd's own, `go-systemd`, Python's `sdnotify`, ...) does the same. OpenBSD netcat (`nc -uU`) cannot address abstract-namespace datagram sockets, so a plain `nc` one-liner does **not** work here.
 
 ## Expected behavior
 
@@ -39,7 +59,7 @@ OpenBSD netcat (`nc -uU`) cannot address abstract-namespace datagram sockets, so
 
 ## Test
 
-Run level. The notifier is a real Python client that resolves the abstract `$NOTIFY_SOCKET` and sends `READY=1`, then stays alive. The test substitutes `/usr/bin/sleep` for `app` and asserts `app` reaches `running` — which can only happen after `READY=1` is received, proving the gate opened. Verified stable over `-count=3`. The test skips if `python3` is absent.
+Run level. The notifier placeholder is substituted with a small Go stand-in built by the test harness (`internal/doctest/cmd/sdnotifyready`) that resolves the abstract `$NOTIFY_SOCKET`, sends `READY=1`, and stays alive — no external interpreter needed. The test substitutes `sleep` for `app` and asserts `app` reaches `running` — which can only happen after `READY=1` is received, proving the gate opened.
 
 The timeout path (a service that never sends `READY=1`) is asserted in the root e2e suite (`TestE2ESDNotifyTimeout`).
 
