@@ -15,6 +15,7 @@
 package version
 
 import (
+	"runtime/debug"
 	"testing"
 )
 
@@ -41,6 +42,44 @@ func TestSetPopulatesFields(t *testing.T) {
 	// Tag may remain "dev" when run via `go test` (no VCS info), so just check it's not empty.
 	if Tag == "" {
 		t.Error("expected Tag to be non-empty")
+	}
+}
+
+func TestSetFromModuleProxyBuild(t *testing.T) {
+	// go install from the module proxy: exact tag, no vcs.* settings.
+	setFrom(&debug.BuildInfo{
+		Main: debug.Module{Path: "github.com/haproxytech/gopherd", Version: "v1.0.0"},
+	})
+
+	if Version != "v1.0.0" {
+		t.Errorf("Version = %q, want %q", Version, "v1.0.0")
+	}
+	if Tag != "v1.0.0" {
+		t.Errorf("Tag = %q, want %q", Tag, "v1.0.0")
+	}
+}
+
+func TestSetFromDevBuildWithoutVCS(t *testing.T) {
+	setFrom(&debug.BuildInfo{
+		Main: debug.Module{Path: "github.com/haproxytech/gopherd", Version: "(devel)"},
+	})
+
+	if Version != "dev.unknown" {
+		t.Errorf("Version = %q, want %q", Version, "dev.unknown")
+	}
+}
+
+func TestSetFromGitBuild(t *testing.T) {
+	setFrom(&debug.BuildInfo{
+		Main: debug.Module{Path: "github.com/haproxytech/gopherd", Version: "(devel)"},
+		Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: "0123456789abcdef"},
+			{Key: "vcs.modified", Value: "true"},
+		},
+	})
+
+	if Version != "dev.01234567.dirty" {
+		t.Errorf("Version = %q, want %q", Version, "dev.01234567.dirty")
 	}
 }
 

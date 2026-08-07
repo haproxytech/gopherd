@@ -38,13 +38,26 @@ func Set() error {
 	if !ok {
 		return ErrBuildDataNotReadable
 	}
+	setFrom(buildInfo)
+
+	return nil
+}
+
+func setFrom(buildInfo *debug.BuildInfo) {
 	Repo = buildInfo.Main.Path
 	CommitDate = get(buildInfo, "vcs.time")
+	Tag = strings.ReplaceAll(buildInfo.Main.Version, "(devel)", "dev")
+
 	commit := get(buildInfo, "vcs.revision")
 	if len(commit) > 8 {
 		commit = commit[:8]
 	}
 	if commit == "" {
+		// Module-proxy builds (go install pkg@version) have an exact tag but no VCS metadata.
+		if buildInfo.Main.Version != "(devel)" && buildInfo.Main.Version != "" {
+			Version = Tag
+			return
+		}
 		commit = "unknown"
 	}
 
@@ -52,10 +65,7 @@ func Set() error {
 	if get(buildInfo, "vcs.modified") == "true" {
 		dirty = ".dirty"
 	}
-	Version = strings.ReplaceAll(buildInfo.Main.Version, "(devel)", "dev") + "." + commit + dirty
-	Tag = strings.ReplaceAll(buildInfo.Main.Version, "(devel)", "dev")
-
-	return nil
+	Version = Tag + "." + commit + dirty
 }
 
 func get(buildInfo *debug.BuildInfo, key string) string {
