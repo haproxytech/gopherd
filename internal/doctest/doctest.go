@@ -387,6 +387,9 @@ func (d *Daemon) ConfigPath() string { return d.configPath }
 // SocketPath returns the path to the control socket.
 func (d *Daemon) SocketPath() string { return d.socketPath }
 
+// Pid returns the daemon process id.
+func (d *Daemon) Pid() int { return d.cmd.Process.Pid }
+
 // Binary returns the path to the built gopherd binary, building it if needed.
 func Binary(t *testing.T) string { return binary(t) }
 

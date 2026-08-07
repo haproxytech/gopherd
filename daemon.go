@@ -32,6 +32,7 @@ import (
 	"github.com/haproxytech/gopherd/internal/logger"
 	"github.com/haproxytech/gopherd/internal/metrics"
 	"github.com/haproxytech/gopherd/internal/order"
+	"github.com/haproxytech/gopherd/internal/reaper"
 	"github.com/haproxytech/gopherd/internal/yml"
 	"github.com/haproxytech/gopherd/service"
 )
@@ -136,6 +137,11 @@ type daemon struct {
 	// forked. Buffered so startService never blocks; a non-blocking send suffices
 	// since the reap loop re-checks via Wait4 once woken.
 	childStarted chan struct{}
+
+	// reaper delivers exit statuses of unmanaged children (exec probes) from
+	// the reap loop to their checkers; a targeted cmd.Wait would race Wait4(-1)
+	// for the status and lose (ECHILD).
+	reaper *reaper.Registry
 
 	// restartPending marks services whose next observed exit is part of a restart
 	// cycle, so the reap loop suppresses the ServiceExited metric (a restart
@@ -283,14 +289,18 @@ func (d *daemon) startService(svc *service.Service) (int, error) {
 	// transiently show exits > starts in "stats".
 	d.m.ServiceStarted(svc.Name, pid)
 	d.mu.Unlock()
-	// Wake the reap loop if it is idling with no children. Non-blocking: a full
-	// buffer already means a wake is pending.
+	d.wakeReapLoop()
+	log.Printf("started %s (pid %d)", svc.Name, pid)
+	return pid, nil
+}
+
+// wakeReapLoop wakes the reap loop if it is idling with no children.
+// Non-blocking: a full buffer already means a wake is pending.
+func (d *daemon) wakeReapLoop() {
 	select {
 	case d.childStarted <- struct{}{}:
 	default:
 	}
-	log.Printf("started %s (pid %d)", svc.Name, pid)
-	return pid, nil
 }
 
 // stopAll stops all services according to the configured shutdown mode.
@@ -558,6 +568,7 @@ func (d *daemon) startChecks() {
 			log.Printf("warning: check %s: %v", name, err)
 			continue
 		}
+		c.SetReaper(d.reaper)
 		if svc, ok := checkOwner[name]; ok && checkCfg.Exec != nil {
 			cred, err := service.ResolveCredential(svc.Proc.User, svc.Proc.Group, svc.Proc.UserID, svc.Proc.GroupID, svc.Proc.StrictGroups)
 			if err != nil {

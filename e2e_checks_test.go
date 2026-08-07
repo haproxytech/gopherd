@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -118,6 +119,77 @@ checks:
 	if code != 1 {
 		t.Errorf("expected exit code 1 from check failure shutdown, got %d", code)
 	}
+}
+
+// A childless daemon must keep reaping exec probe children: each probe fork
+// wakes the idle reap loop, which delivers the status to the checker. Pre-fix
+// the loop idled in its no-children select, probe children piled up as
+// zombies, and every probe starved into an inconclusive result.
+func TestE2EExecCheckOnIdleDaemon(t *testing.T) {
+	td := startDaemon(t, `
+processes:
+  - name: once
+    command: /bin/true
+    on-success: ignore
+
+checks:
+  pulse:
+    exec:
+      command: /bin/true
+    period: 200ms
+    timeout: 500ms
+    threshold: 3
+    initial-delay: 1s
+`)
+	defer td.kill()
+
+	// Several probe periods on an idle (childless) daemon.
+	time.Sleep(3 * time.Second)
+
+	if !td.daemonAlive() {
+		t.Fatal("daemon exited instead of idling as a live supervisor")
+	}
+	if z := zombieChildren(t, td.Pid()); len(z) > 0 {
+		t.Errorf("daemon has %d unreaped probe zombies: %v", len(z), z)
+	}
+	if out := td.Output(); strings.Contains(out, "inconclusive") {
+		t.Errorf("probes starved on the idle daemon:\n%s", out)
+	}
+
+	td.stop()
+}
+
+// zombieChildren scans /proc for direct children of pid in zombie state.
+func zombieChildren(t *testing.T, pid int) []int {
+	t.Helper()
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Fatalf("read /proc: %v", err)
+	}
+	var zombies []int
+	for _, e := range entries {
+		child, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join("/proc", e.Name(), "stat"))
+		if err != nil {
+			continue // process vanished
+		}
+		// Fields follow the last ')' (comm may contain spaces): state, ppid, ...
+		idx := strings.LastIndexByte(string(data), ')')
+		if idx < 0 {
+			continue
+		}
+		fields := strings.Fields(string(data[idx+1:]))
+		if len(fields) < 2 {
+			continue
+		}
+		if fields[0] == "Z" && fields[1] == strconv.Itoa(pid) {
+			zombies = append(zombies, child)
+		}
+	}
+	return zombies
 }
 
 func TestE2EReadyCheck(t *testing.T) {

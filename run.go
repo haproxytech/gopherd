@@ -30,6 +30,7 @@ import (
 	"github.com/haproxytech/gopherd/control"
 	"github.com/haproxytech/gopherd/internal/metrics"
 	"github.com/haproxytech/gopherd/internal/order"
+	"github.com/haproxytech/gopherd/internal/reaper"
 	"github.com/haproxytech/gopherd/internal/yml"
 	"github.com/haproxytech/gopherd/service"
 	"github.com/haproxytech/gopherd/version"
@@ -122,6 +123,9 @@ func run(entrypointArgs []string) int {
 		stopAllDone:    make(chan struct{}),
 		childStarted:   make(chan struct{}, 1),
 	}
+	// Probe forks must wake an idling reap loop just like service forks:
+	// without it, a childless daemon would leave probe children unreaped.
+	d.reaper = reaper.New(d.wakeReapLoop)
 
 	d.m = metrics.New()
 
@@ -242,7 +246,10 @@ func run(entrypointArgs []string) int {
 	// it so the reap loop's idle path reads no shared (reloadable) config.
 	subreaper := cfg.Subreaper
 
-	// Single reap loop: handles managed children and orphaned zombies.
+	// Single reap loop: handles managed children and orphaned zombies. From
+	// here on it owns Wait4(-1), so exec probes must take exit statuses from
+	// the registry instead of waiting themselves.
+	d.reaper.Activate()
 	for {
 		var ws syscall.WaitStatus
 		pid, err := syscall.Wait4(-1, &ws, 0, nil)
@@ -436,6 +443,9 @@ func run(entrypointArgs []string) int {
 			}
 		}
 		d.mu.Unlock()
+		// Unmanaged child: possibly an exec probe whose checker awaits the
+		// status; anything else was an orphaned zombie, dropped as before.
+		d.reaper.Deliver(pid, code)
 
 		if d.shuttingDown.Load() {
 			d.mu.Lock()
@@ -534,6 +544,7 @@ func (d *daemon) startNonOneshot(cfg *yml.Config, svc *service.Service) {
 		if err != nil {
 			log.Fatalf("%s: ready check: %v", svc.Name, err)
 		}
+		c.SetReaper(d.reaper)
 		if checkCfg.Exec != nil {
 			cred, credErr := service.ResolveCredential(svc.Proc.User, svc.Proc.Group, svc.Proc.UserID, svc.Proc.GroupID, svc.Proc.StrictGroups)
 			if credErr != nil {

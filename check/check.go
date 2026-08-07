@@ -17,6 +17,7 @@ package check
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -28,9 +29,16 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/haproxytech/gopherd/internal/reaper"
 )
 
 var errNoCheckType = fmt.Errorf("no check type configured")
+
+// ErrInconclusive marks a probe whose result was lost (e.g. the reap loop
+// stole the exec child's exit status). Carries no health data: the run loop
+// logs it without touching the failure streak.
+var ErrInconclusive = fmt.Errorf("probe result lost")
 
 // HTTP defines an HTTP health check.
 type HTTP struct {
@@ -67,6 +75,7 @@ type Checker struct {
 	onFailureFn  func(checkName string)          // called when threshold breached
 	metricsFn    func(checkName string, ok bool) // called after every check
 	credential   *syscall.Credential             // optional: run exec checks as this user
+	reaper       *reaper.Registry                // optional: reap loop delivers exec exit statuses
 	httpClient   *http.Client
 	httpReq      *http.Request // cached base request, cloned per-check
 	name         string
@@ -183,31 +192,7 @@ func (c *Checker) Run() {
 		defer ticker.Stop()
 
 		for {
-			err := c.Execute()
-
-			c.mu.Lock()
-			var callFailure bool
-			if err != nil {
-				c.failures++
-				if c.metricsFn != nil {
-					c.metricsFn(c.name, false)
-				}
-				if c.failures >= c.threshold && c.healthy {
-					c.healthy = false
-					log.Printf("check %s: unhealthy (%d consecutive failures): %v", c.name, c.failures, err)
-					callFailure = true
-				}
-			} else {
-				if c.metricsFn != nil {
-					c.metricsFn(c.name, true)
-				}
-				if !c.healthy {
-					log.Printf("check %s: healthy again", c.name)
-				}
-				c.failures = 0
-				c.healthy = true
-			}
-			c.mu.Unlock()
+			callFailure := c.observe(c.Execute())
 			// Call onFailureFn outside c.mu to avoid lock-order inversion:
 			// onFailureFn acquires d.mu, which is also held when stopChecks()
 			// calls c.Stop(). The stopped guard prevents a callback queued just
@@ -229,6 +214,41 @@ func (c *Checker) Run() {
 			}
 		}
 	}()
+}
+
+// observe applies one probe result to the health state and reports whether
+// the failure threshold was just crossed.
+func (c *Checker) observe(err error) bool {
+	// A lost result is not a failed probe: counting it toward the threshold
+	// would restart healthy services (the bug this guards against).
+	if err != nil && errors.Is(err, ErrInconclusive) {
+		log.Printf("check %s: inconclusive probe (not counted): %v", c.name, err)
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var callFailure bool
+	if err != nil {
+		c.failures++
+		if c.metricsFn != nil {
+			c.metricsFn(c.name, false)
+		}
+		if c.failures >= c.threshold && c.healthy {
+			c.healthy = false
+			log.Printf("check %s: unhealthy (%d consecutive failures): %v", c.name, c.failures, err)
+			callFailure = true
+		}
+	} else {
+		if c.metricsFn != nil {
+			c.metricsFn(c.name, true)
+		}
+		if !c.healthy {
+			log.Printf("check %s: healthy again", c.name)
+		}
+		c.failures = 0
+		c.healthy = true
+	}
+	return callFailure
 }
 
 // WaitReady runs the check in a loop until it passes once or ctx is cancelled.
@@ -334,6 +354,12 @@ func (c *Checker) checkTCP(ctx context.Context) error {
 }
 
 func (c *Checker) checkExec(ctx context.Context) error {
+	// The reap loop's Wait4(-1) steals exit statuses from cmd.Wait (ECHILD),
+	// so once it runs, statuses must come from it. Before Activate (startup
+	// sequence) there is no competing waiter and cmd.Run is safe.
+	if c.reaper != nil && c.reaper.Active() {
+		return c.checkExecReaped(ctx)
+	}
 	cmd := exec.CommandContext(ctx, c.cfg.Exec.Command, c.cfg.Exec.Args...)
 	// Setsid gives the check its own process group (so Kill(-pid) on cancel
 	// reaches all descendants, I2) and no controlling TTY (blocks TIOCSTI
@@ -361,9 +387,68 @@ func (c *Checker) checkExec(ctx context.Context) error {
 	}
 	cmd.WaitDelay = c.timeout
 	if err := cmd.Run(); err != nil {
+		// ECHILD means a concurrent Wait4(-1) (the reap loop) stole the exit
+		// status: the probe's real outcome is unknowable, not a failure.
+		if errors.Is(err, syscall.ECHILD) {
+			return fmt.Errorf("exec check: %w (%v)", ErrInconclusive, err)
+		}
 		return fmt.Errorf("exec check: %w", err)
 	}
 	return nil
+}
+
+// checkExecReaped forks the probe and takes its exit status from the reap
+// loop via the registry, never waiting on the pid itself.
+func (c *Checker) checkExecReaped(ctx context.Context) error {
+	cmd := exec.Command(c.cfg.Exec.Command, c.cfg.Exec.Args...)
+	// Same containment as the standalone path: own process group, no TTY.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if c.credential != nil {
+		cmd.SysProcAttr.Credential = c.credential
+	}
+	pid, status, err := c.reaper.Start(func() (int, error) {
+		if err := cmd.Start(); err != nil {
+			return 0, err
+		}
+		return cmd.Process.Pid, nil
+	})
+	if err != nil {
+		return fmt.Errorf("exec check: %w", err)
+	}
+	defer c.reaper.Forget(pid)
+	// The reap loop owns the wait; just close the process handle.
+	defer func() { _ = cmd.Process.Release() }()
+
+	select {
+	case code := <-status:
+		if code != 0 {
+			return fmt.Errorf("exec check: exit status %d", code)
+		}
+		return nil
+	case <-ctx.Done():
+		// Kill the whole group so forked grandchildren die too. ESRCH means
+		// the leader already exited; its status is still in flight below.
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		timer := time.NewTimer(c.timeout)
+		defer timer.Stop()
+		select {
+		case code := <-status:
+			if code == 0 {
+				// Finished cleanly right at the deadline: keep the real result.
+				return nil
+			}
+			return fmt.Errorf("exec check: %w", ctx.Err())
+		case <-timer.C:
+			// SIGKILLed but never reaped: status lost, health unknowable.
+			return fmt.Errorf("exec check: %w (child not reaped after kill)", ErrInconclusive)
+		}
+	}
+}
+
+// SetReaper routes exec probe exit statuses through the daemon reap loop,
+// the sole Wait4(-1) owner; a targeted cmd.Wait would race it and lose.
+func (c *Checker) SetReaper(r *reaper.Registry) {
+	c.reaper = r
 }
 
 // SetCredential sets the credential for exec health checks so they run
