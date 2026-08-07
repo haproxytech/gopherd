@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+version: 2
 before:
   hooks:
     - go mod tidy
@@ -57,14 +58,14 @@ archives:
       {{- else if eq $prettyArch "amd64" -}}
       	{{- $prettyArch = "x86_64" -}}
       {{- end -}}
-      {{.Binary}}_{{.Version}}_{{$prettyOS}}_{{$prettyArch}}
+      {{.Binary}}_{{.Version}}_{{$prettyOS}}_{{$prettyArch}}{{ with .Arm }}v{{ . }}{{ end }}
 checksum:
   name_template: 'checksums.txt'
 changelog:
   sort: asc
   use: git
 snapshot:
-  name_template: "{{ .Tag }}-next"
+  version_template: "{{ .Tag }}-next"
 release:
   draft: false
   # Re-releases (workflow_dispatch rebuilds) must supersede old binaries.
