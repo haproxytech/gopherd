@@ -13,8 +13,9 @@
 // limitations under the License.
 
 // Package yml provides a minimal YAML parser for gopherd configuration.
-// It supports the subset of YAML used by gopherd: scalars, maps, lists of maps,
-// inline lists, and nested indentation. No external dependencies.
+// It supports the subset of YAML used by gopherd: scalars, maps, block lists
+// of maps or scalars, inline lists, and nested indentation. No external
+// dependencies.
 package yml
 
 import (
@@ -247,6 +248,10 @@ func parseSequence(lines []rawLine, pos, seqIndent, depth int) (*Node, int, erro
 			pos++
 		}
 
+		if len(itemLines) == 1 && isScalarSeqItem(itemText) {
+			seq.sequence = append(seq.sequence, parseScalar(itemText))
+			continue
+		}
 		item, _, err := parseBlock(itemLines, 0, itemIndent-1, depth+1)
 		if err != nil {
 			return nil, pos, err
@@ -255,6 +260,19 @@ func parseSequence(lines []rawLine, pos, seqIndent, depth int) (*Node, int, erro
 	}
 
 	return seq, pos, nil
+}
+
+// isScalarSeqItem reports whether a single-line sequence item is a scalar:
+// not a nested sequence, and either colon-free or fully quoted (so quoted
+// values containing ": ", e.g. JSON blobs, stay one scalar).
+func isScalarSeqItem(s string) bool {
+	if strings.HasPrefix(s, "- ") {
+		return false
+	}
+	if findColon(s) < 0 {
+		return true
+	}
+	return len(s) >= 2 && (s[0] == '\'' || s[0] == '"') && s[len(s)-1] == s[0]
 }
 
 func parseScalar(s string) *Node {

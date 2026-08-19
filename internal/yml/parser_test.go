@@ -376,6 +376,92 @@ func TestParseIntPtr(t *testing.T) {
 	}
 }
 
+func TestParseBlockSequenceOfScalars(t *testing.T) {
+	t.Parallel()
+	yml := `
+args:
+  - -i
+  - "-p"
+  - '8080'
+  - --writable
+`
+	n, err := Parse([]byte(yml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := n.Get("args").Strings()
+	want := []string{"-i", "-p", "8080", "--writable"}
+	if len(args) != len(want) {
+		t.Fatalf("got %v, want %v", args, want)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Errorf("args[%d] = %q, want %q", i, args[i], want[i])
+		}
+	}
+}
+
+// Quoted items containing ': ' and commas (e.g. JSON blobs) must stay one
+// scalar, not misparse as a mapping.
+func TestParseBlockSequenceQuotedJSON(t *testing.T) {
+	t.Parallel()
+	yml := `
+args:
+  - -t
+  - 'theme={"foreground": "#d0d0d0", "background": "#1c1c1c"}'
+`
+	n, err := Parse([]byte(yml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := n.Get("args").Strings()
+	if len(args) != 2 {
+		t.Fatalf("got %v", args)
+	}
+	if args[1] != `theme={"foreground": "#d0d0d0", "background": "#1c1c1c"}` {
+		t.Errorf("got %q", args[1])
+	}
+}
+
+// A colon'd unquoted item is still a mapping — existing sequence-of-mappings
+// behavior must not regress.
+func TestParseBlockSequenceMixedScalarAndMapping(t *testing.T) {
+	t.Parallel()
+	yml := `
+items:
+  - plain
+  - name: app
+    port: 80
+`
+	n, err := Parse([]byte(yml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := n.Get("items").Items()
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	if items[0].String() != "plain" {
+		t.Errorf("items[0] = %q", items[0].String())
+	}
+	if items[1].Get("name").String() != "app" {
+		t.Errorf("items[1].name = %q", items[1].Get("name").String())
+	}
+}
+
+// URL-ish items have a colon not followed by a space: scalar, not mapping.
+func TestParseBlockSequenceURLItem(t *testing.T) {
+	t.Parallel()
+	n, err := Parse([]byte("urls:\n  - http://localhost:8080/health\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	urls := n.Get("urls").Strings()
+	if len(urls) != 1 || urls[0] != "http://localhost:8080/health" {
+		t.Errorf("got %v", urls)
+	}
+}
+
 // TestParseRejectsDeepNesting verifies that pathologically nested structures
 // are rejected before recursion can exhaust the PID 1 stack. Without a depth
 // cap, a config nested thousands of levels would push a parseBlock frame per

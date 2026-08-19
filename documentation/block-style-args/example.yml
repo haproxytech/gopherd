@@ -1,0 +1,11 @@
+# args accepts flow-style ([...]) and block-style YAML lists alike.
+# Block style keeps long argument lists readable; a quoted item may hold
+# commas and colons (e.g. inline JSON) and still arrives as one argument.
+processes:
+  - name: app
+    command: /bin/sh
+    args:
+      - -c
+      - 'echo "$0" > ARGSFILE; exec sleep 300'
+      - '{"theme": {"foreground": "#d0d0d0", "background": "#1c1c1c"}}'
+    on-failure: shutdown

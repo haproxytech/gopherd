@@ -25,6 +25,7 @@ go test ./documentation/...
 - [environment-passthrough](environment-passthrough/) — `pass-env` forwarding
 - [remove-env](remove-env/) — strip keys from a child's environment
 - [entrypoint-args](entrypoint-args/) — `use-entrypoint-args` and passthrough exec
+- [block-style-args](block-style-args/) — `args:` as a block YAML list
 
 ## Ordering & lifecycle
 
