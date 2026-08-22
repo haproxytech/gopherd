@@ -239,6 +239,11 @@ func RunConfig(t *testing.T, config string, opts Options) *Daemon {
 	cmd.Stdout = io.MultiWriter(os.Stdout, out)
 	cmd.Stderr = io.MultiWriter(os.Stderr, out)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// A SIGKILLed daemon can leave children (e.g. a test's sleep) holding its
+	// inherited stdout/stderr pipes; without a delay, Kill()'s cmd.Wait would
+	// block until those orphans exit. WaitDelay closes the pipes shortly after
+	// the daemon itself is gone.
+	cmd.WaitDelay = 5 * time.Second
 
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start daemon: %v", err)

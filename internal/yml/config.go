@@ -28,6 +28,7 @@ import (
 
 	"github.com/haproxytech/gopherd/check"
 	"github.com/haproxytech/gopherd/control"
+	"github.com/haproxytech/gopherd/internal/cron"
 	"github.com/haproxytech/gopherd/internal/logger"
 	"github.com/haproxytech/gopherd/service"
 )
@@ -228,6 +229,18 @@ func Unmarshal(data []byte) (*Config, error) {
 
 	// Computed once: independent of the per-process loop below.
 	shutdownSet := cfg.ShutdownSignals()
+	// Scheduled services never run during startup layers, so nothing may order
+	// against them (and they may not order against anything).
+	scheduledSet := map[string]bool{}
+	for _, p := range cfg.Processes {
+		if p.Startup == "scheduled" || (p.Startup == "disabled" && p.Schedule != "") {
+			name := p.Name
+			if name == "" {
+				name = p.Command
+			}
+			scheduledSet[name] = true
+		}
+	}
 	for _, p := range cfg.Processes {
 		name := p.Name
 		if name == "" {
@@ -263,9 +276,59 @@ func Unmarshal(data []byte) (*Config, error) {
 		if err := validateSignalRewrite(name, p.SignalRewrite, shutdownSet); err != nil {
 			return nil, err
 		}
+		if err := validateScheduled(name, p, scheduledSet); err != nil {
+			return nil, err
+		}
 	}
 
 	return cfg, nil
+}
+
+// validateScheduled enforces the startup=scheduled contract: a cron schedule
+// is required and must parse; exit actions and backoff are meaningless (each
+// run is oneshot-style, the next tick is the retry); and scheduled services
+// take no part in startup ordering, in either direction.
+func validateScheduled(name string, p service.Process, scheduledSet map[string]bool) error {
+	// A disabled service may carry a schedule (an env-gated startup flips it
+	// on); the full scheduled contract is enforced even while disabled, so
+	// flipping the gate can never surface a new config error.
+	if p.Startup == "scheduled" || (p.Startup == "disabled" && p.Schedule != "") {
+		if p.Schedule == "" {
+			return fmt.Errorf("process %q: schedule is required when startup is scheduled", name)
+		}
+		if _, err := cron.Parse(p.Schedule); err != nil {
+			return fmt.Errorf("process %q schedule: %w", name, err)
+		}
+		if p.OnSuccess != "" {
+			return fmt.Errorf("process %q: on-success is not allowed with startup: scheduled (each run's exit is logged; the next tick is the retry)", name)
+		}
+		if p.OnFailure != "" {
+			return fmt.Errorf("process %q: on-failure is not allowed with startup: scheduled (each run's exit is logged; the next tick is the retry)", name)
+		}
+		if p.BackoffDelay != "" || p.BackoffLimit != "" {
+			return fmt.Errorf("process %q: backoff settings are not allowed with startup: scheduled", name)
+		}
+		if len(p.After) > 0 || len(p.Before) > 0 || len(p.Requires) > 0 {
+			return fmt.Errorf("process %q: after/before/requires are not allowed with startup: scheduled (scheduled services do not participate in startup ordering)", name)
+		}
+		// startup-timeout bounds each run at tick time (not via waitOneshot),
+		// so validate here rather than failing silently mid-flight.
+		if p.StartupTimeout != "" {
+			if _, err := time.ParseDuration(p.StartupTimeout); err != nil {
+				return fmt.Errorf("process %q: invalid startup-timeout %q: %w", name, p.StartupTimeout, err)
+			}
+		}
+	} else if p.Schedule != "" {
+		return fmt.Errorf("process %q: schedule is only valid with startup: scheduled or disabled", name)
+	}
+	for _, deps := range [][]string{p.After, p.Before, p.Requires} {
+		for _, dep := range deps {
+			if scheduledSet[dep] {
+				return fmt.Errorf("process %q: cannot order against scheduled service %q (scheduled services do not run at startup)", name, dep)
+			}
+		}
+	}
+	return nil
 }
 
 // validateSignalRewrite rejects signal-rewrite keys that collide with
@@ -315,7 +378,7 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 	// Validate here, not in Unmarshal, so a template-expanded value can be
 	// redacted: `startup: "{{.DB_PASS}}"` must not echo the secret to the log.
 	switch startup {
-	case "", "enabled", "disabled", "oneshot":
+	case "", "enabled", "disabled", "oneshot", "scheduled":
 		// valid
 	default:
 		name := n.Get("name").String()
@@ -326,9 +389,9 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 			name = "(unnamed)"
 		}
 		if rawStartup != startup {
-			return service.Process{}, fmt.Errorf("process %q: startup template %q expanded to a disallowed value (valid: enabled, disabled, oneshot)", name, rawStartup)
+			return service.Process{}, fmt.Errorf("process %q: startup template %q expanded to a disallowed value (valid: enabled, disabled, oneshot, scheduled)", name, rawStartup)
 		}
-		return service.Process{}, fmt.Errorf("process %q: invalid startup %q (valid: enabled, disabled, oneshot)", name, startup)
+		return service.Process{}, fmt.Errorf("process %q: invalid startup %q (valid: enabled, disabled, oneshot, scheduled)", name, startup)
 	}
 
 	p := service.Process{
@@ -348,6 +411,7 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		ReadyCheck:        n.Get("ready-check").String(),
 		ReadyTimeout:      n.Get("ready-timeout").String(),
 		StartupTimeout:    n.Get("startup-timeout").String(),
+		Schedule:          n.Get("schedule").String(),
 		UseEntrypointArgs: n.Get("use-entrypoint-args").Bool(),
 		PassEnv:           n.Get("pass-env").BoolPtr(),
 		LogCapture:        n.Get("log-capture").BoolPtr(),

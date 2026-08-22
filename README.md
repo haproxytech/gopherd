@@ -23,6 +23,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Exponential backoff** — configurable delay, factor, and limit for restart attempts
 - **Service dependencies** — `after`, `before`, `requires` with topological sort
 - **Oneshot tasks** — run-once init tasks (e.g. config generation, permission setup) that complete before dependents start, with optional `startup-timeout`
+- **Scheduled tasks** — cron-scheduled oneshot-style runs (`startup: scheduled` + `schedule: "0 3 * * *"`); each run is bounded by the optional `startup-timeout`, and a tick is skipped while the previous run is still going
 - **Health checks** — HTTP (including over Unix socket), TCP, and exec-based checks with configurable period, timeout, and threshold
 - **Readiness gates** — block dependent services until a health check passes or the service writes `READY=1` to `$NOTIFY_SOCKET` (systemd-compatible sd_notify)
 - **Zero-overhead output by default** — children write directly to the container's stdout/stderr; opt in with `log-capture: true` to enable prefixing, `logs`, and log-targets
@@ -439,6 +440,12 @@ processes:
     startup-timeout: 30s             # kill if not done in 30s (default: no limit)
     on-failure: ignore               # optional: continue even if it fails
 
+  # Scheduled: runs oneshot-style at every matching cron minute (local time)
+  - name: nightly-backup
+    command: /usr/local/bin/backup.sh
+    startup: scheduled
+    schedule: "0 3 * * *"            # min hour day-of-month month day-of-week
+
   - name: app
     command: /usr/local/bin/myapp
     args: ["--config", "/etc/app.conf", "-m", "{{.MEMLIMIT}}", "--threads", "{{cpu}}"]
@@ -446,7 +453,7 @@ processes:
     working-dir: /app
     user: appuser                    # run as user (name or user-id)
     group: appgroup                  # run as group (name or group-id)
-    startup: enabled                 # enabled (default), disabled, or oneshot
+    startup: enabled                 # enabled (default), disabled, oneshot, or scheduled
     stop-signal: SIGTERM             # signal sent on shutdown (default: SIGTERM)
     kill-delay: 30s                  # grace period before SIGKILL (default: 10s)
     on-success: ignore               # action on exit 0: restart|shutdown|ignore
@@ -568,8 +575,9 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `export-socket` | bool | global default | Set `GOPHERD_SOCKET` in this service's env to the daemon's control socket path (client commands work from inside the service) |
 | `log-capture` | bool | global default | Pipe this service's stdout/stderr through gopherd; false = direct FD passthrough (no prefix, no `logs`, no log-targets for this service) |
 | `remove-env` | list | `[]` | Env keys to delete from the final child environment, regardless of source (OS env / dotenv / `environment:`) |
-| `startup` | string | `"enabled"` | `"enabled"`, `"disabled"`, or `"oneshot"`. Supports `{{.VAR}}` / `{{.VAR:-default}}` and `{{file "/path"}}`; empty after expansion → disabled. Oneshots with no `after`/`requires` edge between them run concurrently; dependents wait for all oneshots in the prior layer to exit cleanly |
-| `startup-timeout` | duration | | Max time for oneshot to complete (kills and fails if exceeded) |
+| `startup` | string | `"enabled"` | `"enabled"`, `"disabled"`, `"oneshot"`, or `"scheduled"`. Supports `{{.VAR}}` / `{{.VAR:-default}}` and `{{file "/path"}}`; empty after expansion → disabled. Oneshots with no `after`/`requires` edge between them run concurrently; dependents wait for all oneshots in the prior layer to exit cleanly |
+| `schedule` | string | | Cron expression (`min hour dom mon dow`) for `startup: scheduled` services: the process runs oneshot-style at every matching minute (local time), never at boot. A tick is skipped while the previous run is still going; a failed run just waits for the next tick (no `on-success`/`on-failure`/backoff, no `after`/`before`/`requires`). Supports `*`, lists, ranges, steps, and month/day names |
+| `startup-timeout` | duration | | Max time for a oneshot to complete (kills and fails if exceeded). For scheduled services, bounds each run (the run is stopped, the schedule continues) |
 | `stop-signal` | string | `"SIGTERM"` | Signal name (with or without SIG prefix) |
 | `kill-delay` | duration | `"10s"` | Grace period before the whole process group is SIGKILLed — including members that outlive an already-exited leader. `0` disables escalation and tolerates survivors |
 | `on-success` | string | `"shutdown"` | Action on exit 0 |

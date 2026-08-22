@@ -155,6 +155,7 @@ type daemon struct {
 	controlSocket  string
 	shutdownMode   string // "reverse-dep" (default), "dep", "simultaneous"
 	checkers       []*check.Checker
+	schedulers     []*schedRunner
 	logTargets     []*logger.Target
 	entrypointArgs []string
 	shutdownSeq    []string // start order; used to derive shutdown sequence
@@ -691,6 +692,7 @@ func (d *daemon) reload() (string, error) {
 	}
 
 	d.stopChecks()
+	d.stopSchedulers()
 
 	// Reconcile log targets: disconnect current services, close old targets, then
 	// rebuild from new config. buildServices() wires new wrappers automatically;
@@ -787,7 +789,7 @@ func (d *daemon) reload() (string, error) {
 		if !ok {
 			continue
 		}
-		if !svc.Enabled || svc.Oneshot {
+		if !svc.Enabled || svc.Oneshot || svc.Scheduled {
 			continue
 		}
 		if svc.IsRunning() {
@@ -816,6 +818,7 @@ func (d *daemon) reload() (string, error) {
 	// d.checkers or d.cfg.
 	d.mu.Lock()
 	d.startChecks()
+	d.startSchedulers()
 	// Drop metrics for checks this reload removed (survivors just re-registered).
 	for _, name := range oldCheckNames {
 		if _, ok := d.cfg.Checks[name]; !ok {
@@ -861,6 +864,12 @@ func (d *daemon) setupControl() *control.Server {
 		switch {
 		case svc.IsRunning():
 			return fmt.Sprintf("%s: running (pid %d)", name, int(svc.Pid.Load())), nil
+		case svc.Scheduled:
+			next := svc.Schedule.Next(time.Now())
+			if next.IsZero() {
+				return fmt.Sprintf("%s: scheduled (no future run)", name), nil
+			}
+			return fmt.Sprintf("%s: scheduled (next run %s)", name, next.Format(time.DateTime)), nil
 		case !svc.Enabled:
 			return fmt.Sprintf("%s: disabled", name), nil
 		case d.m.IsPending(name):

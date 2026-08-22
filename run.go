@@ -163,6 +163,7 @@ func run(entrypointArgs []string) int {
 	d.startServiceLayers(cfg, startLayers)
 
 	d.startChecks()
+	d.startSchedulers()
 
 	// Startup reads of d.services are done; reload() may now proceed.
 	d.started.Store(true)
@@ -359,6 +360,13 @@ func run(entrypointArgs []string) int {
 			switch {
 			case svc.WasStopped():
 				action = service.ActionIgnore
+			case svc.Scheduled:
+				// Scheduled runs are oneshot-style: log the outcome and never
+				// take exit actions — the next cron tick is the retry.
+				if !success {
+					log.Printf("scheduled %s: run failed (status %d)", svc.Name, effectiveCode)
+				}
+				action = service.ActionIgnore
 			case svc.Oneshot:
 				// Oneshots triggered via control socket after startup must not
 				// take shutdown actions — ignore a clean exit.
@@ -469,6 +477,7 @@ func run(entrypointArgs []string) int {
 
 	ctrlServer.Stop()
 	d.stopChecks()
+	d.stopSchedulers()
 	// Stop delivering signals before teardown so a late SIGHUP cannot run
 	// d.reload() concurrent with closeLogTargets() touching d.services. Closing
 	// the channel lets the signal-forwarding goroutine exit.
@@ -516,6 +525,11 @@ func (d *daemon) startLayerNonOneshots(cfg *yml.Config, layer []string) {
 			continue
 		}
 		if svc.Oneshot {
+			continue
+		}
+		// Scheduled services never run at boot; their runners fire them at
+		// cron ticks after startup.
+		if svc.Scheduled {
 			continue
 		}
 		// A control-socket client may have started this in a previous layer;

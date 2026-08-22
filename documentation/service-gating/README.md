@@ -29,6 +29,9 @@ processes:
   a config error.
 - `startup: "{{.ENABLE_SIDECAR:-enabled}}"` flips the default: on unless the
   var says otherwise.
+- [Scheduled jobs](../scheduled/README.md) gate the same way: `schedule` is
+  allowed alongside `startup: disabled`, so `"{{.ENABLE_BACKUP:-disabled}}"`
+  ships a cron job off by default and `ENABLE_BACKUP=scheduled` arms it.
 
 Hot reload (`SIGHUP` / `gopherd reload`) re-expands the template, picking up
 env changes made between reloads.

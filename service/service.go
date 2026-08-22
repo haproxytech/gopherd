@@ -34,6 +34,7 @@ import (
 
 	"github.com/haproxytech/gopherd/internal/backoff"
 	"github.com/haproxytech/gopherd/internal/cpu"
+	"github.com/haproxytech/gopherd/internal/cron"
 	"github.com/haproxytech/gopherd/internal/logger"
 	"github.com/haproxytech/gopherd/internal/memory"
 	"github.com/haproxytech/gopherd/internal/sdnotify"
@@ -110,8 +111,12 @@ type Process struct {
 	ReadyCheck     string
 	ReadyTimeout   string
 	StartupTimeout string
-	DotEnv         string
-	Prefix         string
+	// Schedule is the cron expression for startup=scheduled processes: the
+	// process runs once at every matching minute, oneshot-style. Empty (and
+	// rejected non-empty) for every other startup mode.
+	Schedule string
+	DotEnv   string
+	Prefix   string
 	// SDNotifyTimeout is the max wait for a READY=1 datagram on $NOTIFY_SOCKET
 	// after start. Empty = 60s default. Only meaningful when SDNotify is true.
 	SDNotifyTimeout string
@@ -176,6 +181,11 @@ type Service struct {
 	// by svc.mu.
 	sdNotifyListener *sdnotify.Listener
 
+	// Schedule is the parsed cron expression for Scheduled services; nil
+	// otherwise. Immutable after New, so the daemon's scheduler goroutine can
+	// read it without holding svc.mu.
+	Schedule *cron.Schedule
+
 	Name string
 	// ControlSocket is the daemon's resolved control socket path, exported to
 	// children as GOPHERD_SOCKET so client commands work from inside services.
@@ -200,6 +210,9 @@ type Service struct {
 	stopped atomic.Bool // true if Stop() was called (we initiated the exit)
 	Enabled bool
 	Oneshot bool
+	// Scheduled services run oneshot-style at each cron tick; they take no
+	// part in startup layers or reload restarts.
+	Scheduled bool
 	// LogCapture resolved from Proc.LogCapture; false = direct FD passthrough.
 	LogCapture bool
 }
@@ -215,6 +228,18 @@ func New(p Process, globalPrefix string) (*Service, error) {
 
 	enabled := p.Startup != "disabled"
 	oneshot := p.Startup == "oneshot"
+	scheduled := p.Startup == "scheduled"
+
+	// yml validates the expression at config load; parse again here so a
+	// caller bypassing yml can never produce a scheduled service with a nil
+	// Schedule.
+	var sched *cron.Schedule
+	if scheduled {
+		var err error
+		if sched, err = cron.Parse(p.Schedule); err != nil {
+			return nil, fmt.Errorf("process %s: %w", name, err)
+		}
+	}
 
 	stopSig, err := ParseSignal(p.StopSignal)
 	if err != nil {
@@ -287,6 +312,8 @@ func New(p Process, globalPrefix string) (*Service, error) {
 		Name:           name,
 		Enabled:        enabled,
 		Oneshot:        oneshot,
+		Scheduled:      scheduled,
+		Schedule:       sched,
 		stopSignal:     stopSig,
 		killDelay:      killDelay,
 		OnSuccess:      onSuccess,

@@ -33,6 +33,7 @@ go test ./documentation/...
 - [requires](requires/) — hard dependencies with failure coupling
 - [stop-signal](stop-signal/) — per-service `stop-signal` + `kill-delay` escalation
 - [oneshot](oneshot/) — run-to-completion startup tasks
+- [scheduled](scheduled/) — cron-scheduled oneshot-style runs
 - [shutdown-order](shutdown-order/) — `shutdown-order` strategies
 - [startup-timeout](startup-timeout/) — kill hung oneshots
 - [restart-backoff](restart-backoff/) — `on-failure: restart` with exponential backoff

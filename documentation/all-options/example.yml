@@ -70,6 +70,16 @@ processes:
     user: root
     group: root
 
+  # Scheduled: runs oneshot-style at every matching cron minute. Never runs
+  # at boot, takes no exit actions (the next tick is the retry), and cannot
+  # participate in startup ordering (after/before/requires). schedule also
+  # works with startup: disabled — gate via "{{.ENABLE_BACKUP:-disabled}}".
+  - name: nightly-backup
+    command: /usr/local/bin/backup.sh
+    startup: scheduled
+    schedule: "0 3 * * *"                # min hour day-of-month month day-of-week
+    startup-timeout: 30m                 # stop the run if it exceeds this (optional)
+
   # Main application with all options.
   - name: app
     command: /usr/local/bin/myapp
@@ -85,7 +95,7 @@ processes:
     # user-id: 1000
     # group-id: 1000
     # strict-groups: true                # drop the user's supplementary groups when group is set
-    startup: enabled                     # enabled (default), disabled, or oneshot
+    startup: enabled                     # enabled (default), disabled, oneshot, or scheduled
     stop-signal: SIGTERM                 # signal sent on shutdown (default: SIGTERM)
     kill-delay: 30s                      # grace period before SIGKILL (default: 10s)
     on-success: restart                  # restart|shutdown|success-shutdown|failure-shutdown|ignore
