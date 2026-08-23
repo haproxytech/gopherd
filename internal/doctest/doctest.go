@@ -229,16 +229,13 @@ func RunConfig(t *testing.T, config string, opts Options) *Daemon {
 	} else if !strings.Contains(config, "control:") {
 		config = fmt.Sprintf("control:\n  socket: %s\n\n%s", sockPath, config)
 	}
-	config = strings.ReplaceAll(config, "no-logo: true\n", "")
-	config = "no-logo: true\n" + config
-
 	if err := os.WriteFile(cfgPath, []byte(config), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
 	out := &syncBuffer{}
 	cmd := exec.Command(binary(t), opts.ExtraArgs...)
-	cmd.Env = append(os.Environ(), "GOPHERD_CONFIG="+cfgPath, "GOPHERD_SOCKET="+sockPath)
+	cmd.Env = append(os.Environ(), "GOPHERD_CONFIG="+cfgPath, "GOPHERD_SOCKET="+sockPath, "GOPHERD_NO_LOGO=1")
 	cmd.Stdout = io.MultiWriter(os.Stdout, out)
 	cmd.Stderr = io.MultiWriter(os.Stderr, out)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -424,7 +421,6 @@ func (d *Daemon) UpdateConfig(config string) {
 	} else if !strings.Contains(config, "control:") {
 		config = fmt.Sprintf("control:\n  socket: %s\n\n%s", d.socketPath, config)
 	}
-	config = "no-logo: true\n" + config
 	if err := os.WriteFile(d.configPath, []byte(config), 0o644); err != nil {
 		d.t.Fatalf("update config: %v", err)
 	}

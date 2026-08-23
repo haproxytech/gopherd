@@ -23,7 +23,6 @@ import (
 func TestBeforeOrdering(t *testing.T) {
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: first
     command: /bin/sh
@@ -57,7 +56,6 @@ func TestAfterOrdering(t *testing.T) {
 	// guaranteeing deterministic write order.
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: first
     command: /bin/sh
@@ -89,7 +87,6 @@ processes:
 func TestRequiresCascade(t *testing.T) {
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 export-socket: true
 processes:
   - name: db

@@ -58,7 +58,8 @@ func run(entrypointArgs []string) int {
 		cfg.Control.SocketPath = v
 	}
 
-	if !cfg.NoLogo {
+	// GOPHERD_NO_LOGO lets test harnesses suppress the banner without a config flag.
+	if !cfg.NoLogo && os.Getenv("GOPHERD_NO_LOGO") == "" {
 		fmt.Print(version.Logo)
 	}
 	log.Printf("%s (built from %s)", version.Version, version.Repo)

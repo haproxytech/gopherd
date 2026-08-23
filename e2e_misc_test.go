@@ -15,12 +15,93 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
+
+	"github.com/haproxytech/gopherd/control"
+	"github.com/haproxytech/gopherd/version"
 )
+
+// daemonStdout starts the daemon with a minimal config plus extraEnv, waits
+// for the control socket, shuts it down, and returns everything it wrote to
+// stdout. Stdout goes to a regular file rather than a pipe so cmd.Wait does
+// not block on service children (sleep) that inherit the descriptor.
+func daemonStdout(t *testing.T, extraEnv ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "gopherd.yml")
+	sockPath := filepath.Join(dir, "gopherd.sock")
+
+	config := fmt.Sprintf(`control:
+  socket: %s
+
+processes:
+  - name: app
+    command: sleep
+    args: ["300"]
+`, sockPath)
+	if err := os.WriteFile(cfgPath, []byte(config), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	outPath := filepath.Join(dir, "stdout")
+	outFile, err := os.Create(outPath)
+	if err != nil {
+		t.Fatalf("create stdout file: %v", err)
+	}
+	defer outFile.Close()
+
+	cmd := exec.Command(testBinary)
+	cmd.Env = append(os.Environ(), "GOPHERD_CONFIG="+cfgPath, "GOPHERD_SOCKET="+sockPath)
+	cmd.Env = append(cmd.Env, extraEnv...)
+	cmd.Stdout = outFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() {
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		cmd.Wait()
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for !control.IsAlive(sockPath) {
+		if time.Now().After(deadline) {
+			t.Fatal("daemon did not start")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	cmd.Process.Signal(syscall.SIGTERM)
+	cmd.Wait()
+
+	stdout, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read stdout file: %v", err)
+	}
+	return string(stdout)
+}
+
+func TestE2ELogoPrintedByDefault(t *testing.T) {
+	stdout := daemonStdout(t)
+	if !strings.Contains(stdout, version.Logo) {
+		t.Errorf("logo not printed on startup:\n%s", stdout)
+	}
+}
+
+func TestE2ELogoSuppressedByEnv(t *testing.T) {
+	// Env suppression keeps test configs free of test-only flags.
+	stdout := daemonStdout(t, "GOPHERD_NO_LOGO=1")
+	if strings.Contains(stdout, version.Logo) {
+		t.Errorf("logo printed despite GOPHERD_NO_LOGO=1:\n%s", stdout)
+	}
+}
 
 func TestE2EPassthrough(t *testing.T) {
 	// When invoked with a non-client command, gopherd should exec it directly.

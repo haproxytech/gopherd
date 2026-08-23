@@ -27,7 +27,6 @@ func TestRootUserGroupByName(t *testing.T) {
 	requireRoot(t)
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: whoami
     command: /bin/sh
@@ -59,7 +58,6 @@ func TestRootUserGroupByID(t *testing.T) {
 	requireRoot(t)
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: whoami
     command: /bin/sh
@@ -93,7 +91,6 @@ func TestRootUserOnlyGroupInherited(t *testing.T) {
 	// should be used automatically.
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: whoami
     command: /bin/sh
@@ -127,7 +124,6 @@ func TestRootGroupOnlyUIDPreserved(t *testing.T) {
 	// should be preserved, but GID should change.
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: whoami
     command: /bin/sh
@@ -158,7 +154,6 @@ func TestRootOneshotAsUser(t *testing.T) {
 	requireRoot(t)
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: init-as-user
     command: /bin/sh
@@ -187,7 +182,6 @@ func TestRootMixedUserServices(t *testing.T) {
 	// Different services run as different users within the same daemon.
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: as-root
     command: /bin/sh
@@ -230,7 +224,6 @@ func TestRootFileOwnership(t *testing.T) {
 	// Service running as testuser writes a file; verify it's owned by testuser.
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: writer
     command: /bin/sh
@@ -262,7 +255,6 @@ func TestRootWriteToRootPath(t *testing.T) {
 	// Root service can write to /etc, non-root service cannot.
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: root-writer
     command: /bin/sh
@@ -301,7 +293,6 @@ func TestRootPrivilegedPort(t *testing.T) {
 	// Only root can bind to port 80. Verify a root service can do this.
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: web
     command: /test/http-server.sh
@@ -346,7 +337,6 @@ func TestRootKillDelay(t *testing.T) {
 	// must send SIGKILL after 1s to actually stop it.
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 export-socket: true
 processes:
   - name: keeper
@@ -398,7 +388,6 @@ func TestRootZombieReap(t *testing.T) {
 	// Verify gopherd as PID 1 reaps orphaned zombie processes.
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: zombie-maker
     command: /test/make-zombies.sh
@@ -446,7 +435,6 @@ exit 0
 func TestRootPID1ExitCode(t *testing.T) {
 	_, code, _ := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: failer
     command: /bin/sh

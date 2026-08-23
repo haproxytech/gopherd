@@ -263,7 +263,7 @@ func TestE2EReadyCheckTimeout(t *testing.T) {
 	cfgPath := filepath.Join(dir, "gopherd.yml")
 	sockPath := filepath.Join(dir, "gopherd.sock")
 
-	config := fmt.Sprintf(`no-logo: true
+	config := fmt.Sprintf(`
 control:
   socket: %s
 
@@ -322,7 +322,7 @@ func TestE2ESDNotifyTimeout(t *testing.T) {
 	cfgPath := filepath.Join(dir, "gopherd.yml")
 	sockPath := filepath.Join(dir, "gopherd.sock")
 
-	config := fmt.Sprintf(`no-logo: true
+	config := fmt.Sprintf(`
 control:
   socket: %s
 
@@ -376,7 +376,7 @@ func TestE2ECheckThresholdEdgeTriggered(t *testing.T) {
 	const period = 200 * time.Millisecond
 	const threshold = 3
 
-	config := fmt.Sprintf(`no-logo: true
+	config := fmt.Sprintf(`
 control:
   socket: %s
 

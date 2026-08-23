@@ -35,7 +35,6 @@ const rootlessSocket = "/test/gopherd.sock"
 func TestRootlessSupervision(t *testing.T) {
 	dc := runDetached(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: worker
     command: sleep
@@ -89,7 +88,6 @@ processes:
 func TestRootlessSubreaper(t *testing.T) {
 	dc := runDetached(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 subreaper: true
 processes:
   - name: worker

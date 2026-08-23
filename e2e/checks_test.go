@@ -23,7 +23,6 @@ import (
 func TestHTTPCheck(t *testing.T) {
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: web
     command: /test/http-server.sh
@@ -66,7 +65,6 @@ done
 func TestTCPCheck(t *testing.T) {
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: listener
     command: /bin/sh
@@ -107,7 +105,6 @@ func TestExecCheckFailureShutdown(t *testing.T) {
 	// Health check always fails, threshold 2, action: shutdown.
 	_, code, _ := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: app
     command: sleep
@@ -139,7 +136,6 @@ func TestExecCheckFailureRestart(t *testing.T) {
 	// on-success: restart is needed for the service to actually restart.
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: keeper
     command: sleep

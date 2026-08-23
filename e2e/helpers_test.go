@@ -171,6 +171,7 @@ func runContainer(t *testing.T, files map[string]string, timeout time.Duration, 
 		"run", "--rm",
 		"-v", dir + ":/test",
 		"-e", "GOPHERD_CONFIG=/test/gopherd.yml",
+		"-e", "GOPHERD_NO_LOGO=1",
 	}
 	if o.user != "" {
 		args = append(args, "--user", o.user)
@@ -234,6 +235,7 @@ func runDetached(t *testing.T, files map[string]string, opts ...containerOpts) *
 		"run", "-d", "--name", name,
 		"-v", dir + ":/test",
 		"-e", "GOPHERD_CONFIG=/test/gopherd.yml",
+		"-e", "GOPHERD_NO_LOGO=1",
 	}
 	var o containerOpts
 	if len(opts) > 0 {

@@ -23,7 +23,6 @@ import (
 func TestEnvironment(t *testing.T) {
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: app
     command: /bin/sh
@@ -47,7 +46,6 @@ processes:
 func TestTemplateExpansion(t *testing.T) {
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: app
     command: /bin/sh
@@ -71,7 +69,6 @@ processes:
 func TestDotEnv(t *testing.T) {
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: app
     command: /bin/sh
@@ -95,7 +92,6 @@ processes:
 func TestWorkingDir(t *testing.T) {
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: app
     command: /bin/sh
@@ -118,7 +114,6 @@ processes:
 func TestDisabledService(t *testing.T) {
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 export-socket: true
 processes:
   - name: keeper
@@ -164,7 +159,6 @@ echo "PASS"
 func TestOneshotSuccess(t *testing.T) {
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: init
     command: /bin/sh
@@ -191,7 +185,6 @@ processes:
 func TestOneshotFailure(t *testing.T) {
 	_, code, _ := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: bad-init
     command: /bin/sh
@@ -213,7 +206,6 @@ processes:
 func TestOneshotFailureIgnore(t *testing.T) {
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: bad-init
     command: /bin/sh
@@ -257,7 +249,6 @@ func TestExitActions(t *testing.T) {
 			config := ""
 			if tt.onSuccess == "ignore" && tt.onFailure == "ignore" {
 				config = `
-no-logo: true
 processes:
   - name: app
     command: /bin/sh
@@ -272,7 +263,6 @@ processes:
 `
 			} else {
 				config = `
-no-logo: true
 processes:
   - name: app
     command: /bin/sh
@@ -296,7 +286,6 @@ processes:
 func TestCustomStopSignal(t *testing.T) {
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 export-socket: true
 processes:
   - name: trapper
@@ -331,7 +320,6 @@ sleep 1
 func TestBackoffIncreases(t *testing.T) {
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: keeper
     command: sleep

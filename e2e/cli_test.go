@@ -60,7 +60,6 @@ func TestPassthroughNotFound(t *testing.T) {
 func TestEntrypointFlagArgs(t *testing.T) {
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: app
     command: /test/dump-args.sh
@@ -90,7 +89,6 @@ func TestAlreadyRunningDetection(t *testing.T) {
 	// Start daemon, then try starting a second instance from within.
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: keeper
     command: sleep

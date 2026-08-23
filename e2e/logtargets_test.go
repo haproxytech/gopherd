@@ -24,7 +24,6 @@ import (
 func TestSyslogTarget(t *testing.T) {
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 log-capture: true
 processes:
   - name: app
@@ -66,7 +65,6 @@ kill $NC_PID 2>/dev/null
 func TestSyslogServicesFilter(t *testing.T) {
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 log-capture: true
 processes:
   - name: included
@@ -114,7 +112,6 @@ kill $NC_PID 2>/dev/null
 func TestSyslogLabels(t *testing.T) {
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 log-capture: true
 processes:
   - name: app

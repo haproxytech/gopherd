@@ -68,7 +68,7 @@ func TestE2EOneshotFailure(t *testing.T) {
 	cfgPath := filepath.Join(dir, "gopherd.yml")
 	sockPath := filepath.Join(dir, "gopherd.sock")
 
-	config := fmt.Sprintf(`no-logo: true
+	config := fmt.Sprintf(`
 control:
   socket: %s
 
@@ -154,7 +154,7 @@ func TestE2EOneshotStartupTimeout(t *testing.T) {
 	cfgPath := filepath.Join(dir, "gopherd.yml")
 	sockPath := filepath.Join(dir, "gopherd.sock")
 
-	config := fmt.Sprintf(`no-logo: true
+	config := fmt.Sprintf(`
 control:
   socket: %s
 

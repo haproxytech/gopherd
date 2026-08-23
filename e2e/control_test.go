@@ -26,7 +26,6 @@ import (
 func TestLogsFollow(t *testing.T) {
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 log-capture: true
 export-socket: true
 processes:
@@ -73,7 +72,6 @@ echo "PASS"
 func TestClientForm(t *testing.T) {
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 export-socket: true
 processes:
   - name: keeper
@@ -112,7 +110,6 @@ echo "PASS"
 func TestControlReload(t *testing.T) {
 	dc := runDetached(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: svc-a
     command: sleep
@@ -126,7 +123,7 @@ processes:
 	time.Sleep(2 * time.Second)
 
 	// Write new config with svc-b added.
-	newCfg := `no-logo: true
+	newCfg := `
 processes:
   - name: svc-a
     command: sleep
@@ -172,7 +169,6 @@ processes:
 func TestControlStartStopRestart(t *testing.T) {
 	_, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 export-socket: true
 processes:
   - name: keeper

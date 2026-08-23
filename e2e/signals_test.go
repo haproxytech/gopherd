@@ -26,7 +26,6 @@ import (
 func TestSIGINT(t *testing.T) {
 	dc := runDetached(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: app
     command: sleep
@@ -47,7 +46,6 @@ processes:
 func TestSIGTERM(t *testing.T) {
 	dc := runDetached(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: app
     command: sleep
@@ -68,7 +66,6 @@ processes:
 func TestSIGHUPReload(t *testing.T) {
 	dc := runDetached(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: original
     command: sleep
@@ -82,7 +79,7 @@ processes:
 	time.Sleep(2 * time.Second)
 
 	// Update config file, then send SIGHUP.
-	newCfg := `no-logo: true
+	newCfg := `
 processes:
   - name: original
     command: sleep
@@ -123,7 +120,6 @@ processes:
 func TestSignalForwardUSR1(t *testing.T) {
 	dc := runDetached(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: trapper
     command: /bin/sh
@@ -160,7 +156,6 @@ processes:
 func TestSignalForwardUSR2(t *testing.T) {
 	dc := runDetached(t, map[string]string{
 		"gopherd.yml": `
-no-logo: true
 processes:
   - name: trapper
     command: /bin/sh
