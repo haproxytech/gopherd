@@ -1,5 +1,8 @@
 name: CI
 on: [push, pull_request]
+env:
+  # Allow Go to fetch a newer toolchain when tools require it.
+  GOTOOLCHAIN: auto
 jobs:
   check:
     if: ${{ github.event_name == 'pull_request' }}

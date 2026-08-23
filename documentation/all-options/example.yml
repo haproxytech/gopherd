@@ -33,7 +33,7 @@
 # export-socket: false
 
 # Suppress the ASCII logo on daemon startup (default: false).
-# no-logo: true
+# no-logo: false
 
 # Shutdown ordering strategy (default: reverse-dep).
 #   reverse-dep:   dependents stop first, then dependencies (safest default)
