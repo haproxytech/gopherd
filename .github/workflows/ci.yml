@@ -1,8 +1,5 @@
 name: CI
 on: [push, pull_request]
-env:
-  # Allow Go to fetch a newer toolchain when tools require it.
-  GOTOOLCHAIN: auto
 jobs:
   check:
     if: ${{ github.event_name == 'pull_request' }}
@@ -17,6 +14,9 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
+      # setup-go exports GOTOOLCHAIN=local via GITHUB_ENV; a later write wins.
+      - name: Allow Go toolchain downloads
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
       - name: Install Task
         uses: go-task/setup-task@v2
         with:
@@ -35,6 +35,8 @@ jobs:
         with:
           go-version-file: 'go.mod'
           check-latest: true
+      - name: Allow Go toolchain downloads
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
       - name: tidy
         run: go mod tidy
       - name: changes
@@ -49,6 +51,8 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
+      - name: Allow Go toolchain downloads
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
       - name: Install Task
         uses: go-task/setup-task@v2
         with:
@@ -69,6 +73,8 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
+      - name: Allow Go toolchain downloads
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
       - name: Install Task
         uses: go-task/setup-task@v2
         with:
@@ -91,6 +97,8 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
+      - name: Allow Go toolchain downloads
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
       - name: Install Task
         uses: go-task/setup-task@v2
         with:
@@ -112,6 +120,8 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
+      - name: Allow Go toolchain downloads
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
       - name: Build
         run: go build -v .
   govulncheck:
@@ -124,6 +134,8 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
+      - name: Allow Go toolchain downloads
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
       - name: Install Task
         uses: go-task/setup-task@v2
         with:
