@@ -1,9 +1,7 @@
 license:
   stage: security
   needs: ["tidy"]
-  rules:
-    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
-    - if: $CI_PIPELINE_SOURCE == 'push'
+  extends: .all-pipelines
   image:
     name: $HAPROXY_REGISTRY_GO/golang:latest-alpine
     entrypoint: [""]
@@ -27,9 +25,7 @@ license:
 govulncheck:
   stage: security
   needs: []
-  rules:
-    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
-    - if: $CI_PIPELINE_SOURCE == 'push'
+  extends: .all-pipelines
   image:
     name: $HAPROXY_REGISTRY_GO/golang:latest-alpine
     entrypoint: [""]

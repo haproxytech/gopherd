@@ -1,3 +1,15 @@
+# Pipelines run only for MRs and manual (web/API) runs; branch pushes create none.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_PIPELINE_SOURCE == 'api'
+    - if: $CI_PIPELINE_SOURCE == 'web'
+
+# Extend to run in every allowed pipeline; rule-less jobs drop out of MR pipelines.
+.all-pipelines:
+  rules:
+    - when: on_success
+
 stages:
   - lint
   - security

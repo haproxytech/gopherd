@@ -4,9 +4,7 @@
 test-e2e:
   stage: test
   needs: []
-  rules:
-    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
-    - if: $CI_PIPELINE_SOURCE == 'push'
+  extends: .all-pipelines
   image: $CI_REGISTRY_GO/docker:$DOCKER_VERSION-go$GO_VERSION
   services:
     - name: $CI_REGISTRY_GO/docker:$DOCKER_VERSION-dind
@@ -40,9 +38,7 @@ test-e2e:
 test:
   stage: test
   needs: []
-  rules:
-    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
-    - if: $CI_PIPELINE_SOURCE == 'push'
+  extends: .all-pipelines
   image:
     name: $HAPROXY_REGISTRY_GO/golang:latest-alpine
     entrypoint: [""]
