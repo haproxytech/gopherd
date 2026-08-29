@@ -437,6 +437,9 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 	// "TERM"); signal names map to the shell convention 128+signum, matching
 	// what waitStatusCode reports for signal-terminated children. Mixed forms
 	// are fine.
+	if err := requireMapping(n, "exit-code-map", p.Name, p.Command); err != nil {
+		return p, err
+	}
 	if raw := n.Get("exit-code-map").StringMap(); len(raw) > 0 {
 		p.ExitCodeMap = make(map[int]int, len(raw))
 		for k, v := range raw {
@@ -539,6 +542,25 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 // argSecretTemplateRe matches arg templates whose value lands in argv
 // ({{file}}, {{.VAR}}). {{cpu}}/{{mem}} expand to integers, so excluded.
 var argSecretTemplateRe = regexp.MustCompile(`\{\{\s*(?:file\b|\.)`)
+
+// requireMapping rejects a value that cannot hold a key-value table. A scalar
+// or a list parses to an empty map, so without this the whole setting would be
+// silently ignored until a child exits. An absent key, or a bare "key:" with no
+// entries, stays legal.
+func requireMapping(n *Node, key, procName, command string) error {
+	v := n.Get(key)
+	if v == nil || v.kind == kindMapping {
+		return nil
+	}
+	if procName == "" {
+		procName = command
+	}
+	got := fmt.Sprintf("%q", v.String())
+	if v.kind == kindSequence {
+		got = "a list"
+	}
+	return fmt.Errorf("process %q: %s must be a key-value map, either indented or inline as {SIGTERM: 0}; got %s", procName, key, got)
+}
 
 // parseExitCode accepts a decimal exit code ("143") or a signal name
 // ("SIGTERM", "TERM"), returning the numeric exit status. Signal names use

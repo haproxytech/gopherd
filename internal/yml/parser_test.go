@@ -484,3 +484,132 @@ func TestParseRejectsDeepNesting(t *testing.T) {
 		t.Errorf("error %q does not mention nesting depth limit", err.Error())
 	}
 }
+
+func TestParseInlineMap(t *testing.T) {
+	t.Parallel()
+	n, err := Parse([]byte(`exit-code-map: {SIGKILL: 0, SIGTERM: 0}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := n.Get("exit-code-map").StringMap()
+	if got["SIGKILL"] != "0" || got["SIGTERM"] != "0" || len(got) != 2 {
+		t.Errorf("StringMap() = %v", got)
+	}
+}
+
+func TestParseInlineMapEmpty(t *testing.T) {
+	t.Parallel()
+	n, err := Parse([]byte(`env: {}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := n.Get("env").StringMap()
+	if got == nil || len(got) != 0 {
+		t.Errorf("StringMap() = %v, want empty non-nil map", got)
+	}
+}
+
+// Values may contain commas and colons when quoted; splitting must respect
+// quotes so a URL or comma-bearing value stays one entry.
+func TestParseInlineMapQuotedValue(t *testing.T) {
+	t.Parallel()
+	n, err := Parse([]byte(`env: {LIST: "a, b", URL: "http://h:80"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := n.Get("env").StringMap()
+	if got["LIST"] != "a, b" {
+		t.Errorf("LIST = %q, want %q", got["LIST"], "a, b")
+	}
+	if got["URL"] != "http://h:80" {
+		t.Errorf("URL = %q", got["URL"])
+	}
+}
+
+// A nested inline map must not be split at the commas inside its braces.
+func TestParseInlineMapNested(t *testing.T) {
+	t.Parallel()
+	n, err := Parse([]byte(`a: {b: {c: 1, d: 2}, e: 3}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := n.Get("a").Get("b").StringMap()
+	if inner["c"] != "1" || inner["d"] != "2" || len(inner) != 2 {
+		t.Errorf("inner = %v", inner)
+	}
+	if n.Get("a").Get("e").String() != "3" {
+		t.Errorf("e = %q", n.Get("a").Get("e").String())
+	}
+}
+
+// An inline list nested in an inline map must survive comma splitting too.
+func TestParseInlineMapWithInlineList(t *testing.T) {
+	t.Parallel()
+	n, err := Parse([]byte(`a: {args: [x, y], n: 1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := n.Get("a").Get("args").Strings(); len(got) != 2 || got[0] != "x" || got[1] != "y" {
+		t.Errorf("args = %v", got)
+	}
+	if n.Get("a").Get("n").String() != "1" {
+		t.Errorf("n = %q", n.Get("a").Get("n").String())
+	}
+}
+
+func TestParseInlineMapMissingColon(t *testing.T) {
+	t.Parallel()
+	_, err := Parse([]byte(`a: {foo, bar}`))
+	if err == nil {
+		t.Fatal("expected error for inline map entry without a colon")
+	}
+	if !strings.Contains(err.Error(), "key: value") {
+		t.Errorf("error %q does not explain the expected form", err.Error())
+	}
+}
+
+func TestParseInlineMapDuplicateKey(t *testing.T) {
+	t.Parallel()
+	_, err := Parse([]byte(`a: {x: 1, x: 2}`))
+	if err == nil {
+		t.Fatal("expected error for duplicate key in inline map")
+	}
+	if !strings.Contains(err.Error(), "duplicate key") {
+		t.Errorf("error %q does not mention a duplicate key", err.Error())
+	}
+}
+
+// A PID 1 process must not blow its stack on an adversarial config, so
+// inline-map recursion is capped like block nesting is.
+func TestParseInlineMapRejectsDeepNesting(t *testing.T) {
+	t.Parallel()
+	const depth = 500 // well beyond maxParseDepth
+	payload := "a: " + strings.Repeat("{b: ", depth) + "1" + strings.Repeat("}", depth)
+	_, err := Parse([]byte(payload))
+	if err == nil {
+		t.Fatal("expected error for deeply nested inline map, got nil")
+	}
+	if !strings.Contains(err.Error(), "nesting exceeds maximum depth") {
+		t.Errorf("error %q does not mention nesting depth limit", err.Error())
+	}
+}
+
+// A sequence item that is itself an inline map must parse as a mapping, not
+// be mangled by the block-mapping path.
+func TestParseInlineMapAsSequenceItem(t *testing.T) {
+	t.Parallel()
+	n, err := Parse([]byte("list:\n  - {name: a, cmd: x}\n  - {name: b, cmd: y}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := n.Get("list").Items()
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+	if items[0].Get("name").String() != "a" || items[0].Get("cmd").String() != "x" {
+		t.Errorf("item 0 = %v", items[0].StringMap())
+	}
+	if items[1].Get("name").String() != "b" {
+		t.Errorf("item 1 = %v", items[1].StringMap())
+	}
+}

@@ -204,7 +204,10 @@ func parseMapping(lines []rawLine, pos, minIndent, depth int) (*Node, int, error
 		rest := strings.TrimSpace(line.text[colonIdx+1:])
 
 		if rest != "" {
-			val := parseScalar(rest)
+			val, err := parseScalar(rest, depth)
+			if err != nil {
+				return nil, pos, fmt.Errorf("line %d: %w", line.num, err)
+			}
 			m.mapping = append(m.mapping, MapEntry{Key: key, Val: val})
 			pos++
 		} else {
@@ -248,8 +251,12 @@ func parseSequence(lines []rawLine, pos, seqIndent, depth int) (*Node, int, erro
 			pos++
 		}
 
-		if len(itemLines) == 1 && isScalarSeqItem(itemText) {
-			seq.sequence = append(seq.sequence, parseScalar(itemText))
+		if len(itemLines) == 1 && isInlineSeqItem(itemText) {
+			item, err := parseScalar(itemText, depth)
+			if err != nil {
+				return nil, pos, fmt.Errorf("line %d: %w", line.num, err)
+			}
+			seq.sequence = append(seq.sequence, item)
 			continue
 		}
 		item, _, err := parseBlock(itemLines, 0, itemIndent-1, depth+1)
@@ -262,12 +269,16 @@ func parseSequence(lines []rawLine, pos, seqIndent, depth int) (*Node, int, erro
 	return seq, pos, nil
 }
 
-// isScalarSeqItem reports whether a single-line sequence item is a scalar:
-// not a nested sequence, and either colon-free or fully quoted (so quoted
-// values containing ": ", e.g. JSON blobs, stay one scalar).
-func isScalarSeqItem(s string) bool {
+// isInlineSeqItem reports whether a single-line sequence item can be handled
+// by parseScalar: not a nested sequence, and either an inline map, colon-free,
+// or fully quoted (so quoted values containing ": ", e.g. JSON blobs, stay one
+// scalar).
+func isInlineSeqItem(s string) bool {
 	if strings.HasPrefix(s, "- ") {
 		return false
+	}
+	if strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}") {
+		return true
 	}
 	if findColon(s) < 0 {
 		return true
@@ -275,7 +286,13 @@ func isScalarSeqItem(s string) bool {
 	return len(s) >= 2 && (s[0] == '\'' || s[0] == '"') && s[len(s)-1] == s[0]
 }
 
-func parseScalar(s string) *Node {
+// parseScalar parses an inline value: an inline list ("[a, b]"), an inline
+// map ("{a: 1, b: 2}"), or a plain scalar. depth bounds brace recursion so a
+// malformed config cannot exhaust the PID 1 stack.
+func parseScalar(s string, depth int) (*Node, error) {
+	if depth > maxParseDepth {
+		return nil, fmt.Errorf("YAML nesting exceeds maximum depth of %d", maxParseDepth)
+	}
 	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
 		inner := s[1 : len(s)-1]
 		items := splitCSV(inner)
@@ -285,9 +302,41 @@ func parseScalar(s string) *Node {
 			item = unquote(item)
 			seq.sequence = append(seq.sequence, &Node{kind: kindScalar, scalar: item})
 		}
-		return seq
+		return seq, nil
 	}
-	return &Node{kind: kindScalar, scalar: unquote(strings.TrimSpace(s))}
+	if strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}") {
+		return parseInlineMap(s[1:len(s)-1], depth)
+	}
+	return &Node{kind: kindScalar, scalar: unquote(strings.TrimSpace(s))}, nil
+}
+
+// parseInlineMap parses the body of a flow mapping ("a: 1, b: 2"). Entries are
+// validated like block keys, so a malformed entry or a duplicate key fails at
+// load instead of silently yielding an empty map.
+func parseInlineMap(inner string, depth int) (*Node, error) {
+	m := &Node{kind: kindMapping}
+	seen := make(map[string]bool)
+	for _, entry := range splitCSV(inner) {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		colonIdx := findColon(entry)
+		if colonIdx < 0 {
+			return nil, fmt.Errorf("expected 'key: value' in inline map, got %q", entry)
+		}
+		key := unquote(strings.TrimSpace(entry[:colonIdx]))
+		if seen[key] {
+			return nil, fmt.Errorf("duplicate key %q in inline map", key)
+		}
+		seen[key] = true
+		val, err := parseScalar(strings.TrimSpace(entry[colonIdx+1:]), depth+1)
+		if err != nil {
+			return nil, err
+		}
+		m.mapping = append(m.mapping, MapEntry{Key: key, Val: val})
+	}
+	return m, nil
 }
 
 func splitCSV(s string) []string {
@@ -296,6 +345,7 @@ func splitCSV(s string) []string {
 	inQuote := false
 	quoteChar := byte(0)
 	escaped := false
+	depth := 0 // nesting of [] and {}; commas only split at depth 0
 	for i := range len(s) {
 		c := s[i]
 		if escaped {
@@ -323,7 +373,13 @@ func splitCSV(s string) []string {
 			current.WriteByte(c)
 			continue
 		}
-		if c == ',' {
+		switch c {
+		case '[', '{':
+			depth++
+		case ']', '}':
+			depth--
+		}
+		if c == ',' && depth == 0 {
 			parts = append(parts, current.String())
 			current.Reset()
 			continue

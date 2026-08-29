@@ -1210,3 +1210,69 @@ func TestArgSecretTemplateRe(t *testing.T) {
 		}
 	}
 }
+
+// The inline flow form must produce the same map as the block form, so a
+// one-line exit-code-map is not silently dropped.
+func TestLoadExitCodeMapInlineForm(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "em.yml")
+	os.WriteFile(cfgPath, []byte(`
+processes:
+  - name: app
+    command: /bin/app
+    exit-code-map: {SIGKILL: 0, SIGTERM: 0, 42: 7}
+`), 0o644)
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := cfg.Processes[0].ExitCodeMap
+	if got[137] != 0 || got[143] != 0 || got[42] != 7 || len(got) != 3 {
+		t.Errorf("ExitCodeMap = %v", got)
+	}
+}
+
+// A scalar under exit-code-map cannot be a remap table. Rejecting it at load
+// keeps a typo from silently disabling the remap until a child exits.
+func TestLoadExitCodeMapRejectsScalar(t *testing.T) {
+	t.Parallel()
+	for _, val := range []string{"17", "yes", "[143, 137]"} {
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "em.yml")
+		os.WriteFile(cfgPath, []byte(`
+processes:
+  - name: app
+    command: /bin/app
+    exit-code-map: `+val+`
+`), 0o644)
+		_, err := Load(cfgPath)
+		if err == nil {
+			t.Errorf("exit-code-map: %s: expected error, got nil", val)
+			continue
+		}
+		if !strings.Contains(err.Error(), "exit-code-map") {
+			t.Errorf("exit-code-map: %s: error %q does not name the key", val, err.Error())
+		}
+	}
+}
+
+// An absent exit-code-map stays absent; the new validation must not turn a
+// missing key into an error.
+func TestLoadExitCodeMapAbsent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "em.yml")
+	os.WriteFile(cfgPath, []byte(`
+processes:
+  - name: app
+    command: /bin/app
+`), 0o644)
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Processes[0].ExitCodeMap != nil {
+		t.Errorf("ExitCodeMap = %v, want nil", cfg.Processes[0].ExitCodeMap)
+	}
+}

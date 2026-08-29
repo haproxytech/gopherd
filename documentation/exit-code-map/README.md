@@ -19,7 +19,9 @@ processes:
 ```
 
 - `exit-code-map: {17: 0}` — an exit code of 17 is remapped to 0. Keys may be
-  integers or signal names (e.g. `SIGTERM: 0` maps the shell's 143).
+  integers or signal names (e.g. `SIGTERM: 0` maps the shell's 143). The map
+  can be written indented (as above) or inline: `exit-code-map: {17: 0}`.
+  A value that is not a key-value map (e.g. a bare scalar) is a config error.
 - Because the remap happens first, the remapped 0 makes the exit a **success**,
   so `on-failure: shutdown` never fires.
 - `on-success: ignore` — the success exit does not shut gopherd down either;
