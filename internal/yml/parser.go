@@ -13,9 +13,9 @@
 // limitations under the License.
 
 // Package yml provides a minimal YAML parser for gopherd configuration.
-// It supports the subset of YAML used by gopherd: scalars, maps, block lists
-// of maps or scalars, inline lists, and nested indentation. No external
-// dependencies.
+// It supports the subset of YAML used by gopherd: scalars, literal block
+// scalars, maps, block lists of maps or scalars, inline lists, and nested
+// indentation. No external dependencies.
 package yml
 
 import (
@@ -86,25 +86,31 @@ func Parse(data []byte) (*Node, error) {
 }
 
 type rawLine struct {
-	text   string
-	indent int
-	num    int
+	literal *string
+	text    string
+	indent  int
+	num     int
 }
 
 func splitLines(data []byte) ([]rawLine, error) {
+	raw := strings.Split(string(data), "\n")
+	// A trailing \n makes Split emit one final "" that is an EOF artifact,
+	// not an empty line; drop it so block scalar chomping counts breaks right.
+	if len(raw) > 0 && raw[len(raw)-1] == "" {
+		raw = raw[:len(raw)-1]
+	}
 	var lines []rawLine
-	i := 0
-	for raw := range strings.SplitSeq(string(data), "\n") {
-		i++
-		trimmed := strings.TrimRight(raw, " \t\r")
+	for i := 0; i < len(raw); i++ {
+		num := i + 1
+		trimmed := strings.TrimRight(raw[i], " \t\r")
 		if trimmed == "" || strings.TrimSpace(trimmed) == "" {
 			continue
 		}
 		// Reject tab indentation: indent is counted in spaces only, so a
 		// leading \t would parse as indent=0 and attach at the wrong depth.
 		// YAML 1.2 forbids tabs for indentation anyway.
-		if len(raw) > 0 && raw[0] == '\t' {
-			return nil, fmt.Errorf("line %d: tab character used for indentation; YAML requires spaces", i)
+		if raw[i][0] == '\t' {
+			return nil, fmt.Errorf("line %d: tab character used for indentation; YAML requires spaces", num)
 		}
 		content := strings.TrimSpace(trimmed)
 		if strings.HasPrefix(content, "#") {
@@ -112,9 +118,91 @@ func splitLines(data []byte) ([]rawLine, error) {
 		}
 		content = stripInlineComment(content)
 		indent := len(trimmed) - len(strings.TrimLeft(trimmed, " "))
-		lines = append(lines, rawLine{indent: indent, text: content, num: i})
+		line := rawLine{indent: indent, text: content, num: num}
+		if ind, ok := blockIndicator(content); ok {
+			literal, next, err := collectLiteralBlock(raw, i+1, indent, ind)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: %w", num, err)
+			}
+			line.literal = &literal
+			i = next - 1
+		}
+		lines = append(lines, line)
 	}
 	return lines, nil
+}
+
+// blockIndicator extracts the value position of a line — after "key: ", after
+// any "- " item markers, or the whole line — and reports whether it starts a
+// block scalar ('|' or '>'). Quoted values never match: they cannot start
+// with a bare indicator character.
+func blockIndicator(content string) (string, bool) {
+	s := content
+	for strings.HasPrefix(s, "- ") {
+		s = s[2:]
+	}
+	if idx := findColon(s); idx >= 0 {
+		s = strings.TrimSpace(s[idx+1:])
+	}
+	if s == "" || (s[0] != '|' && s[0] != '>') {
+		return "", false
+	}
+	return s, true
+}
+
+// collectLiteralBlock gathers the indented body of a literal block scalar.
+// The indicator selects chomping: "|" clips to one trailing newline, "|-"
+// strips all, "|+" keeps every trailing break. Folded scalars (">") and
+// other indicators are rejected. Body lines are taken raw — '#' is content,
+// not a comment — with indentation beyond the first content line preserved
+// and blank lines kept as empty lines. Returns the scalar text and the index
+// of the first line after the block.
+func collectLiteralBlock(raw []string, start, headerIndent int, indicator string) (string, int, error) {
+	switch indicator {
+	case "|", "|-", "|+":
+	case ">", ">-", ">+":
+		return "", 0, fmt.Errorf("folded block scalars (%q) are not supported; use | for a literal block scalar", indicator)
+	default:
+		return "", 0, fmt.Errorf("unsupported block scalar indicator %q (only |, |-, and |+ are supported)", indicator)
+	}
+
+	blockIndent := -1
+	var body []string
+	i := start
+	for ; i < len(raw); i++ {
+		line := raw[i]
+		if strings.TrimSpace(line) == "" {
+			body = append(body, "")
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if blockIndent < 0 {
+			// First content line fixes the block's indentation.
+			if indent <= headerIndent {
+				break
+			}
+			blockIndent = indent
+		} else if indent < blockIndent {
+			break
+		}
+		body = append(body, line[blockIndent:])
+	}
+
+	text := strings.Join(body, "\n")
+	switch indicator {
+	case "|-":
+		text = strings.TrimRight(text, "\n")
+	case "|+":
+		if len(body) > 0 {
+			text += "\n"
+		}
+	default: // "|": clip to exactly one trailing newline
+		text = strings.TrimRight(text, "\n")
+		if text != "" {
+			text += "\n"
+		}
+	}
+	return text, i, nil
 }
 
 func stripInlineComment(s string) string {
@@ -203,6 +291,11 @@ func parseMapping(lines []rawLine, pos, minIndent, depth int) (*Node, int, error
 		seenKeys[key] = line.num
 		rest := strings.TrimSpace(line.text[colonIdx+1:])
 
+		if line.literal != nil {
+			m.mapping = append(m.mapping, MapEntry{Key: key, Val: &Node{kind: kindScalar, scalar: *line.literal}})
+			pos++
+			continue
+		}
 		if rest != "" {
 			val, err := parseScalar(rest, depth)
 			if err != nil {
@@ -240,7 +333,14 @@ func parseSequence(lines []rawLine, pos, seqIndent, depth int) (*Node, int, erro
 		itemText := strings.TrimPrefix(line.text, "- ")
 		itemIndent := seqIndent + 2
 
-		itemLines := []rawLine{{indent: itemIndent, text: itemText, num: line.num}}
+		if line.literal != nil && !strings.HasPrefix(itemText, "- ") && findColon(itemText) < 0 {
+			// "- |": the item itself is a literal block scalar.
+			seq.sequence = append(seq.sequence, &Node{kind: kindScalar, scalar: *line.literal})
+			pos++
+			continue
+		}
+
+		itemLines := []rawLine{{indent: itemIndent, text: itemText, num: line.num, literal: line.literal}}
 		pos++
 		for pos < len(lines) {
 			next := lines[pos]

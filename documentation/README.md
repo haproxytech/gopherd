@@ -26,6 +26,7 @@ go test ./documentation/...
 - [remove-env](remove-env/) — strip keys from a child's environment
 - [entrypoint-args](entrypoint-args/) — `use-entrypoint-args` and passthrough exec
 - [block-style-args](block-style-args/) — `args:` as a block YAML list
+- [block-scalars](block-scalars/) — multi-line values via YAML literal block scalars (`|`)
 
 ## Ordering & lifecycle
 

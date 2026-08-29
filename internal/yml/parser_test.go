@@ -613,3 +613,248 @@ func TestParseInlineMapAsSequenceItem(t *testing.T) {
 		t.Errorf("item 1 = %v", items[1].StringMap())
 	}
 }
+
+func TestParseLiteralBlockScalar(t *testing.T) {
+	t.Parallel()
+	src := strings.Join([]string{
+		"cmd: |",
+		"  echo hello",
+		"  echo world",
+		"next: 1",
+	}, "\n")
+	n, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := n.Get("cmd").String(); got != "echo hello\necho world\n" {
+		t.Errorf("cmd = %q", got)
+	}
+	if v, ok := n.Get("next").Int(); !ok || v != 1 {
+		t.Errorf("next = %d, %v; sibling after block scalar lost", v, ok)
+	}
+}
+
+func TestParseLiteralBlockScalarStrip(t *testing.T) {
+	t.Parallel()
+	n, err := Parse([]byte("cmd: |-\n  echo hello\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := n.Get("cmd").String(); got != "echo hello" {
+		t.Errorf("cmd = %q", got)
+	}
+}
+
+func TestParseLiteralBlockScalarKeep(t *testing.T) {
+	t.Parallel()
+	src := strings.Join([]string{
+		"cmd: |+",
+		"  echo hello",
+		"",
+		"next: 1",
+	}, "\n")
+	n, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := n.Get("cmd").String(); got != "echo hello\n\n" {
+		t.Errorf("cmd = %q", got)
+	}
+	if v, ok := n.Get("next").Int(); !ok || v != 1 {
+		t.Errorf("next = %d, %v", v, ok)
+	}
+}
+
+func TestParseLiteralBlockScalarInteriorBlankLine(t *testing.T) {
+	t.Parallel()
+	src := strings.Join([]string{
+		"script: |",
+		"  line one",
+		"",
+		"  line three",
+	}, "\n")
+	n, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := n.Get("script").String(); got != "line one\n\nline three\n" {
+		t.Errorf("script = %q", got)
+	}
+}
+
+func TestParseLiteralBlockScalarExtraIndent(t *testing.T) {
+	t.Parallel()
+	src := strings.Join([]string{
+		"script: |",
+		"  if true; then",
+		"    echo indented",
+		"  fi",
+	}, "\n")
+	n, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := n.Get("script").String(); got != "if true; then\n  echo indented\nfi\n" {
+		t.Errorf("script = %q", got)
+	}
+}
+
+func TestParseLiteralBlockScalarHashNotComment(t *testing.T) {
+	t.Parallel()
+	src := strings.Join([]string{
+		"script: |",
+		"  #!/bin/sh",
+		"  echo x # not stripped",
+	}, "\n")
+	n, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := n.Get("script").String(); got != "#!/bin/sh\necho x # not stripped\n" {
+		t.Errorf("script = %q", got)
+	}
+}
+
+func TestParseLiteralBlockScalarCommentAfterIndicator(t *testing.T) {
+	t.Parallel()
+	n, err := Parse([]byte("cmd: | # trailing comment\n  echo hello\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := n.Get("cmd").String(); got != "echo hello\n" {
+		t.Errorf("cmd = %q", got)
+	}
+}
+
+func TestParseLiteralBlockScalarInSequenceMapping(t *testing.T) {
+	t.Parallel()
+	src := strings.Join([]string{
+		"processes:",
+		"  - name: app",
+		"    script: |",
+		"      echo one",
+		"      echo two",
+		"    on-failure: shutdown",
+		"  - name: other",
+	}, "\n")
+	n, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := n.Get("processes").Items()
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+	if got := items[0].Get("script").String(); got != "echo one\necho two\n" {
+		t.Errorf("script = %q", got)
+	}
+	if got := items[0].Get("on-failure").String(); got != "shutdown" {
+		t.Errorf("on-failure = %q; sibling after block scalar lost", got)
+	}
+	if got := items[1].Get("name").String(); got != "other" {
+		t.Errorf("second item name = %q", got)
+	}
+}
+
+func TestParseLiteralBlockScalarSequenceItem(t *testing.T) {
+	t.Parallel()
+	src := strings.Join([]string{
+		"scripts:",
+		"  - |",
+		"    echo a",
+		"  - |-",
+		"    echo b",
+	}, "\n")
+	n, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := n.Get("scripts").Items()
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+	if got := items[0].String(); got != "echo a\n" {
+		t.Errorf("item 0 = %q", got)
+	}
+	if got := items[1].String(); got != "echo b" {
+		t.Errorf("item 1 = %q", got)
+	}
+}
+
+func TestParseLiteralBlockScalarNestedMapping(t *testing.T) {
+	t.Parallel()
+	src := strings.Join([]string{
+		"outer:",
+		"  inner: |",
+		"    text",
+		"  sibling: x",
+	}, "\n")
+	n, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := n.Get("outer").Get("inner").String(); got != "text\n" {
+		t.Errorf("inner = %q", got)
+	}
+	if got := n.Get("outer").Get("sibling").String(); got != "x" {
+		t.Errorf("sibling = %q", got)
+	}
+}
+
+func TestParseLiteralBlockScalarEmpty(t *testing.T) {
+	t.Parallel()
+	n, err := Parse([]byte("cmd: |\nnext: 1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := n.Get("cmd").String(); got != "" {
+		t.Errorf("cmd = %q, want empty", got)
+	}
+	if v, ok := n.Get("next").Int(); !ok || v != 1 {
+		t.Errorf("next = %d, %v", v, ok)
+	}
+}
+
+func TestParseLiteralBlockScalarAtEOF(t *testing.T) {
+	t.Parallel()
+	n, err := Parse([]byte("cmd: |\n  echo hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := n.Get("cmd").String(); got != "echo hello\n" {
+		t.Errorf("cmd = %q", got)
+	}
+}
+
+func TestParseQuotedPipeStaysScalar(t *testing.T) {
+	t.Parallel()
+	n, err := Parse([]byte("sep: \"|\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := n.Get("sep").String(); got != "|" {
+		t.Errorf("sep = %q", got)
+	}
+}
+
+func TestParseFoldedBlockScalarRejected(t *testing.T) {
+	t.Parallel()
+	_, err := Parse([]byte("cmd: >\n  echo hello\n"))
+	if err == nil {
+		t.Fatal("expected error for folded block scalar, got nil")
+	}
+	if !strings.Contains(err.Error(), "folded") || !strings.Contains(err.Error(), "line 1") {
+		t.Errorf("error %q should mention folded scalars and line 1", err.Error())
+	}
+}
+
+func TestParseUnknownBlockIndicatorRejected(t *testing.T) {
+	t.Parallel()
+	_, err := Parse([]byte("cmd: |2\n  echo hello\n"))
+	if err == nil {
+		t.Fatal("expected error for unsupported block scalar indicator, got nil")
+	}
+	if !strings.Contains(err.Error(), "|2") || !strings.Contains(err.Error(), "line 1") {
+		t.Errorf("error %q should mention the indicator and line 1", err.Error())
+	}
+}

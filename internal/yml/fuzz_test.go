@@ -61,6 +61,12 @@ var parseSeeds = func() [][]byte {
 		"a:\n - x\n  - y",       // inconsistent indent
 		"a: b\n   c: d\n  e: f", // inconsistent sibling indent
 		"deep:\n  - a:\n      - b:\n          - c: 1",
+		"s: |\n  line1\n  line2\nnext: 1",  // literal block scalar (clip)
+		"s: |-\n  x\n\n\ns: |+\n  y\n\n\n", // strip/keep chomping, trailing blanks
+		"s: |\nnext: 1",                    // empty block scalar
+		"s: |2\n  x",                       // unsupported indentation indicator
+		"s: >\n  folded",                   // folded scalar (rejected)
+		"l:\n  - |\n    item\n  - name: a\n    s: |\n      body\n    k: v",
 		"processes:\n  - command: /bin/true\n    args: [--flag, value]\n    stop-signal: SIGTERM",
 	}
 	seeds := make([][]byte, 0, len(strs)+2)

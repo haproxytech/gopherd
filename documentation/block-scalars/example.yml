@@ -1,0 +1,16 @@
+# A literal block scalar (|) holds a multi-line value verbatim: newlines,
+# indentation past the first content line, and '#' characters are content,
+# not YAML syntax. Ideal for inline shell scripts passed to `sh -c`.
+# Chomping: | keeps one trailing newline, |- strips it, |+ keeps them all.
+processes:
+  - name: app
+    command: /bin/sh
+    args:
+      - -c
+      - |
+        echo "line one" >> OUTFILE
+        if true; then
+          echo "line two" >> OUTFILE
+        fi
+        exec sleep 300
+    on-failure: shutdown
