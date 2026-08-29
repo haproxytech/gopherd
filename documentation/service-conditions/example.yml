@@ -1,0 +1,20 @@
+# File conditions gate every start attempt: condition-file-exists runs the
+# process only if the path exists, condition-file-missing only if it doesn't.
+# An unmet condition skips the start (logged, shown in status) and counts as
+# success — dependents start normally. Paths must be absolute; symlinks are
+# followed (k8s ..data mounts resolve), a dangling symlink counts as missing.
+processes:
+  - name: aux-cfg
+    condition-file-missing: AUXFILE
+    command: /bin/sh
+    args:
+      - -c
+      - |
+        touch AUXFILE
+        chmod g+w AUXFILE
+    startup: oneshot
+  - name: app
+    command: /bin/sh
+    args: ["-c", "exec sleep 300"]
+    requires: [aux-cfg]
+    on-failure: shutdown

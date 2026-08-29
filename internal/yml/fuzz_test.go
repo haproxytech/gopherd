@@ -177,6 +177,7 @@ func FuzzUnmarshal(f *testing.F) {
 	}
 	f.Add([]byte("prefix: '['"))
 	f.Add([]byte("init-stop-signal: [SIGTERM, SIGKILL]"))
+	f.Add([]byte("processes:\n  - command: /bin/true\n    condition-file-exists: /e\n    condition-file-missing: relative"))
 	f.Add([]byte("shutdown-order: bogus"))
 	f.Add([]byte("processes:\n  svc:\n    command: /bin/true\n    depends-on: [missing]"))
 	f.Add([]byte(strings.Join([]string{

@@ -35,6 +35,7 @@ go test ./documentation/...
 - [stop-signal](stop-signal/) — per-service `stop-signal` + `kill-delay` escalation
 - [oneshot](oneshot/) — run-to-completion startup tasks
 - [scheduled](scheduled/) — cron-scheduled oneshot-style runs
+- [service-conditions](service-conditions/) — gate a start on a file existing or missing
 - [shutdown-order](shutdown-order/) — `shutdown-order` strategies
 - [startup-timeout](startup-timeout/) — kill hung oneshots
 - [restart-backoff](restart-backoff/) — `on-failure: restart` with exponential backoff

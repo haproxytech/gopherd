@@ -114,6 +114,11 @@ var errServiceReplaced = fmt.Errorf("service replaced or removed by reload")
 // rather than double-forking. Callers must not treat it as fatal.
 var errAlreadyRunning = fmt.Errorf("service already running")
 
+// errConditionUnmet is returned by startService when a file condition blocks
+// the start. startService already logged the skip; callers must treat it as a
+// benign non-start, never as a failure.
+var errConditionUnmet = fmt.Errorf("start condition not met")
+
 // daemon holds all mutable daemon state so reload can update it.
 type daemon struct {
 	cfg       *yml.Config
@@ -237,9 +242,10 @@ func (d *daemon) handleRestartReq(req restartReq) {
 			timer.Stop()
 		}
 	}
-	// errServiceReplaced (reload) and errAlreadyRunning (lost start race) are benign.
+	// errServiceReplaced (reload), errAlreadyRunning (lost start race) and
+	// errConditionUnmet (file condition changed) are benign.
 	if _, err := d.startService(req.svc); err != nil {
-		if err != errShuttingDown && err != errServiceReplaced && err != errAlreadyRunning {
+		if err != errShuttingDown && err != errServiceReplaced && err != errAlreadyRunning && err != errConditionUnmet {
 			log.Printf("restart %s failed: %v", req.svc.Name, err)
 			d.initiateShutdown(1)
 		}
@@ -247,6 +253,12 @@ func (d *daemon) handleRestartReq(req restartReq) {
 }
 
 func (d *daemon) startService(svc *service.Service) (int, error) {
+	// Re-evaluated at every start attempt (restart, scheduled tick, manual
+	// start), so a restart loop stops once the watched file state changes.
+	if reason := svc.Proc.UnmetCondition(); reason != "" {
+		log.Printf("%s skipped (%s)", svc.Name, reason)
+		return 0, errConditionUnmet
+	}
 	// Prepare env/credentials/templates OFF d.mu: ResolveCredential can block on
 	// NSS (LDAP/SSSD) and dotenv hits disk; under d.mu that would stall the reap
 	// loop, control handlers, and shutdown. Lock-free is safe because a running
@@ -809,7 +821,7 @@ func (d *daemon) reload() (string, error) {
 	}
 
 	for _, svc := range toStart {
-		if _, err := d.startService(svc); err != nil && err != errShuttingDown && err != errServiceReplaced && err != errAlreadyRunning {
+		if _, err := d.startService(svc); err != nil && err != errShuttingDown && err != errServiceReplaced && err != errAlreadyRunning && err != errConditionUnmet {
 			log.Printf("reload: start %s failed: %v", svc.Name, err)
 		}
 	}
@@ -872,9 +884,13 @@ func (d *daemon) setupControl() *control.Server {
 			return fmt.Sprintf("%s: scheduled (next run %s)", name, next.Format(time.DateTime)), nil
 		case !svc.Enabled:
 			return fmt.Sprintf("%s: disabled", name), nil
-		case d.m.IsPending(name):
-			return fmt.Sprintf("%s: pending", name), nil
 		default:
+			if reason := svc.Proc.UnmetCondition(); reason != "" {
+				return fmt.Sprintf("%s: skipped (%s)", name, reason), nil
+			}
+			if d.m.IsPending(name) {
+				return fmt.Sprintf("%s: pending", name), nil
+			}
 			return fmt.Sprintf("%s: stopped", name), nil
 		}
 	}
@@ -893,6 +909,9 @@ func (d *daemon) setupControl() *control.Server {
 			// Lost a start race: report running, not an error.
 			if err == errAlreadyRunning {
 				return fmt.Sprintf("%s: already running (pid %d)", name, pid), nil
+			}
+			if err == errConditionUnmet {
+				return fmt.Sprintf("%s: skipped (%s)", name, svc.Proc.UnmetCondition()), nil
 			}
 			return "", fmt.Errorf("start %s: %w", name, err)
 		}

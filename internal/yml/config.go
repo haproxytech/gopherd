@@ -19,6 +19,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -431,6 +432,30 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		SDNotifyTimeout:   n.Get("sd-notify-timeout").String(),
 		ParentDeathSignal: n.Get("parent-death-signal").String(),
 		SignalRewrite:     n.Get("signal-rewrite").StringMap(),
+
+		ConditionFileExists:  n.Get("condition-file-exists").String(),
+		ConditionFileMissing: n.Get("condition-file-missing").String(),
+	}
+	// Absolute-only: a relative condition path would silently depend on the
+	// daemon's cwd. Same path in both conditions can never be satisfied.
+	for key, path := range map[string]string{
+		"condition-file-exists":  p.ConditionFileExists,
+		"condition-file-missing": p.ConditionFileMissing,
+	} {
+		if path != "" && !filepath.IsAbs(path) {
+			name := p.Name
+			if name == "" {
+				name = p.Command
+			}
+			return p, fmt.Errorf("process %q: %s %q must be an absolute path", name, key, path)
+		}
+	}
+	if p.ConditionFileExists != "" && p.ConditionFileExists == p.ConditionFileMissing {
+		name := p.Name
+		if name == "" {
+			name = p.Command
+		}
+		return p, fmt.Errorf("process %q: condition-file-exists and condition-file-missing name the same path %q; the conditions can never both hold", name, p.ConditionFileExists)
 	}
 	// exit-code-map: YAML keys parse as strings; convert to an int-keyed map.
 	// Both sides accept a raw integer ("143") or a signal name ("SIGTERM" /

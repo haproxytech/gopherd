@@ -114,8 +114,9 @@ func (d *daemon) startScheduledRun(svc *service.Service) {
 	pid, err := d.startService(svc)
 	if err != nil {
 		// Benign races (shutdown began, reload replaced the service, manual
-		// start won the tick) are not failures worth logging as errors.
-		if err != errShuttingDown && err != errServiceReplaced && err != errAlreadyRunning {
+		// start won the tick) and condition skips are not failures worth
+		// logging as errors.
+		if err != errShuttingDown && err != errServiceReplaced && err != errAlreadyRunning && err != errConditionUnmet {
 			log.Printf("scheduled %s: start failed: %v", svc.Name, err)
 		}
 		return

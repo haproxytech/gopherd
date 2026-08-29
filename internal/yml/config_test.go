@@ -1276,3 +1276,60 @@ processes:
 		t.Errorf("ExitCodeMap = %v, want nil", cfg.Processes[0].ExitCodeMap)
 	}
 }
+
+func TestUnmarshalConditionOptions(t *testing.T) {
+	t.Parallel()
+	cfg, err := Unmarshal([]byte(`
+processes:
+  - name: app
+    command: /bin/app
+    condition-file-exists: /etc/app/enable
+    condition-file-missing: /etc/app/disable
+`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	p := cfg.Processes[0]
+	if p.ConditionFileExists != "/etc/app/enable" {
+		t.Errorf("ConditionFileExists = %q", p.ConditionFileExists)
+	}
+	if p.ConditionFileMissing != "/etc/app/disable" {
+		t.Errorf("ConditionFileMissing = %q", p.ConditionFileMissing)
+	}
+}
+
+func TestUnmarshalRejectsRelativeConditionPath(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"condition-file-exists", "condition-file-missing"} {
+		_, err := Unmarshal([]byte(`
+processes:
+  - name: app
+    command: /bin/app
+    ` + key + `: etc/app/flag
+`))
+		if err == nil {
+			t.Errorf("%s: expected error for relative path", key)
+			continue
+		}
+		if !strings.Contains(err.Error(), "absolute") {
+			t.Errorf("%s: error %q should mention absolute paths", key, err)
+		}
+	}
+}
+
+func TestUnmarshalRejectsContradictoryConditions(t *testing.T) {
+	t.Parallel()
+	_, err := Unmarshal([]byte(`
+processes:
+  - name: app
+    command: /bin/app
+    condition-file-exists: /etc/app/flag
+    condition-file-missing: /etc/app/flag
+`))
+	if err == nil {
+		t.Fatal("expected error for the same path in both conditions")
+	}
+	if !strings.Contains(err.Error(), "condition-file-exists") || !strings.Contains(err.Error(), "condition-file-missing") {
+		t.Errorf("error %q should name both options", err)
+	}
+}

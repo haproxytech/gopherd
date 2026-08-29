@@ -65,6 +65,10 @@ processes:
     args: ["-c", "chown app:app /data && chmod 750 /data"]
     startup: oneshot
     startup-timeout: 30s                 # kill the oneshot if it hangs past this
+    # File conditions gate every start attempt (absolute paths; symlinks
+    # followed). Unmet: the start is skipped and counts as success.
+    # condition-file-exists: /data/enable  # run only if the path exists
+    # condition-file-missing: /data/done   # run only if the path does not exist
     on-failure: ignore
     working-dir: /
     user: root

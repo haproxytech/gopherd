@@ -115,8 +115,14 @@ type Process struct {
 	// process runs once at every matching minute, oneshot-style. Empty (and
 	// rejected non-empty) for every other startup mode.
 	Schedule string
-	DotEnv   string
-	Prefix   string
+	// ConditionFileExists gates every start attempt on the path existing;
+	// ConditionFileMissing on it not existing. Both set means AND. Checked
+	// with os.Stat (symlinks followed, so k8s ..data mounts resolve); an
+	// unmet condition skips the start and counts as success for dependents.
+	ConditionFileExists  string
+	ConditionFileMissing string
+	DotEnv               string
+	Prefix               string
 	// SDNotifyTimeout is the max wait for a READY=1 datagram on $NOTIFY_SOCKET
 	// after start. Empty = 60s default. Only meaningful when SDNotify is true.
 	SDNotifyTimeout string

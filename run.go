@@ -586,8 +586,13 @@ func (d *daemon) startNonOneshot(cfg *yml.Config, svc *service.Service) {
 
 	// errAlreadyRunning: a control client started this service between the
 	// layer's IsRunning() check and here — not a startup failure.
-	if _, err := d.startService(svc); err != nil && err != errAlreadyRunning {
-		log.Fatalf("start %s: %v", svc.Name, err)
+	if _, err := d.startService(svc); err != nil {
+		if err == errConditionUnmet {
+			return // skipped, already logged; no sd_notify gate to wait on
+		}
+		if err != errAlreadyRunning {
+			log.Fatalf("start %s: %v", svc.Name, err)
+		}
 	}
 
 	if svc.Proc.SDNotify {
@@ -622,6 +627,11 @@ func runLayerOneshots(d *daemon, layer []string) {
 	for _, name := range layer {
 		svc, ok := d.services[name]
 		if !ok || !svc.Enabled || !svc.Oneshot {
+			continue
+		}
+		// Unmet condition skips the oneshot; the layer proceeds without it.
+		if reason := svc.Proc.UnmetCondition(); reason != "" {
+			log.Printf("oneshot %s skipped (%s)", svc.Name, reason)
 			continue
 		}
 		pid, err := svc.Start()
