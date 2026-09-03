@@ -104,6 +104,7 @@ processes:
     # user-id: 1000
     # group-id: 1000
     # strict-groups: true                # drop the user's supplementary groups when group is set
+    # umask: "027"                       # file-creation mask for the child (octal); default: inherit gopherd's
     startup: enabled                     # enabled (default), disabled, oneshot, or scheduled
     stop-signal: SIGTERM                 # signal sent on shutdown (default: SIGTERM)
     kill-delay: 30s                      # grace period before SIGKILL (default: 10s)

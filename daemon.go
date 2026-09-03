@@ -1112,7 +1112,10 @@ func processConfigChanged(oldp, newp service.Process) bool {
 	if intPtrDiffers(oldp.UserID, newp.UserID) || intPtrDiffers(oldp.GroupID, newp.GroupID) {
 		return true
 	}
-	// strict-groups is applied at fork time, so a change needs a restart.
+	// umask and strict-groups are applied at fork time, so a change needs a restart.
+	if oldp.Umask != newp.Umask {
+		return true
+	}
 	if oldp.StrictGroups != newp.StrictGroups {
 		return true
 	}

@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -1556,5 +1557,103 @@ func TestSecondStopCancelsTheFirstKillTimer(t *testing.T) {
 		t.Error("the first Stop's kill timer was still live after a second Stop; " +
 			"re-arming must cancel the timer it replaces, or the orphan fires " +
 			"later against a pid that may have been recycled")
+	}
+}
+
+// With umask, the plan execs gopherd as a shim; argv[0] and args arrive intact.
+func TestPrepareStartUmaskShim(t *testing.T) {
+	t.Parallel()
+	svc := mustNew(t, Process{Command: "sleep", Args: []string{"300"}, Umask: "027"}, "")
+	plan, err := svc.PrepareStart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.cmd.Path != self {
+		t.Errorf("cmd.Path = %q, want gopherd itself (%q)", plan.cmd.Path, self)
+	}
+	sleep, _ := exec.LookPath("sleep")
+	want := []string{self, UmaskShimFlag, "027", sleep, "sleep", "300"}
+	if !slices.Equal(plan.cmd.Args, want) {
+		t.Errorf("cmd.Args = %v, want %v", plan.cmd.Args, want)
+	}
+
+	// No umask: no shim, the command is exec'd directly as before.
+	plain := mustNew(t, Process{Command: "sleep", Args: []string{"300"}}, "")
+	plan, err = plain.PrepareStart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.cmd.Path != sleep {
+		t.Errorf("plain plan = %q, want direct exec of %q", plan.cmd.Path, sleep)
+	}
+}
+
+// A relative command resolves against working-dir, as it does without umask.
+func TestPrepareStartUmaskShimRelativeCommand(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	app := filepath.Join(dir, "app")
+	if err := os.WriteFile(app, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	svc := mustNew(t, Process{Command: "./app", WorkingDir: dir, Umask: "027"}, "")
+	plan, err := svc.PrepareStart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.cmd.Args[3:]; !slices.Equal(got, []string{app, "./app"}) {
+		t.Errorf("shim target = %v, want [%s ./app]", got, app)
+	}
+
+	// Without working-dir the relative path is still gopherd-relative and fails early.
+	missing := mustNew(t, Process{Command: "./no-such-app", Umask: "027"}, "")
+	if _, err := missing.PrepareStart(); err == nil {
+		t.Error("expected an error for a relative command that does not exist")
+	}
+}
+
+// The shim engages only on its argv sentinel and refuses malformed input.
+func TestRunUmaskShimGuards(t *testing.T) {
+	t.Setenv("GOPHERD_UMASK", "022")
+	for _, argv := range [][]string{{"gopherd"}, {"gopherd", "status"}, {"gopherd", "--", "sleep", "1"}} {
+		if isShim, err := RunUmaskShim(argv, nil); isShim || err != nil {
+			t.Errorf("%v: isShim=%v err=%v, want false, nil", argv, isShim, err)
+		}
+	}
+
+	if isShim, err := RunUmaskShim([]string{"gopherd", UmaskShimFlag, "999", "/bin/sleep", "sleep", "1"}, nil); !isShim || err == nil {
+		t.Errorf("bad mask: isShim=%v err=%v, want true and an error", isShim, err)
+	}
+
+	if isShim, err := RunUmaskShim([]string{"gopherd", UmaskShimFlag, "027", "/bin/sleep"}, nil); !isShim || err == nil {
+		t.Errorf("short argv: isShim=%v err=%v, want true and an error", isShim, err)
+	}
+}
+
+func TestParseUmask(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		in   string
+		want int
+		ok   bool
+	}{
+		{"027", 0o27, true},
+		{"0027", 0o27, true},
+		{"22", 0o22, true},
+		{"0", 0, true},
+		{"777", 0o777, true},
+		{"1000", 0, false},
+		{"08", 0, false},
+		{"", 0, false},
+		{"-1", 0, false},
+	} {
+		got, err := ParseUmask(tc.in)
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Errorf("ParseUmask(%q) = %o, %v; want %o, ok=%v", tc.in, got, err, tc.want, tc.ok)
+		}
 	}
 }

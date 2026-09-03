@@ -478,6 +478,7 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		SDNotify:          n.Get("sd-notify").Bool(),
 		SDNotifyTimeout:   n.Get("sd-notify-timeout").String(),
 		ParentDeathSignal: n.Get("parent-death-signal").String(),
+		Umask:             n.Get("umask").String(),
 		SignalRewrite:     n.Get("signal-rewrite").StringMap(),
 
 		RestartWithDependents: n.Get("restart-with-dependents").Bool(),
@@ -570,6 +571,11 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 			canon[service.SignalName(fromSig)] = service.SignalName(toSig)
 		}
 		p.SignalRewrite = canon
+	}
+	if p.Umask != "" {
+		if _, err := service.ParseUmask(p.Umask); err != nil {
+			return p, fmt.Errorf("process %q: invalid %w", procName(p), err)
+		}
 	}
 	// Validate parent-death-signal at parse time so a typo surfaces before spawn.
 	if p.ParentDeathSignal != "" {

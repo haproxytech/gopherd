@@ -1,0 +1,14 @@
+# umask: file-creation mask applied to the child before exec. Here the app
+# must not create group- or world-writable files, whatever gopherd inherited.
+processes:
+  - name: app
+    command: /usr/local/bin/app
+    umask: "027"
+    startup: oneshot
+    on-failure: shutdown
+
+  - name: keeper
+    command: /usr/local/bin/keeper
+    args: ["300"]
+    after: [app]
+    on-failure: shutdown

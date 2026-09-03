@@ -24,6 +24,7 @@ import (
 	"syscall"
 
 	"github.com/haproxytech/gopherd/control"
+	"github.com/haproxytech/gopherd/service"
 	"github.com/haproxytech/gopherd/version"
 )
 
@@ -34,6 +35,11 @@ func main() {
 	log.SetPrefix("gopherd: ")
 
 	_ = version.Set()
+
+	// Umask shim: the daemon re-execs itself to set a per-service mask (see service.RunUmaskShim).
+	if isShim, err := service.RunUmaskShim(os.Args, os.Environ()); isShim {
+		log.Fatalf("umask shim: %v", err)
+	}
 
 	// Split os.Args on "--": everything after is entrypoint args. A leading
 	// "-" arg is neither a client command nor a passthrough binary, so treat

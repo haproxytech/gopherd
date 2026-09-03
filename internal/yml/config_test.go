@@ -1741,3 +1741,46 @@ checks:
 		t.Errorf("ExcludedChecks = %v, want %v", cfg.ExcludedChecks, want)
 	}
 }
+
+func TestLoadUmask(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		value string
+		ok    bool
+	}{
+		{`"027"`, true},
+		{`"0027"`, true},
+		{`"22"`, true},
+		{`"0"`, true},
+		{`"777"`, true},
+		{`"1777"`, false},
+		{`"08"`, false},
+		{`"rwx"`, false},
+		{`""`, true},
+	} {
+		_, err := Unmarshal([]byte(`
+processes:
+  - name: app
+    command: /bin/app
+    umask: ` + tc.value + `
+`))
+		if (err == nil) != tc.ok {
+			t.Errorf("umask %s: err = %v, want ok=%v", tc.value, err, tc.ok)
+		}
+		if err != nil && !strings.Contains(err.Error(), `process "app": invalid umask`) {
+			t.Errorf("umask %s: err = %v, want it to name the process and field", tc.value, err)
+		}
+	}
+	cfg, err := Unmarshal([]byte(`
+processes:
+  - name: app
+    command: /bin/app
+    umask: "0027"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Processes[0].Umask != "0027" {
+		t.Errorf("Umask = %q, want the literal kept for the spawn path", cfg.Processes[0].Umask)
+	}
+}

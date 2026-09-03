@@ -34,6 +34,7 @@ go test ./documentation/...
 - [requires](requires/) — hard dependencies with failure coupling
 - [restart-with-dependents](restart-with-dependents/) — `restart` bounces running requirers in dependency order
 - [stop-signal](stop-signal/) — per-service `stop-signal` + `kill-delay` escalation
+- [umask](umask/) — per-service file-creation mask
 - [oneshot](oneshot/) — run-to-completion startup tasks
 - [scheduled](scheduled/) — cron-scheduled oneshot-style runs
 - [service-conditions](service-conditions/) — gate a start on files or environment variables

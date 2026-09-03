@@ -512,6 +512,7 @@ func TestProcessConfigChanged(t *testing.T) {
 		{"user-id", func(p *service.Process) { p.UserID = ptrInt(1000) }, true},
 		{"group-id", func(p *service.Process) { p.GroupID = ptrInt(1000) }, true},
 		{"strict-groups", func(p *service.Process) { p.StrictGroups = true }, true},
+		{"umask", func(p *service.Process) { p.Umask = "027" }, true},
 		{"working-dir", func(p *service.Process) { p.WorkingDir = "/srv" }, true},
 		{"stop-signal", func(p *service.Process) { p.StopSignal = "SIGUSR1" }, true},
 		{"pass-env", func(p *service.Process) { p.PassEnv = ptrBool(true) }, true},

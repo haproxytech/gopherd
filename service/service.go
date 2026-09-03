@@ -121,8 +121,10 @@ type Process struct {
 	// unmet condition skips the start and counts as success for dependents.
 	ConditionFileExists  string
 	ConditionFileMissing string
-	DotEnv               string
-	Prefix               string
+	// Umask is the child's file-creation mask as an octal string; "" inherits.
+	Umask  string
+	DotEnv string
+	Prefix string
 	// SDNotifyTimeout is the max wait for a READY=1 datagram on $NOTIFY_SOCKET
 	// after start. Empty = 60s default. Only meaningful when SDNotify is true.
 	SDNotifyTimeout string
@@ -728,7 +730,10 @@ func (s *Service) PrepareStart() (*StartPlan, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(s.Proc.Command, args...)
+	cmd, err := s.buildCommand(args)
+	if err != nil {
+		return nil, err
+	}
 	if s.LogCapture {
 		cmd.Stdout = s.Stdout
 		cmd.Stderr = s.Stderr
@@ -806,6 +811,60 @@ func (s *Service) PrepareStart() (*StartPlan, error) {
 	}
 
 	return &StartPlan{cmd: cmd, allowedUID: allowedUID, sdNotify: s.Proc.SDNotify}, nil
+}
+
+// UmaskShimFlag marks argv[1] of a shim run; argv gating defeats stray environment variables.
+const UmaskShimFlag = "--umask-shim"
+
+// selfExe is gopherd's own path, exec'd as the umask shim.
+var selfExe, selfExeErr = os.Executable()
+
+// buildCommand returns the exec.Cmd; with Umask set, gopherd itself is exec'd as a shim.
+func (s *Service) buildCommand(args []string) (*exec.Cmd, error) {
+	if s.Proc.Umask == "" {
+		return exec.Command(s.Proc.Command, args...), nil
+	}
+	if selfExeErr != nil {
+		return nil, fmt.Errorf("umask: locate gopherd binary: %w", selfExeErr)
+	}
+	// Like exec.Command, a relative path resolves against the working directory.
+	name := s.Proc.Command
+	if strings.Contains(name, "/") && !filepath.IsAbs(name) && s.Proc.WorkingDir != "" {
+		name = filepath.Join(s.Proc.WorkingDir, name)
+	}
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command(selfExe)
+	// RunUmaskShim applies the mask, then execs path in place: the pid never changes.
+	cmd.Args = append([]string{selfExe, UmaskShimFlag, s.Proc.Umask, path, s.Proc.Command}, args...)
+	return cmd, nil
+}
+
+// ParseUmask parses an octal mask such as "022", "0027" or "77".
+func ParseUmask(s string) (int, error) {
+	n, err := strconv.ParseUint(s, 8, 32)
+	if err != nil || n > 0o777 {
+		return 0, fmt.Errorf("umask %q: want an octal mask up to 0777", s)
+	}
+	return int(n), nil
+}
+
+// RunUmaskShim applies argv[2] as mask, then execs argv[3] with argv[4:]; false unless shim.
+func RunUmaskShim(argv []string, environ []string) (bool, error) {
+	if len(argv) < 2 || argv[1] != UmaskShimFlag {
+		return false, nil
+	}
+	if len(argv) < 5 {
+		return true, fmt.Errorf("expected <mask> <path> <argv0> [args...], got %v", argv[2:])
+	}
+	n, err := ParseUmask(argv[2])
+	if err != nil {
+		return true, err
+	}
+	syscall.Umask(n)
+	return true, syscall.Exec(argv[3], argv[4:], environ)
 }
 
 // FinishStart forks/execs a prepared plan and records running state, holding

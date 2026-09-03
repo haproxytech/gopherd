@@ -14,7 +14,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Process management** — start multiple processes with dependency ordering, signal forwarding, and zombie reaping
 - **Per-service stop signal & kill delay** — configurable shutdown signal and grace period before SIGKILL
 - **User/group switching** — run each process as a specific user/group (by name or numeric ID)
-- **Environment & working directory** — per-process environment variables, dotenv file loading, and working directory
+- **Environment & working directory** — per-process environment variables, dotenv file loading, working directory, and `umask`
 - **Template args** — `{{.VAR}}` and `{{.VAR:-default}}` placeholders in args, environment values, and `startup`, resolved from env vars and dotenv files
 - **Memory-aware templates** — `{{mem EXPR}}` expands to available memory in MiB (auto-detects system RAM and cgroup limits)
 - **CPU-aware templates** — `{{cpu EXPR}}` expands to available CPUs (auto-detects cgroup CFS quota and cpuset pinning)
@@ -579,6 +579,7 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `user-id` | int | inherited | Run as user (numeric, takes precedence) |
 | `group-id` | int | inherited | Run as group (numeric, takes precedence) |
 | `strict-groups` | bool | `false` | When an explicit group is set, drop the named user's supplementary groups instead of keeping full membership |
+| `umask` | string | inherited | File-creation mask for the child, octal (`"027"`), applied after the user/group switch and before exec. Change requires a restart (applied on reload) |
 | `pass-env` | bool | global default | Forward gopherd's OS environment to this service (false = empty env + only dotenv/environment vars) |
 | `export-socket` | bool | global default | Set `GOPHERD_SOCKET` in this service's env to the daemon's control socket path (client commands work from inside the service) |
 | `log-capture` | bool | global default | Pipe this service's stdout/stderr through gopherd; false = direct FD passthrough (no prefix, no `logs`, no log-targets for this service) |
