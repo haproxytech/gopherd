@@ -638,6 +638,12 @@ func (d *daemon) reload() (string, error) {
 	for _, x := range newCfg.Excluded {
 		log.Printf("reload: %s excluded (%s)", x.Name, x.Reason)
 	}
+	for _, x := range newCfg.ExcludedChecks {
+		log.Printf("reload: check %s excluded (%s)", x.Name, x.Reason)
+	}
+	if len(newCfg.Processes) == 0 {
+		log.Printf("reload: warning: every process is excluded by its start condition; nothing to supervise")
+	}
 
 	// Enforce use-entrypoint-args uniqueness, matching the startup check in run(),
 	// so a hot-reload can't install a config that startup would have rejected.

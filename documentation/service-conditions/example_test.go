@@ -85,11 +85,19 @@ processes:
       ROLE: api
       ENABLE_FEATURE: "true"
     on-failure: shutdown
+    on-check-failure:
+      app-health: restart
   - name: always
     command: /bin/sh
     args: ["-c", "exec sleep 300"]
     after: [app]
     on-failure: shutdown
+checks:
+  app-health:
+    tcp: {host: 127.0.0.1, port: 1}
+    period: 100ms
+    timeout: 100ms
+    threshold: 1
 `
 
 	// Run 1: excluded. The daemon has no such service; `always` lost its edge.
@@ -108,6 +116,13 @@ processes:
 	}
 	if !strings.Contains(d1.Output(), `app excluded (condition-env-equals: ROLE does not match "api")`) {
 		t.Errorf("daemon log lacks the exclusion line:\n%s", d1.Output())
+	}
+	// Its check went with it: no probe against a service that is not here.
+	if got := d1.Command("status"); strings.Contains(got, "app-health") {
+		t.Errorf("status still lists the orphaned check:\n%s", got)
+	}
+	if !strings.Contains(d1.Output(), "check app-health excluded (only used by excluded service app)") {
+		t.Errorf("daemon log lacks the check exclusion line:\n%s", d1.Output())
 	}
 	if code := d1.Stop(); code != 0 {
 		t.Errorf("expected clean exit 0, got %d", code)

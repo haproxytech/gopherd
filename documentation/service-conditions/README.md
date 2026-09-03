@@ -60,8 +60,11 @@ condition-env-equals:                     # every key must match (AND)
   once at load.
 - The excluded entry is still validated, so a typo in a rarely deployed
   role fails the load everywhere.
-- Checks are global: a health check only meaningful for an excluded
-  service still runs. Point checks at services that exist in every role.
+- A check referenced only by excluded services (via `ready-check` or
+  `on-check-failure`) is dropped with them and logged as
+  `check <name> excluded (only used by excluded service <svc>)`. A check
+  some surviving service still references, or that no service references
+  at all, keeps running.
 - Keys must be valid POSIX variable names and the value must be a
   mapping; anything else is rejected at load rather than opening the gate.
 - The log line names the key and the expected value only, never the

@@ -61,7 +61,9 @@ type Config struct {
 	LogTargets map[string]logger.TargetConfig
 	// Excluded lists processes dropped by condition-env-equals, in config order, for logging.
 	Excluded []Exclusion
-	Prefix   string
+	// ExcludedChecks lists checks dropped because only excluded processes referenced them, sorted by name.
+	ExcludedChecks []Exclusion
+	Prefix         string
 	// PassEnv is the global default for the per-service pass-env flag.
 	// nil means "not set", treated as false: child processes do not inherit
 	// gopherd's environment, so operator secrets cannot silently leak into
@@ -292,9 +294,42 @@ func Unmarshal(data []byte) (*Config, error) {
 	}
 
 	if len(excluded) > 0 {
+		// Before excludeProcesses, which removes the referencing entries.
+		cfg.ExcludedChecks = excludeOrphanedChecks(cfg, excluded)
 		cfg.Processes = excludeProcesses(cfg.Processes, excluded)
 	}
 	return cfg, nil
+}
+
+// excludeOrphanedChecks drops checks referenced only by excluded processes; unreferenced checks are global and stay.
+func excludeOrphanedChecks(cfg *Config, excluded map[string]bool) []Exclusion {
+	users := map[string][]string{} // check -> referencing processes
+	for _, p := range cfg.Processes {
+		for name := range p.OnCheckFailure {
+			users[name] = append(users[name], procName(p))
+		}
+		if p.ReadyCheck != "" {
+			users[p.ReadyCheck] = append(users[p.ReadyCheck], procName(p))
+		}
+	}
+	var dropped []Exclusion
+	for _, name := range slices.Sorted(maps.Keys(users)) {
+		if _, defined := cfg.Checks[name]; !defined {
+			continue
+		}
+		procs := slices.Sorted(slices.Values(users[name]))
+		procs = slices.Compact(procs)
+		if slices.ContainsFunc(procs, func(p string) bool { return !excluded[p] }) {
+			continue
+		}
+		delete(cfg.Checks, name)
+		noun := "service"
+		if len(procs) > 1 {
+			noun = "services"
+		}
+		dropped = append(dropped, Exclusion{Name: name, Reason: "only used by excluded " + noun + " " + strings.Join(procs, ", ")})
+	}
+	return dropped
 }
 
 // validateScheduled enforces the startup=scheduled contract: a cron schedule

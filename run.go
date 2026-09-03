@@ -53,6 +53,12 @@ func run(entrypointArgs []string) int {
 	for _, x := range cfg.Excluded {
 		log.Printf("%s excluded (%s)", x.Name, x.Reason)
 	}
+	for _, x := range cfg.ExcludedChecks {
+		log.Printf("check %s excluded (%s)", x.Name, x.Reason)
+	}
+	if len(cfg.Processes) == 0 {
+		log.Printf("warning: every process is excluded by its start condition; nothing to supervise")
+	}
 
 	// GOPHERD_SOCKET overrides the configured control socket so a deployment
 	// can relocate it (e.g. writable path when rootless) without editing config.

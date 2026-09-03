@@ -17,7 +17,6 @@ package yml
 import (
 	"bytes"
 	"fmt"
-	"github.com/haproxytech/gopherd/service"
 	"log"
 	"os"
 	"path/filepath"
@@ -25,6 +24,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/haproxytech/gopherd/service"
 )
 
 func TestLoadFull(t *testing.T) {
@@ -1689,5 +1690,54 @@ processes:
 	}
 	if len(cfg.Processes) != 0 || len(cfg.Excluded) != 1 {
 		t.Fatalf("processes = %d excluded = %d, want 0 and 1", len(cfg.Processes), len(cfg.Excluded))
+	}
+}
+
+// A check referenced only by excluded processes goes with them; others stay.
+func TestLoadConditionEnvEqualsExcludesOrphanedChecks(t *testing.T) {
+	withEnv(t, map[string]string{"ROLE": "worker"})
+	cfg, err := Unmarshal([]byte(`
+processes:
+  - name: db
+    command: /bin/db
+    condition-env-equals:
+      ROLE: api
+    ready-check: db-ready
+    on-check-failure:
+      db-health: restart
+      shared: restart
+  - name: web
+    command: /bin/web
+    on-check-failure:
+      shared: restart
+checks:
+  db-ready:
+    tcp: {host: localhost, port: 5432}
+  db-health:
+    tcp: {host: localhost, port: 5432}
+  shared:
+    tcp: {host: localhost, port: 80}
+  global:
+    tcp: {host: localhost, port: 22}
+`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	for _, name := range []string{"db-ready", "db-health"} {
+		if _, ok := cfg.Checks[name]; ok {
+			t.Errorf("check %s should be excluded with db", name)
+		}
+	}
+	for _, name := range []string{"shared", "global"} {
+		if _, ok := cfg.Checks[name]; !ok {
+			t.Errorf("check %s should be kept", name)
+		}
+	}
+	want := []Exclusion{
+		{Name: "db-health", Reason: "only used by excluded service db"},
+		{Name: "db-ready", Reason: "only used by excluded service db"},
+	}
+	if !slices.Equal(cfg.ExcludedChecks, want) {
+		t.Errorf("ExcludedChecks = %v, want %v", cfg.ExcludedChecks, want)
 	}
 }
