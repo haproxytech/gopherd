@@ -216,18 +216,67 @@ processes:
 	td.stop()
 }
 
-// restart-with-dependents: running requirers stop first (reverse start order),
-// the target restarts, then they start again in start order. Stopped
-// requirers stay stopped.
+// A client that gives up waiting must not strand the service.
+func TestE2EControlRestartWaitTimeoutRecovers(t *testing.T) {
+	td := startDaemon(t, `
+processes:
+  - name: slow
+    command: sh
+    args: ["-c", "trap 'sleep 1; exit 0' TERM; while :; do sleep 0.1; done"]
+    kill-delay: 10s
+    on-success: ignore
+    on-failure: ignore
+`)
+	defer td.kill()
+	td.WaitRunning("slow", 5*time.Second)
+	oldPid := runningPid(t, td, "slow")
+
+	resp := td.sendCommand("restart slow --wait --timeout 200ms")
+	if !strings.Contains(resp, "error:") || !strings.Contains(resp, "still in progress") {
+		t.Fatalf("expected timeout error, got: %s", resp)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	newPid := 0
+	for time.Now().Before(deadline) {
+		if newPid = runningPid(t, td, "slow"); newPid != 0 && newPid != oldPid {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if newPid == 0 || newPid == oldPid {
+		t.Fatalf("service never came back after the client timed out: old=%d new=%d (%s)", oldPid, newPid, td.sendCommand("status slow"))
+	}
+	if resp := td.sendCommand("status"); !strings.Contains(resp, "restarts=1") || !strings.Contains(resp, "exits=0") {
+		t.Errorf("expected restarts=1 exits=0, got: %s", resp)
+	}
+	td.stop()
+}
+
+// statusLine returns the overview row for svc from a bare `status` reply.
+func statusLine(t *testing.T, td *testDaemon, svc string) string {
+	t.Helper()
+	for line := range strings.SplitSeq(td.sendCommand("status"), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), svc+" ") {
+			return line
+		}
+	}
+	t.Fatalf("no status row for %s", svc)
+	return ""
+}
+
+// restart-with-dependents: requirers stop last-first, db restarts, requirers return in order; stopped ones stay stopped.
 func TestE2EControlRestartWithDependents(t *testing.T) {
 	dir := t.TempDir()
 	stamp := doctest.Tool(t, "stamp")
+	notify := doctest.Tool(t, "sdnotifyready")
 	td := startDaemon(t, fmt.Sprintf(`
 processes:
   - name: db
     command: sh
-    args: ["-c", "%[1]s %[2]s/db-start; exec sleep 300"]
+    args: ["-c", "%[1]s %[2]s/db-start; exec %[3]s"]
     restart-with-dependents: true
+    sd-notify: true
+    sd-notify-timeout: 5s
     kill-delay: 2s
     on-success: ignore
     on-failure: ignore
@@ -244,7 +293,7 @@ processes:
     requires: [db]
     on-success: ignore
     on-failure: ignore
-`, stamp, dir))
+`, stamp, dir, notify))
 	defer td.kill()
 	td.WaitRunning("web", 5*time.Second)
 	td.WaitRunning("idle", 5*time.Second)
@@ -285,8 +334,13 @@ processes:
 	if len(dbStarts) != 2 || len(webStarts) != 2 || len(webStops) != 1 {
 		t.Fatalf("stamps: db-start=%d web-start=%d web-stop=%d", len(dbStarts), len(webStarts), len(webStops))
 	}
+	// db stamps before READY=1, so its stamp causally precedes web's respawn.
 	if !(webStops[0] < dbStarts[1] && dbStarts[1] < webStarts[1]) {
 		t.Fatalf("order violated: web-stop=%d db-restart=%d web-restart=%d", webStops[0], dbStarts[1], webStarts[1])
+	}
+	// The cascade is booked as a restart of web, not as a crash.
+	if line := statusLine(t, td, "web"); !strings.Contains(line, "exits=0") || !strings.Contains(line, "restarts=1") {
+		t.Errorf("web accounted as exit, want restarts=1 exits=0: %s", line)
 	}
 	td.stop()
 }
