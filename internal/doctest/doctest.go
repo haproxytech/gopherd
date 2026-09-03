@@ -20,6 +20,7 @@ package doctest
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net"
@@ -122,18 +123,36 @@ func repoRoot(t *testing.T) string {
 	return root
 }
 
-// buildDir is a stable per-uid scratch dir: concurrent test processes each
-// rebuild (cheap via the go build cache) but disk holds one copy per artifact
-// instead of a leaked temp dir per process.
-func buildDir() (string, error) {
-	dir := filepath.Join(os.TempDir(), fmt.Sprintf("gopherd-doctest-%d", os.Getuid()))
+// buildDirName is the scratch directory for artifacts built from root.
+//
+// Stable per (uid, root), so concurrent test processes of one tree share it:
+// each rebuilds (cheap via the build cache) and renames onto the same path,
+// and disk holds one copy per artifact instead of a temp dir per process.
+//
+// The root is in the name because the path has to identify the tree that was
+// built. Without it, runs from two checkouts as the same user -- worktrees, a
+// shared CI runner, a harness building from a copy -- rename onto one path and
+// run each other's binary, passing or failing with nothing to say so.
+func buildDirName(root string) string {
+	// Resolve symlinks so two names for one tree share a directory.
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	sum := sha256.Sum256([]byte(root))
+	return filepath.Join(os.TempDir(),
+		fmt.Sprintf("gopherd-doctest-%d-%x", os.Getuid(), sum[:8]))
+}
+
+// buildDir creates and returns the scratch directory for root.
+func buildDir(root string) (string, error) {
+	dir := buildDirName(root)
 	return dir, os.MkdirAll(dir, 0o700)
 }
 
 // buildTo compiles pkg (relative to root) and atomically renames the result
 // onto the stable path name, so concurrent builders never expose a torn binary.
 func buildTo(root, pkg, name string) (string, error) {
-	dir, err := buildDir()
+	dir, err := buildDir(root)
 	if err != nil {
 		return "", err
 	}
