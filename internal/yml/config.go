@@ -568,10 +568,9 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 // ({{file}}, {{.VAR}}). {{cpu}}/{{mem}} expand to integers, so excluded.
 var argSecretTemplateRe = regexp.MustCompile(`\{\{\s*(?:file\b|\.)`)
 
-// requireMapping rejects a value that cannot hold a key-value table. A scalar
-// or a list parses to an empty map, so without this the whole setting would be
-// silently ignored until a child exits. An absent key, or a bare "key:" with no
-// entries, stays legal.
+// requireMapping rejects a value that cannot hold a key-value table: a scalar
+// or list parses to an empty map, so the setting would be ignored in silence
+// until a child exits. An absent key, or a bare "key:", stays legal.
 func requireMapping(n *Node, key, procName, command string) error {
 	v := n.Get(key)
 	if v == nil || v.kind == kindMapping {

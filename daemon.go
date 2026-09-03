@@ -114,9 +114,8 @@ var errServiceReplaced = fmt.Errorf("service replaced or removed by reload")
 // rather than double-forking. Callers must not treat it as fatal.
 var errAlreadyRunning = fmt.Errorf("service already running")
 
-// errConditionUnmet is returned by startService when a file condition blocks
-// the start. startService already logged the skip; callers must treat it as a
-// benign non-start, never as a failure.
+// errConditionUnmet reports a start blocked by a file condition. startService
+// has already logged the skip; it is a benign non-start, not a failure.
 var errConditionUnmet = fmt.Errorf("start condition not met")
 
 // daemon holds all mutable daemon state so reload can update it.

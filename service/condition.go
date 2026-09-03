@@ -25,10 +25,10 @@ import (
 // human-readable reason when a start should be skipped, or "" to proceed.
 //
 // os.Stat follows symlinks so a k8s ..data mount resolves to its target and a
-// dangling symlink counts as missing. The check is advisory: the file state
-// can change between this probe and the exec (inherent TOCTOU). A Stat error
-// other than not-exist leaves the condition unmet with the error in the
-// reason, so e.g. a permission problem never masquerades as a missing file.
+// dangling symlink counts as missing. The check is advisory: the state can
+// change between this probe and the exec. A Stat error other than not-exist
+// leaves the condition unmet and names the error, so a permission problem
+// never masquerades as a missing file.
 func (p *Process) UnmetCondition() string {
 	if p.ConditionFileExists != "" {
 		exists, err := fileExists(p.ConditionFileExists)
