@@ -32,6 +32,8 @@ type Metrics struct {
 
 type serviceStats struct {
 	StartedAt time.Time
+	// Skipped is the unmet start-condition reason from the last attempt; "" = none.
+	Skipped   string
 	Pid       int
 	Restarts  int
 	Exits     int
@@ -48,7 +50,8 @@ type serviceStats struct {
 // for JSON output of `gopherd status -o json`.
 type ServiceSnapshot struct {
 	Name      string `json:"name"`
-	State     string `json:"state"` // up, stopped, disabled, pending
+	State     string `json:"state"` // up, stopped, disabled, pending, skipped
+	Reason    string `json:"reason,omitempty"`
 	Pid       int    `json:"pid,omitempty"`
 	Uptime    int64  `json:"uptime_seconds,omitempty"`
 	Enabled   bool   `json:"enabled"`
@@ -155,7 +158,17 @@ func (m *Metrics) ServiceStarted(name string, pid int) {
 	s.Up = true
 	s.Pid = pid
 	s.Pending = false
+	s.Skipped = ""
 	s.StartedAt = time.Now()
+}
+
+// ServiceSkipped records a condition-refused start; the reason shows until the service starts.
+func (m *Metrics) ServiceSkipped(name, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s, ok := m.services[name]; ok {
+		s.Skipped = reason
+	}
 }
 
 // ServiceExited records that a service has exited. No-op if name was never registered.
@@ -277,6 +290,9 @@ func (m *Metrics) serviceSnapshotLocked(name string) ServiceSnapshot {
 		snap.Uptime = int64(time.Since(s.StartedAt).Truncate(time.Second).Seconds())
 	case !s.Enabled:
 		snap.State = "disabled"
+	case s.Skipped != "":
+		snap.State = "skipped"
+		snap.Reason = s.Skipped
 	case s.Pending:
 		snap.State = "pending"
 	default:
@@ -308,6 +324,8 @@ func (m *Metrics) Format() string {
 				states[i] = time.Since(s.StartedAt).Truncate(time.Second).String()
 			case !s.Enabled:
 				states[i] = "disabled"
+			case s.Skipped != "":
+				states[i] = "skipped"
 			case s.Pending:
 				states[i] = "pending"
 			default:

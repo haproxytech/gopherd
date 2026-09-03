@@ -255,8 +255,9 @@ func (d *daemon) handleRestartReq(req restartReq) {
 func (d *daemon) startService(svc *service.Service) (int, error) {
 	// Re-evaluated at every start attempt (restart, scheduled tick, manual
 	// start), so a restart loop stops once the watched file state changes.
-	if reason := svc.Proc.UnmetCondition(); reason != "" {
+	if reason := svc.UnmetCondition(); reason != "" {
 		log.Printf("%s skipped (%s)", svc.Name, reason)
+		d.m.ServiceSkipped(svc.Name, reason)
 		return 0, errConditionUnmet
 	}
 	// Prepare env/credentials/templates OFF d.mu: ResolveCredential can block on

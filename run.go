@@ -583,8 +583,9 @@ func runLayerOneshots(d *daemon, layer []string) {
 			continue
 		}
 		// Unmet condition skips the oneshot; the layer proceeds without it.
-		if reason := svc.Proc.UnmetCondition(); reason != "" {
+		if reason := svc.UnmetCondition(); reason != "" {
 			log.Printf("oneshot %s skipped (%s)", svc.Name, reason)
+			d.m.ServiceSkipped(svc.Name, reason)
 			continue
 		}
 		pid, err := svc.Start()

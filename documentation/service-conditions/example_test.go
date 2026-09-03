@@ -58,6 +58,13 @@ func TestServiceConditions(t *testing.T) {
 	if got := d.Command("status aux-cfg"); !strings.Contains(got, "skipped (condition-file-missing") {
 		t.Errorf("status = %q, want skipped with reason", got)
 	}
+	// The overview and JSON agree with the single-service line: not "pending".
+	if got := d.Command("status"); !strings.Contains(got, "aux-cfg") || !strings.Contains(got, "skipped") || strings.Contains(got, "pending") {
+		t.Errorf("status overview = %q, want aux-cfg skipped", got)
+	}
+	if got := d.Command("status aux-cfg -o json"); !strings.Contains(got, `"state":"skipped"`) || !strings.Contains(got, `"reason":"condition-file-missing: `) {
+		t.Errorf("status json = %q, want skipped with reason", got)
+	}
 	if got := d.Command("start aux-cfg"); !strings.Contains(got, "skipped (condition-file-missing") {
 		t.Errorf("start = %q, want skip report", got)
 	}

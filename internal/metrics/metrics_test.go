@@ -294,3 +294,34 @@ func snapshotOf(t *testing.T, m *Metrics, name string) ServiceSnapshot {
 	}
 	return s
 }
+
+// A skipped start is its own state, not "pending"; starting clears it.
+func TestServiceSkipped(t *testing.T) {
+	t.Parallel()
+	m := New()
+	m.RegisterService("s", true)
+	m.ServiceSkipped("s", "condition-file-missing: /done exists")
+
+	snap := snapshotOf(t, m, "s")
+	if snap.State != "skipped" {
+		t.Errorf("state = %q, want skipped", snap.State)
+	}
+	if snap.Reason != "condition-file-missing: /done exists" {
+		t.Errorf("reason = %q", snap.Reason)
+	}
+	if out := m.Format(); !strings.Contains(out, "skipped") {
+		t.Errorf("Format lacks skipped:\n%s", out)
+	}
+
+	m.ServiceStarted("s", 42)
+	snap = snapshotOf(t, m, "s")
+	if snap.State != "up" || snap.Reason != "" {
+		t.Errorf("after start: state = %q reason = %q, want up and empty", snap.State, snap.Reason)
+	}
+
+	// An unregistered name is ignored, like every other event.
+	m.ServiceSkipped("ghost", "x")
+	if _, ok := m.ServiceSnapshot("ghost"); ok {
+		t.Error("ServiceSkipped must not register a service")
+	}
+}

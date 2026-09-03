@@ -70,9 +70,11 @@ condition-env-equals:                     # every key must match (AND)
 ### Skip semantics
 
 - An unmet condition **skips** the start: it is logged with the reason,
-  shown by `status <name>` as `skipped (...)`, and counts as success —
-  services with `after:`/`requires:` on it start normally, and no
-  `on-success`/`on-failure` action fires (nothing ran).
+  shown as `skipped` in the `status` overview and as `skipped (...)` by
+  `status <name>` (JSON carries `"state":"skipped"` plus `"reason"`), and
+  counts as success — services with `after:`/`requires:` on it start
+  normally, and no `on-success`/`on-failure` action fires (nothing ran).
+  The state clears once the service starts.
 
 ## Config
 
