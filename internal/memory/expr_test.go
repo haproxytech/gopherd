@@ -54,6 +54,12 @@ func TestEval(t *testing.T) {
 		{"abc", 3000, 0, true},
 		{"0%", 3000, 0, true},             // zero result
 		{"100% - 4000MiB", 3000, 0, true}, // negative result
+		// Exactly zero must be rejected, not returned as "0": `-Xmx0m` or
+		// `nbthread 0` fails at runtime, long after config load, and the
+		// headroom form is the natural way to land there.
+		{"100% - 3000MiB", 3000, 0, true},
+		{"50% - 1500MiB", 3000, 0, true},
+		{"10% - 300MiB", 3000, 0, true},
 		// Percentages must be in (0, 100]: a service cannot use more
 		// memory than exists, and huge values would otherwise drive the
 		// float→int64 overflow path.

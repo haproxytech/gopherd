@@ -17,6 +17,7 @@ package sdnotify
 import (
 	"context"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -68,5 +69,49 @@ func TestListenerAcceptsOwnUID(t *testing.T) {
 	defer cancel()
 	if err := n.WaitReady(ctx); err != nil {
 		t.Fatalf("READY=1 from own uid should be accepted: %v", err)
+	}
+}
+
+// TestAuthorizedByCredentials exercises the uid gate directly by synthesising
+// the SCM_CREDENTIALS message the kernel would attach. The socket-level tests
+// above can only fake a foreign sender when the test process is *not* root, so
+// in gopherd's shipping configuration — a container running as root — they skip
+// and the gate goes unguarded. Hand-built ancillary data works at any uid.
+func TestAuthorizedByCredentials(t *testing.T) {
+	t.Parallel()
+	const childUID = 1000
+	n := &Listener{name: "cred-gate", allowedUID: childUID}
+
+	creds := func(uid uint32) []byte {
+		return syscall.UnixCredentials(&syscall.Ucred{
+			Pid: int32(os.Getpid()), Uid: uid, Gid: uid,
+		})
+	}
+
+	tests := []struct {
+		name string
+		oob  []byte
+		want bool
+	}{
+		// The service's own uid, and root, are the only trusted senders.
+		{"child uid", creds(childUID), true},
+		{"root", creds(0), true},
+		// Anything else must be dropped: the abstract socket name is
+		// discoverable, so a co-located process could release a readiness gate
+		// and start dependents against a service that never signalled ready.
+		{"other uid", creds(childUID + 1), false},
+		{"nobody", creds(65534), false},
+		// No credentials at all is untrusted, not a free pass.
+		{"no ancillary data", nil, false},
+		{"garbage ancillary data", []byte{0xde, 0xad, 0xbe, 0xef}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := n.authorized(tc.oob); got != tc.want {
+				t.Errorf("authorized(%s) = %v, want %v (allowedUID=%d)",
+					tc.name, got, tc.want, childUID)
+			}
+		})
 	}
 }

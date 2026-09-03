@@ -32,6 +32,8 @@ func TestParseValid(t *testing.T) {
 		"0 12 * * mon-fri",
 		"59 23 31 12 6",
 		"0 0 * * 0",
+		"0 0 * * 7",          // 7 is an alias for Sunday
+		"5/10 * * * *",       // "N/step" means "N-max/step"
 		"  0   3  *  *  *  ", // extra whitespace
 	}
 	for _, expr := range valid {
@@ -105,10 +107,24 @@ func TestNext(t *testing.T) {
 		// Day of week: 2026-08-22 is a Saturday; next Monday is 08-24.
 		{"0 12 * * mon", at(2026, 8, 22, 0, 0), at(2026, 8, 24, 12, 0)},
 		{"0 0 * * 0", at(2026, 8, 22, 0, 0), at(2026, 8, 23, 0, 0)}, // Sunday as 0
+		{"0 0 * * 7", at(2026, 8, 22, 0, 0), at(2026, 8, 23, 0, 0)}, // ...and as 7
+		// Steps: "*/step" spans the whole field, "N/step" spans N..max, and a
+		// range endpoint is inclusive on both ends.
+		{"5/10 * * * *", at(2026, 8, 22, 0, 0), at(2026, 8, 22, 0, 5)},
+		{"5/10 * * * *", at(2026, 8, 22, 0, 5), at(2026, 8, 22, 0, 15)},
+		{"5/10 * * * *", at(2026, 8, 22, 0, 45), at(2026, 8, 22, 0, 55)},
+		{"55-59 * * * *", at(2026, 8, 22, 0, 58), at(2026, 8, 22, 0, 59)}, // hi inclusive
+		{"* 20-23 * * *", at(2026, 8, 22, 22, 59), at(2026, 8, 22, 23, 0)},
 		// Month boundary: 31st of next months that have one.
 		{"0 0 31 * *", at(2026, 9, 1, 0, 0), at(2026, 10, 31, 0, 0)},
 		// Month restriction rolls into next year.
 		{"0 0 1 jan *", at(2026, 2, 1, 0, 0), at(2027, 1, 1, 0, 0)},
+		// Jumping to a non-matching month must land on the 1st. Starting from a
+		// day that does not exist in the next month (Jan 31 -> "Feb 31") would
+		// otherwise normalise forward into March and skip the target day.
+		{"0 0 1 3 *", at(2026, 1, 31, 0, 0), at(2026, 3, 1, 0, 0)},
+		{"0 0 1 3 *", at(2026, 1, 29, 0, 0), at(2026, 3, 1, 0, 0)},
+		{"0 0 5 4 *", at(2026, 1, 30, 0, 0), at(2026, 4, 5, 0, 0)},
 		// Feb 29 only exists in leap years (2028 is next).
 		{"0 0 29 2 *", at(2026, 1, 1, 0, 0), at(2028, 2, 29, 0, 0)},
 		// dom AND dow when only one is restricted: 1st of month regardless of weekday.
@@ -127,6 +143,26 @@ func TestNext(t *testing.T) {
 		if got.Location() != tc.after.Location() {
 			t.Errorf("Next(%q) location = %v, want %v", tc.expr, got.Location(), tc.after.Location())
 		}
+	}
+}
+
+// TestDayOfWeekSevenAliasesSunday pins the 0-and-7-both-mean-Sunday rule.
+// time.Weekday() never sets bit 7, so without Parse's normalisation a
+// "* * * * 7" schedule matches nothing and never runs.
+func TestDayOfWeekSevenAliasesSunday(t *testing.T) {
+	seven := mustParse(t, "0 3 * * 7")
+	zero := mustParse(t, "0 3 * * 0")
+	// Walk a whole week so a difference in any weekday shows up.
+	at := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+	for range 7 {
+		got, want := seven.Next(at), zero.Next(at)
+		if !got.Equal(want) {
+			t.Fatalf("Next from %v: dow 7 = %v, dow 0 = %v (must be identical)", at, got, want)
+		}
+		if got.IsZero() {
+			t.Fatalf("Next from %v returned the zero time: dow 7 matches nothing", at)
+		}
+		at = at.AddDate(0, 0, 1)
 	}
 }
 

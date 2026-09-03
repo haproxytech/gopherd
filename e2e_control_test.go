@@ -15,6 +15,10 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -301,6 +305,99 @@ processes:
 	resp := td.sendCommand("logs talker")
 	if !strings.Contains(resp, "log capture disabled") {
 		t.Errorf("expected 'log capture disabled' error, got: %s", resp)
+	}
+
+	td.stop()
+}
+
+// TestE2ECLIExitCodeOnError pins that the CLI's *exit status* reflects failure,
+// not just its stderr. Every script, healthcheck and CI step around
+// `gopherd <cmd>` branches on the code, so printing an error and exiting 0
+// stops all of them detecting failure.
+func TestE2ECLIExitCodeOnError(t *testing.T) {
+	td := startDaemon(t, `
+processes:
+  - name: app
+    command: sleep
+    args: ["300"]
+    on-success: ignore
+    on-failure: ignore
+`)
+	defer td.kill()
+	td.WaitRunning("app", 10*time.Second)
+
+	run := func(args ...string) (int, string) {
+		t.Helper()
+		cmd := exec.Command(testBinary, args...)
+		cmd.Env = append(os.Environ(), "GOPHERD_SOCKET="+td.SocketPath())
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return 0, string(out)
+		}
+		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
+			return ee.ExitCode(), string(out)
+		}
+		t.Fatalf("run %v: %v", args, err)
+		return -1, ""
+	}
+
+	// A command the daemon answers with an error must exit non-zero.
+	for _, args := range [][]string{
+		{"status", "nosuchservice"},
+		{"start", "nosuchservice"},
+		{"nosuchservice", "restart"},
+	} {
+		code, out := run(args...)
+		if code == 0 {
+			t.Errorf("`gopherd %v` exited 0 despite failing; output: %s", args, out)
+		}
+	}
+
+	// The positive control: a command that succeeds still exits 0.
+	if code, out := run("status", "app"); code != 0 {
+		t.Errorf("`gopherd status app` exited %d, want 0; output: %s", code, out)
+	}
+}
+
+// TestE2ECLIHandlesLongLogLines pins that the client can read a log line longer
+// than bufio's 64 KiB default, which stack traces and single-line JSON logs
+// routinely exceed. The failure is not truncation but
+// `bufio.Scanner: token too long`: the CLI gives up mid-stream, losing the rest
+// of the output just as a service dumps a panic.
+func TestE2ECLIHandlesLongLogLines(t *testing.T) {
+	const lineLen = 200 * 1024 // comfortably over bufio's 64 KiB default
+	td := startDaemon(t, fmt.Sprintf(`
+processes:
+  - name: chatty
+    command: /bin/sh
+    args: ["-c", "awk 'BEGIN{s=sprintf(\"%%%dd\", 0); gsub(/ /, \"x\", s); print s}'; sleep 300"]
+    log-capture: true
+    on-success: ignore
+    on-failure: ignore
+`, lineLen))
+	defer td.kill()
+	td.WaitRunning("chatty", 10*time.Second)
+	time.Sleep(500 * time.Millisecond) // let the line reach the ring
+
+	cmd := exec.Command(testBinary, "logs", "chatty")
+	cmd.Env = append(os.Environ(), "GOPHERD_SOCKET="+td.SocketPath())
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("gopherd logs failed: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "token too long") {
+		t.Fatalf("the client could not read a %d-byte line: %s", lineLen, out)
+	}
+	longest := 0
+	for l := range strings.SplitSeq(string(out), "\n") {
+		if len(l) > longest {
+			longest = len(l)
+		}
+	}
+	if longest < lineLen {
+		t.Errorf("longest line received = %d bytes, want at least %d; the client's "+
+			"scanner buffer must be raised above bufio's 64 KiB default",
+			longest, lineLen)
 	}
 
 	td.stop()

@@ -128,3 +128,41 @@ func TestJitterBidirectional(t *testing.T) {
 		t.Error("jitter appears one-sided: no sample fell below base delay in 200 calls")
 	}
 }
+
+// TestAtLimitLatchSetWhenCapped pins the overflow guard's own state. The
+// clamped value is identical either way, so the output cannot show it — but the
+// latch is what stops math.Pow being evaluated for an ever-growing attempt
+// count, which is why it exists: without it a long-lived crash loop raises the
+// factor to the thousandth power on every restart. Only the field itself pins
+// it; Reset clearing it is covered separately.
+func TestAtLimitLatchSetWhenCapped(t *testing.T) {
+	t.Parallel()
+	b := New(100*time.Millisecond, 2.0, time.Second)
+	if b.atLimit {
+		t.Fatal("a fresh backoff must not start latched")
+	}
+
+	// 100ms * 2^n passes 1s at n = 4.
+	var capped bool
+	for range 10 {
+		b.Next()
+		if b.atLimit {
+			capped = true
+			break
+		}
+	}
+	if !capped {
+		t.Error("the backoff reached its limit without latching; the latch is what " +
+			"keeps math.Pow from being evaluated for an unbounded attempt count")
+	}
+
+	// Once latched it stays latched, and the delays stay at the cap.
+	for range 5 {
+		if d := b.Next(); d > time.Second+150*time.Millisecond {
+			t.Errorf("delay %v exceeds the limit plus jitter", d)
+		}
+		if !b.atLimit {
+			t.Error("the latch was cleared without a Reset")
+		}
+	}
+}

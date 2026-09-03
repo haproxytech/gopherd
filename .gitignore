@@ -1,4 +1,7 @@
 .claude/
-gopherd
+/gopherd
+/stamp
+/httpok
+/sdnotifyready
 .vscode
 .local

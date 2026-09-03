@@ -19,8 +19,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -43,6 +47,16 @@ func TestIsClientCommand(t *testing.T) {
 		{[]string{"/bin/sh"}, false},
 		{[]string{"haproxy"}, false},
 		{[]string{"haproxy", "--verbose"}, false},
+		// Only the four *service actions* may appear as the second argument;
+		// the rest take no service there. So "<binary> logs" is an entrypoint
+		// handed an argument that happens to share a command name —
+		// passthrough. Widening this breaks `docker run image /bin/sh logs`.
+		{[]string{"/bin/sh", "logs"}, false},
+		{[]string{"/bin/sh", "reload"}, false},
+		{[]string{"/bin/sh", "signal"}, false},
+		{[]string{"myapp", "logs"}, false},
+		{[]string{"myapp", "reload"}, false},
+		{[]string{"myapp", "signal"}, false},
 	}
 	for _, tt := range tests {
 		got := IsClientCommand(tt.args)
@@ -171,5 +185,163 @@ func TestIsAlive(t *testing.T) {
 	// reachability — true either way.
 	if !IsAlive(sockPath) {
 		t.Error("IsAlive must be true for a reachable listener owned by our own uid")
+	}
+}
+
+// TestExtractOutputFlag pins the trailing `-o <fmt>` extraction, including the
+// malformed shapes users type. The scan must not read past the end of the
+// slice: `gopherd status -o` with no format is an ordinary typo, and reading
+// past it panics the CLI instead of printing a usage error.
+func TestExtractOutputFlag(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		args    []string
+		pos     []string
+		suffix  string
+		wantErr bool
+	}{
+		{"no flag", []string{"status"}, []string{"status"}, "", false},
+		{"flag only", []string{"status", "-o", "json"}, []string{"status"}, "-o json", false},
+		{
+			"with service",
+			[]string{"status", "svc", "-o", "json"},
+			[]string{"status", "svc"},
+			"-o json", false,
+		},
+		// The dangling flag: nothing follows -o, so there is nothing to read.
+		{"dangling -o", []string{"status", "-o"}, []string{"status", "-o"}, "", false},
+		{"only -o", []string{"-o"}, []string{"-o"}, "", false},
+		{"unknown format", []string{"status", "-o", "yaml"}, nil, "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pos, suffix, err := extractOutputFlag(tc.args)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("extractOutputFlag(%v) err = %v, wantErr = %v", tc.args, err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			if strings.Join(pos, " ") != strings.Join(tc.pos, " ") {
+				t.Errorf("positional = %v, want %v", pos, tc.pos)
+			}
+			if suffix != tc.suffix {
+				t.Errorf("suffix = %q, want %q", suffix, tc.suffix)
+			}
+		})
+	}
+}
+
+// helperListenEnv names the socket path a re-executed helper should squat on.
+const helperListenEnv = "GOPHERD_TEST_SQUAT_SOCKET"
+
+// TestHelperListenAsOtherUID is not a test: it is the body of the child that
+// TestIsAliveRejectsForeignOwner spawns as a different uid to hold a listener
+// on the socket path.
+func TestHelperListenAsOtherUID(t *testing.T) {
+	path := os.Getenv(helperListenEnv)
+	if path == "" {
+		t.Skip("helper process only")
+	}
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		fmt.Printf("HELPER-LISTEN-ERROR: %v\n", err)
+		return
+	}
+	defer ln.Close()
+	fmt.Println("HELPER-READY")
+	// Accept and discard until the parent kills us.
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		conn.Close()
+	}
+}
+
+// TestIsAliveRejectsForeignOwner pins that "is another gopherd already running?"
+// means *our* gopherd. IsAlive gates binding the control socket, so counting any
+// listener as proof of life lets an unrelated local process squat the path and
+// keep the daemon from starting — or, in client mode, answer for it.
+func TestIsAliveRejectsForeignOwner(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to run the squatter under a different uid")
+	}
+	const otherUID = 65534 // nobody
+
+	dir, err := os.MkdirTemp("", "squat-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	self, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Skipf("cannot stage a copy of the test binary: %v", err)
+	}
+	helperBin := filepath.Join(dir, "helper.test")
+	if err := os.WriteFile(helperBin, self, 0o755); err != nil {
+		t.Fatalf("stage helper: %v", err)
+	}
+	sock := filepath.Join(dir, "squatted.sock")
+
+	cmd := exec.Command(helperBin, "-test.run=^TestHelperListenAsOtherUID$")
+	cmd.Env = append(os.Environ(), helperListenEnv+"="+sock)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Credential: &syscall.Credential{Uid: otherUID, Gid: otherUID},
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
+
+	// Wait for the squatter to be listening.
+	sc := bufio.NewScanner(stdout)
+	ready := false
+	for sc.Scan() {
+		if strings.Contains(sc.Text(), "HELPER-READY") {
+			ready = true
+			break
+		}
+		if strings.Contains(sc.Text(), "HELPER-LISTEN-ERROR") {
+			t.Skipf("squatter could not listen: %s", sc.Text())
+		}
+	}
+	if !ready {
+		t.Skip("squatter never reported ready")
+	}
+
+	if IsAlive(sock) {
+		t.Error("IsAlive accepted a listener owned by another uid; only a socket " +
+			"held by root or our own user is evidence that gopherd is running")
+	}
+
+	// Positive control: our own listener is recognised.
+	ownSock := filepath.Join(dir, "own.sock")
+	ln, err := net.Listen("unix", ownSock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	if !IsAlive(ownSock) {
+		t.Error("IsAlive rejected our own listener")
 	}
 }

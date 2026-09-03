@@ -62,6 +62,82 @@ processes:
 	td.stop()
 }
 
+// TestE2EOneshotsAllCompleteBeforeNextLayer pins that the startup sequencer
+// waits for *every* oneshot in a layer, not just the first to report. With one
+// oneshot (TestE2EOneshotBeforeDependents) draining one result is
+// indistinguishable from draining all, so the boundary needs two — one instant,
+// one slow — to be tested at all. A dependent that execs early sees a
+// half-finished prerequisite: the config generator that had not written the
+// file yet.
+func TestE2EOneshotsAllCompleteBeforeNextLayer(t *testing.T) {
+	dir := t.TempDir()
+	fast := filepath.Join(dir, "fast-done")
+	slow := filepath.Join(dir, "slow-done")
+	seen := filepath.Join(dir, "seen-by-app")
+
+	// The markers say FASTMARK/SLOWMARK rather than fast/slow: when a marker is
+	// missing, cat reports the *path* on stderr, and the paths contain "fast"
+	// and "slow" -- so a substring assertion on those would be satisfied by the
+	// very error that proves the test should fail.
+	td := startDaemon(t, fmt.Sprintf(`
+processes:
+  - name: fast-init
+    command: /bin/sh
+    args: ["-c", "echo FASTMARK > %s"]
+    startup: oneshot
+
+  - name: slow-init
+    command: /bin/sh
+    args: ["-c", "sleep 1; echo SLOWMARK > %s"]
+    startup: oneshot
+
+  - name: app
+    command: /bin/sh
+    args: ["-c", "cat %s %s > %s 2>&1; echo RECORDED >> %s; sleep 300"]
+    after: [fast-init, slow-init]
+    on-failure: shutdown
+`, fast, slow, fast, slow, seen, seen))
+	defer td.kill()
+
+	td.WaitRunning("app", 20*time.Second)
+
+	// app records what it could read at exec time. Both oneshots share layer 0
+	// and app is in layer 1, so both markers must already exist.
+	//
+	// Waiting for the RECORDED sentinel, not just for app to be running: the
+	// shell creates `seen` when it sets up the redirect, so a read that races
+	// the cat finds the file already there and empty. The sentinel is appended
+	// whatever the cat found, so it means "app has finished recording" without
+	// presuming what it recorded.
+	deadline := time.Now().Add(20 * time.Second)
+	var got string
+	for {
+		data, err := os.ReadFile(seen)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatalf("read %s: %v", seen, err)
+		}
+		got = string(data)
+		if strings.Contains(got, "RECORDED") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("app never finished recording what it saw; have %q", got)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if !strings.Contains(got, "FASTMARK") {
+		t.Errorf("app did not observe the fast oneshot's output; saw %q", got)
+	}
+	if !strings.Contains(got, "SLOWMARK") {
+		t.Errorf("app started before the slow oneshot finished: saw %q "+
+			"(the next layer must wait for every oneshot in the layer, not just "+
+			"the first one to report)", got)
+	}
+
+	td.stop()
+}
+
 func TestE2EOneshotFailure(t *testing.T) {
 	// A failing oneshot should cause the daemon to exit (fatal).
 	dir := t.TempDir()
@@ -107,6 +183,45 @@ processes:
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("daemon did not exit after failed oneshot")
+	}
+}
+
+// TestE2EFailedOneshotWaitsForSiblings pins that a failing oneshot does not
+// abort the layer while its siblings run. "Fail fast" here means log.Fatalf
+// with siblings mid-flight: never waited on, so their children outlive the
+// daemon and their result goroutines leak. Drain every result, then report.
+func TestE2EFailedOneshotWaitsForSiblings(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "sibling-finished")
+
+	start := time.Now()
+	td := startDaemon(t, fmt.Sprintf(`
+processes:
+  - name: quick-fail
+    command: /bin/sh
+    args: ["-c", "exit 3"]
+    startup: oneshot
+
+  - name: slow-sibling
+    command: /bin/sh
+    args: ["-c", "sleep 2; echo done > %s"]
+    startup: oneshot
+`, marker))
+	defer td.kill()
+
+	// quick-fail aborts startup, but only after slow-sibling has been reaped.
+	code := td.wait(30 * time.Second)
+	elapsed := time.Since(start)
+	if code == 0 {
+		t.Fatalf("expected a non-zero exit after the oneshot failed, got %d", code)
+	}
+	if elapsed < 1500*time.Millisecond {
+		t.Errorf("daemon exited after %v; it must wait for every oneshot in the "+
+			"layer (the sibling needs ~2s) before reporting the failure", elapsed)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("sibling oneshot never completed (%v); a failing oneshot must "+
+			"not abandon its in-flight siblings", err)
 	}
 }
 

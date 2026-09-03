@@ -225,3 +225,109 @@ func TestLayersUnknownDep(t *testing.T) {
 		t.Fatal("expected unknown-dep error")
 	}
 }
+
+// TestLayersUnknownDepPerConstraint covers each constraint list separately.
+// TopoLayers duplicates TopoSort's validation, so a check dropped from one of
+// its three loops is invisible to a test that only exercises `after` — and
+// invisible at the daemon level too, since run() calls TopoSort first. A case
+// per loop is what keeps the two copies from drifting.
+func TestLayersUnknownDepPerConstraint(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		svc  Service
+	}{
+		{"after", Service{Name: "a", After: []string{"ghost"}}},
+		{"before", Service{Name: "a", Before: []string{"ghost"}}},
+		{"requires", Service{Name: "a", Requires: []string{"ghost"}}},
+	} {
+		// The message matters, not just the error: an edge to a missing name
+		// leaves an in-degree nothing can decrement, so a dropped check still
+		// errors — as a bogus "dependency cycle" naming neither the service nor
+		// the operator's typo.
+		for _, fn := range []struct {
+			label string
+			run   func([]Service) error
+		}{
+			{"TopoSort", func(s []Service) error { _, err := TopoSort(s); return err }},
+			{"TopoLayers", func(s []Service) error { _, err := TopoLayers(s); return err }},
+		} {
+			err := fn.run([]Service{tc.svc})
+			if err == nil {
+				t.Errorf("%s with unknown %s dep: expected error, got nil", fn.label, tc.name)
+				continue
+			}
+			if !strings.Contains(err.Error(), "ghost") ||
+				!strings.Contains(err.Error(), "unknown") {
+				t.Errorf("%s with unknown %s dep: error %q should name the unknown "+
+					"process %q, not report a cycle", fn.label, tc.name, err, "ghost")
+			}
+		}
+	}
+}
+
+// TestLayersDeterministicOrder pins the per-layer sort. Members come from
+// ranging a map, so one call proves nothing: unsorted output lands in sorted
+// order often enough by chance. Repeating it, over a wide layer, is what makes
+// the assertion decisive.
+func TestLayersDeterministicOrder(t *testing.T) {
+	t.Parallel()
+	// Declared in an order unrelated to the sorted one, so "sorted" cannot be
+	// an artifact of insertion order either.
+	svcs := []Service{
+		{Name: "root"},
+		{Name: "gamma", After: []string{"root"}},
+		{Name: "alpha", After: []string{"root"}},
+		{Name: "epsilon", After: []string{"root"}},
+		{Name: "beta", After: []string{"root"}},
+		{Name: "delta", After: []string{"root"}},
+		{Name: "zeta", After: []string{"root"}},
+		{Name: "eta", After: []string{"root"}},
+		{Name: "theta", After: []string{"root"}},
+	}
+	want := "alpha,beta,delta,epsilon,eta,gamma,theta,zeta"
+	for i := range 25 {
+		layers, err := TopoLayers(svcs)
+		if err != nil {
+			t.Fatalf("call %d: unexpected error: %v", i, err)
+		}
+		if len(layers) != 2 {
+			t.Fatalf("call %d: expected 2 layers, got %d: %v", i, len(layers), layers)
+		}
+		if got := strings.Join(layers[1], ","); got != want {
+			t.Fatalf("call %d: layer 1 = %q, want %q (layer contents must be sorted "+
+				"for deterministic start order and log output)", i, got, want)
+		}
+	}
+}
+
+// TestNoDuplicatesInSortOrder pins that a service is emitted exactly once even
+// when several dependencies converge on it. A duplicate would make the daemon's
+// shutdown sequence stop the same service twice.
+func TestNoDuplicatesInSortOrder(t *testing.T) {
+	t.Parallel()
+	order, err := TopoSort([]Service{
+		{Name: "a"},
+		{Name: "b"},
+		{Name: "c"},
+		{Name: "sink", After: []string{"a", "b"}, Requires: []string{"b", "c"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(order) != 4 {
+		t.Fatalf("expected exactly 4 entries, got %d: %v", len(order), order)
+	}
+	seen := make(map[string]int, len(order))
+	for _, n := range order {
+		seen[n]++
+	}
+	for n, c := range seen {
+		if c != 1 {
+			t.Errorf("%s appears %d times in start order: %v", n, c, order)
+		}
+	}
+	if order[len(order)-1] != "sink" {
+		t.Errorf("expected sink last, got %v", order)
+	}
+}

@@ -16,9 +16,13 @@ package sdnotify
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -190,5 +194,46 @@ func TestListenerMalformedLines(t *testing.T) {
 	defer cancel()
 	if err := n.WaitReady(ctx); err != nil {
 		t.Fatalf("WaitReady after mixed-payload: %v", err)
+	}
+}
+
+// TestListenerCloseConcurrent pins that Close is atomic, not check-then-set.
+// MarkExited and FinishStart both close listeners and on a restart can run at
+// the same moment, where a load-then-store lets both reach conn.Close(): one
+// gets "use of closed network connection", and the readLoop — which reads the
+// same flag to decide whether an error is expected — logs it on every restart.
+func TestListenerCloseConcurrent(t *testing.T) {
+	t.Parallel()
+	for round := range 200 {
+		n, err := Listen(fmt.Sprintf("close-race-%d", round), os.Getpid(), os.Getuid())
+		if err != nil {
+			t.Fatalf("Listen: %v", err)
+		}
+
+		const closers = 16
+		errs := make([]error, closers)
+		var ready, start atomic.Int32
+		var wg sync.WaitGroup
+		for i := range closers {
+			wg.Go(func() {
+				ready.Add(1)
+				for start.Load() == 0 {
+					runtime.Gosched()
+				}
+				errs[i] = n.Close()
+			})
+		}
+		for ready.Load() < closers {
+			runtime.Gosched()
+		}
+		start.Store(1)
+		wg.Wait()
+
+		for i, e := range errs {
+			if e != nil {
+				t.Fatalf("round %d: concurrent Close #%d returned %v; exactly one "+
+					"caller may close the connection", round, i, e)
+			}
+		}
 	}
 }

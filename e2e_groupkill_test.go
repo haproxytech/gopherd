@@ -89,6 +89,36 @@ func TestE2EGroupKillAfterLeaderExit(t *testing.T) {
 	}
 }
 
+// TestE2EGroupKillCompletesBeforeDaemonExit: the daemon must not return until
+// the SIGKILL escalation armed by stopAll has finished. The reap loop breaks
+// once the last *managed* pid is reaped, but a group member that survived the
+// stop signal is only pending its kill-delay then. Exiting abandons the timer
+// and reparents the straggler to the host init — invisible to any "stop and
+// wait" test, where the daemon is still alive to finish the job.
+func TestE2EGroupKillCompletesBeforeDaemonExit(t *testing.T) {
+	childPidFile := filepath.Join(t.TempDir(), "child.pid")
+	td := startDaemon(t, groupLeakConfig(childPidFile))
+	defer td.kill()
+
+	td.WaitRunning("leaker", 5*time.Second)
+	child := readPidFile(t, childPidFile)
+
+	// Shut the whole daemon down and wait for it to exit.
+	if code := td.stop(); code != 0 {
+		t.Fatalf("expected clean daemon exit, got %d", code)
+	}
+
+	// The daemon has returned: the surviving group member must already be gone,
+	// not merely scheduled to die.
+	if err := syscall.Kill(child, 0); !errors.Is(err, syscall.ESRCH) {
+		// Clean up before failing so the stray does not outlive the test run.
+		_ = syscall.Kill(child, syscall.SIGKILL)
+		t.Errorf("group member %d was still alive when the daemon exited "+
+			"(kill(0) = %v); shutdown must wait out the SIGKILL escalation "+
+			"instead of leaking the process to the host init", child, err)
+	}
+}
+
 // TestE2EGroupKillOnRestart: restart must not leak the old instance's group
 // members — the old child dies at kill-delay while the new instance (new
 // process group) keeps running.

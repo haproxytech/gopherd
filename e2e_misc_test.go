@@ -115,6 +115,70 @@ func TestE2EPassthrough(t *testing.T) {
 	}
 }
 
+// TestE2EPassthroughSeparatorNotInArgv pins the exact argv of a passthrough
+// exec carrying entrypoint args after "--". The separator is a gopherd-level
+// delimiter, not an argument: leaking it shifts every positional parameter by
+// one ($0 becomes "--") and breaks entrypoint scripts that read "$1". Only an
+// exact-argv assertion catches it; "contains the args" passes either way.
+func TestE2EPassthroughSeparatorNotInArgv(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "argv")
+	cmd := exec.Command(testBinary, "/bin/sh", "-c",
+		fmt.Sprintf(`printf '%%s|' "$0" "$@" > %s`, out), "--", "alpha", "beta")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("passthrough exec failed: %v", err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read argv capture: %v", err)
+	}
+	// sh -c <script> alpha beta  =>  $0=alpha, $@=(beta)
+	if got, want := string(data), "alpha|beta|"; got != want {
+		t.Errorf("passthrough argv = %q, want %q (the -- separator must be "+
+			"consumed by gopherd, never forwarded to the program)", got, want)
+	}
+}
+
+// TestE2EInitStopSignalLogIsDeterministic pins the signal-set log line. The set
+// is a map, so it has to be sorted or the startup banner flaps between runs,
+// breaking golden comparisons and log parsers. One run proves nothing — chance
+// prints sorted order often enough — so the line must be identical across
+// repeated starts.
+func TestE2EInitStopSignalLogIsDeterministic(t *testing.T) {
+	const config = `
+init-stop-signal: [SIGTERM, SIGQUIT, SIGUSR2, SIGINT]
+
+processes:
+  - name: app
+    command: sleep
+    args: ["300"]
+    on-success: ignore
+    on-failure: ignore
+`
+	// formatSignalSet sorts by signal number: INT(2), QUIT(3), USR2(12), TERM(15).
+	const want = "init-stop-signal: SIGINT, SIGQUIT, SIGUSR2, SIGTERM"
+
+	for i := range 5 {
+		td := startDaemon(t, config)
+		td.WaitRunning("app", 10*time.Second)
+		out := td.Output()
+		td.kill()
+
+		var line string
+		for l := range strings.SplitSeq(out, "\n") {
+			if strings.Contains(l, "init-stop-signal:") {
+				line = strings.TrimSpace(strings.TrimPrefix(l, "gopherd: "))
+			}
+		}
+		if line == "" {
+			t.Fatalf("run %d: no init-stop-signal line in output: %s", i, out)
+		}
+		if line != want {
+			t.Fatalf("run %d: init-stop-signal line = %q, want %q "+
+				"(the set must be rendered in a stable order)", i, line, want)
+		}
+	}
+}
+
 func TestE2EPassthroughNotFound(t *testing.T) {
 	cmd := exec.Command(testBinary, "nonexistent-binary-xyz")
 	cmd.Stderr = nil

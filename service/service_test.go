@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -1173,5 +1174,387 @@ func TestPrepareStartExportSocket(t *testing.T) {
 	// No control socket known: nothing to inject even when opted in.
 	if v, ok := envValue(prepare(Process{Command: "/bin/true", ExportSocket: boolPtr(true)}, ""), "GOPHERD_SOCKET"); ok {
 		t.Errorf("unset path: GOPHERD_SOCKET = %q, want absent", v)
+	}
+}
+
+// TestPrepareStartFileRefsExpandBeforeVars pins the order of the two expansion
+// passes: {{file "..."}} resolves first, then {{.VAR}}, so an expanded variable
+// is never re-processed. Reversed, any env value the operator does not fully
+// control — an inherited OS var, a shared dotenv entry — could smuggle a
+// {{file "/etc/shadow"}} payload into the child. It must stay literal text.
+func TestPrepareStartFileRefsExpandBeforeVars(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	if err := os.WriteFile(secret, []byte("SUPERSECRET"), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	payload := `{{file "` + secret + `"}}`
+
+	svc := mustNew(t, Process{
+		Command: "/bin/true",
+		Environment: map[string]string{
+			// INJECT's value is itself a file reference; TOKEN merely names it.
+			"INJECT": payload,
+			"TOKEN":  "{{.INJECT}}",
+		},
+	}, "")
+	plan, err := svc.PrepareStart()
+	if err != nil {
+		t.Fatalf("PrepareStart: %v", err)
+	}
+
+	env := make(map[string]string, len(plan.cmd.Env))
+	for _, kv := range plan.cmd.Env {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			env[k] = v
+		}
+	}
+	got, ok := env["TOKEN"]
+	if !ok {
+		t.Fatalf("TOKEN missing from child env: %v", plan.cmd.Env)
+	}
+	if strings.Contains(got, "SUPERSECRET") {
+		t.Errorf("TOKEN = %q: an expanded variable was re-processed as a file "+
+			"reference and leaked the file's contents", got)
+	}
+	if got != payload {
+		t.Errorf("TOKEN = %q, want the literal %q", got, payload)
+	}
+}
+
+// TestWaitSDNotifyReadyWithoutListener pins that the readiness gate fails
+// closed. A nil listener means the service never opted in, its spawn failed, or
+// a reload turned sd-notify off; returning nil there reports "ready" for a
+// service that has signalled nothing, and dependents start against it.
+func TestWaitSDNotifyReadyWithoutListener(t *testing.T) {
+	t.Parallel()
+	svc := mustNew(t, Process{Command: "/bin/true"}, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err := svc.WaitSDNotifyReady(ctx)
+	if err == nil {
+		t.Fatal("WaitSDNotifyReady returned nil for a service with no sd_notify " +
+			"listener; the gate must fail closed rather than report readiness")
+	}
+	if !strings.Contains(err.Error(), "sd_notify") {
+		t.Errorf("error %q should explain that sd_notify is not enabled", err)
+	}
+}
+
+// TestIsValidEnvKey pins the env-key grammar: [A-Za-z_][A-Za-z0-9_]*. Keys come
+// from a dotenv file the operator may not have written and go straight into
+// cmd.Env. A leading digit is the interesting case: not a shell identifier, so
+// a child that sources its environment would choke on it.
+func TestIsValidEnvKey(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		key string
+		ok  bool
+	}{
+		{"FOO", true},
+		{"_FOO", true},
+		{"FOO_BAR_1", true},
+		{"f", true},
+		{"F1", true},
+		// A digit is allowed only after the first character.
+		{"1FOO", false},
+		{"9", false},
+		{"0_PATH", false},
+		{"", false},
+		{"FOO-BAR", false},
+		{"FOO BAR", false},
+		{"FOO=BAR", false},
+		{"FOO.BAR", false},
+	} {
+		if got := isValidEnvKey(tc.key); got != tc.ok {
+			t.Errorf("isValidEnvKey(%q) = %v, want %v", tc.key, got, tc.ok)
+		}
+	}
+}
+
+// TestDotEnvMalformedQuotes pins that quote stripping needs a matching *pair*.
+// A single quote character satisfies both "starts with" and "ends with", so a
+// length check of 1 slices v[1:0] — a bounds panic in PID 1 mid-config-load.
+func TestDotEnvMalformedQuotes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		raw  string
+		want string
+	}{
+		// A lone quote is not a quoted value: it stays literal.
+		{`A="`, `"`},
+		{`A='`, `'`},
+		{`A=""`, ``},
+		{`A=''`, ``},
+		{`A="x"`, `x`},
+		{`A='x'`, `x`},
+		// Unbalanced quotes stay literal too.
+		{`A="x`, `"x`},
+		{`A=x"`, `x"`},
+	} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "app.env")
+		if err := os.WriteFile(path, []byte(tc.raw+"\n"), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		env, _, err := buildEnvMap(path, false, nil, false)
+		if err != nil {
+			t.Errorf("%q: buildEnvMap: %v", tc.raw, err)
+			continue
+		}
+		if got := env["A"]; got != tc.want {
+			t.Errorf("%q: A = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
+// TestDotEnvRejectsWorldWritableFile pins the permission check on a dotenv
+// file: it supplies the child's credentials and endpoints, so anyone who can
+// write it rewrites what the service runs with. Only the world-write bit
+// rejects; group-write warns. Confusing the two octal digits is an easy slip
+// with no functional symptom.
+func TestDotEnvRejectsWorldWritableFile(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		mode os.FileMode
+		ok   bool
+	}{
+		{0o600, true},
+		{0o644, true},
+		{0o660, true}, // group-writable: warned, not rejected
+		{0o602, false},
+		{0o606, false},
+		{0o646, false},
+		{0o666, false},
+	} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "app.env")
+		if err := os.WriteFile(path, []byte("A=1\n"), tc.mode); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if err := os.Chmod(path, tc.mode); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		_, _, err := buildEnvMap(path, false, nil, false)
+		if tc.ok && err != nil {
+			t.Errorf("mode %04o: unexpected error: %v", tc.mode, err)
+		}
+		if !tc.ok {
+			if err == nil {
+				t.Errorf("mode %04o: accepted a world-writable dotenv", tc.mode)
+			} else if !strings.Contains(err.Error(), "world-writable") {
+				t.Errorf("mode %04o: error %q should say world-writable", tc.mode, err)
+			}
+		}
+	}
+}
+
+// TestFinishStartReplacesLingeringSDNotifyListener pins that FinishStart
+// replaces an existing sd_notify listener rather than colliding with it. The
+// abstract socket is named per service, so a stale one fails the next Listen
+// with EADDRINUSE and the service can never start again.
+//
+// MarkExited and the failed-spawn path both close the listener, so the case
+// left is a start arriving while one is still live. The swap does double duty:
+// it also drops the previous instance's READY=1, so dependents gate on fresh
+// readiness rather than inheriting it.
+func TestFinishStartReplacesLingeringSDNotifyListener(t *testing.T) {
+	svc := mustNew(t, Process{
+		Name:            "sdn-relisten",
+		Command:         "/bin/sleep",
+		Args:            []string{"30"},
+		SDNotify:        true,
+		SDNotifyTimeout: "1s",
+	}, "")
+
+	var pids []int
+	t.Cleanup(func() {
+		for _, pid := range pids {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			var ws syscall.WaitStatus
+			_, _ = syscall.Wait4(pid, &ws, 0, nil)
+		}
+	})
+
+	spawn := func(attempt int) int {
+		t.Helper()
+		plan, err := svc.PrepareStart()
+		if err != nil {
+			t.Fatalf("attempt %d: PrepareStart: %v", attempt, err)
+		}
+		pid, err := svc.FinishStart(plan)
+		if err != nil {
+			t.Fatalf("attempt %d: FinishStart: %v; a live sd_notify listener must "+
+				"be closed and replaced so the abstract socket name is free",
+				attempt, err)
+		}
+		pids = append(pids, pid)
+		return pid
+	}
+
+	first := spawn(1)
+	// A second spawn with the first listener still open: without the swap this
+	// is where Listen returns EADDRINUSE.
+	second := spawn(2)
+	if second == first {
+		t.Fatalf("second spawn reused pid %d", first)
+	}
+}
+
+// TestMarkExitedClearsAtomicsBeforeLocking pins that the running flag and pid
+// are cleared *before* svc.mu is taken. Wait4 has already freed the pid, so a
+// concurrent Stop or Signal that wins the lock would signal a pid the kernel
+// may have reassigned; clearing the atomics first trips those callers' own
+// `pid <= 0` guard instead. The test holds the lock so the ordering is
+// observable: the atomics must be clear while MarkExited is provably blocked.
+func TestMarkExitedClearsAtomicsBeforeLocking(t *testing.T) {
+	svc := mustNew(t, Process{
+		Name: "ordering", Command: "/bin/sleep",
+		Args: []string{"30"},
+	}, "")
+	plan, err := svc.PrepareStart()
+	if err != nil {
+		t.Fatalf("PrepareStart: %v", err)
+	}
+	pid, err := svc.FinishStart(plan)
+	if err != nil {
+		t.Fatalf("FinishStart: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		var ws syscall.WaitStatus
+		_, _ = syscall.Wait4(pid, &ws, 0, nil)
+	})
+	if !svc.IsRunning() || svc.Pid.Load() == 0 {
+		t.Fatal("service should be running after FinishStart")
+	}
+
+	// Hold the lock so MarkExited cannot get past it.
+	svc.mu.Lock()
+	entered := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		close(entered)
+		svc.MarkExited()
+		close(done)
+	}()
+	<-entered
+	// Give the goroutine time to reach (and block on) the lock.
+	time.Sleep(200 * time.Millisecond)
+
+	if svc.IsRunning() {
+		t.Error("running flag still set while MarkExited is blocked on svc.mu; it " +
+			"must be cleared before the lock so a concurrent Stop/Signal cannot " +
+			"signal the freed pid")
+	}
+	if got := svc.Pid.Load(); got != 0 {
+		t.Errorf("Pid still %d while MarkExited is blocked on svc.mu, want 0", got)
+	}
+
+	svc.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("MarkExited never completed")
+	}
+}
+
+// TestWaitGroupExitHonoursGraceAfterDeadline pins the grace window on
+// WaitGroupExit, which exists so group members outliving the stop signal are
+// gone before the daemon exits. The SIGKILL is armed *for* kill-delay, so a
+// wait ending exactly there returns before the kernel delivers it. The grace is
+// the gap between "escalation fired" and "finished"; without it the stragglers
+// leak to the host init.
+func TestWaitGroupExitHonoursGraceAfterDeadline(t *testing.T) {
+	// A live process group for the wait to observe. It must stay alive for the
+	// whole window, so nothing here signals it until the test is done.
+	cmd := exec.Command("/bin/sleep", "30")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot spawn a helper process: %v", err)
+	}
+	pgid := cmd.Process.Pid
+	t.Cleanup(func() {
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		_ = cmd.Wait()
+	})
+
+	svc := mustNew(t, Process{Name: "grace", Command: "/bin/true"}, "")
+	svc.mu.Lock()
+	svc.killPgid = pgid
+	// Deadline already reached: only the grace can keep the wait alive.
+	svc.killDeadline = time.Now()
+	svc.mu.Unlock()
+
+	start := time.Now()
+	svc.WaitGroupExit()
+	elapsed := time.Since(start)
+
+	// The group is still alive, so the wait must run out the grace rather than
+	// return the instant the deadline is behind it.
+	if elapsed < 300*time.Millisecond {
+		t.Errorf("WaitGroupExit returned after %v with the group still alive; it "+
+			"must allow a grace period past kill-delay for the SIGKILL to take "+
+			"effect, or surviving group members leak past the daemon's exit",
+			elapsed)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("WaitGroupExit took %v, far beyond the grace window", elapsed)
+	}
+}
+
+// TestSecondStopCancelsTheFirstKillTimer pins that re-arming the SIGKILL
+// escalation cancels the timer it replaces. Two Stop() calls are ordinary — a
+// control client and a check-failure handler can both stop one service — and
+// each arms an AfterFunc with the pid it captured. MarkExited can only cancel
+// the one left in s.killTimer, so an uncancelled orphan fires later and
+// SIGKILLs whatever holds that pid by then.
+//
+// Timer.Stop() reports whether it stopped a live timer, which is exactly the
+// question, so the assertion is on the replaced timer itself.
+func TestSecondStopCancelsTheFirstKillTimer(t *testing.T) {
+	svc := mustNew(t, Process{
+		Name:      "double-stop",
+		Command:   "/bin/sleep",
+		Args:      []string{"30"},
+		KillDelay: "10s", // long, so neither timer fires during the test
+	}, "")
+	plan, err := svc.PrepareStart()
+	if err != nil {
+		t.Fatalf("PrepareStart: %v", err)
+	}
+	pid, err := svc.FinishStart(plan)
+	if err != nil {
+		t.Fatalf("FinishStart: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		var ws syscall.WaitStatus
+		_, _ = syscall.Wait4(pid, &ws, 0, nil)
+	})
+
+	svc.Stop()
+	svc.mu.Lock()
+	first := svc.killTimer
+	svc.mu.Unlock()
+	if first == nil {
+		t.Fatal("the first Stop did not arm a kill timer")
+	}
+
+	svc.Stop() // must cancel `first` before arming its replacement
+
+	svc.mu.Lock()
+	second := svc.killTimer
+	svc.mu.Unlock()
+	if second == first {
+		t.Fatal("the second Stop did not arm a new timer")
+	}
+	// Stop() returns false for a timer that was already stopped. If the second
+	// Stop cancelled it, this is false; if it was orphaned, it is still live.
+	if first.Stop() {
+		t.Error("the first Stop's kill timer was still live after a second Stop; " +
+			"re-arming must cancel the timer it replaces, or the orphan fires " +
+			"later against a pid that may have been recycled")
 	}
 }

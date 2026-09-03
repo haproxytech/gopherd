@@ -50,6 +50,11 @@ func TestParseByteSize(t *testing.T) {
 		// a negative size (which would silently disable rotation).
 		{"99999999999999999999GB", 0, true}, // ~1e29 bytes
 		{"10000000000000000000", 0, true},   // 1e19 bare bytes > math.MaxInt64
+		// Exactly 2^63, which is float64(math.MaxInt64), so the guard must
+		// reject on >=: the conversion is implementation-defined (negative on
+		// amd64), and a negative maxSize disables rotation and fills the disk.
+		{"9223372036854775808B", 0, true},
+		{"9223372036854775807B", 0, true},
 	}
 	for _, tc := range tests {
 		got, err := parseByteSize(tc.in)

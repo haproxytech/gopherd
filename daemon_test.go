@@ -16,15 +16,21 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/haproxytech/gopherd/control"
+	"github.com/haproxytech/gopherd/internal/logger"
 	"github.com/haproxytech/gopherd/internal/metrics"
 	"github.com/haproxytech/gopherd/internal/yml"
 	"github.com/haproxytech/gopherd/service"
@@ -333,33 +339,44 @@ func TestSetupControlStatsEmpty(t *testing.T) {
 	}
 }
 
-func TestWaitStatusCodeExited(t *testing.T) {
+// TestWaitStatusCode covers every wait(2) status shape, including those no
+// integration test can produce on demand.
+//
+// The 128+signum offset is what makes the reap loop's `WasStopped() && code >
+// 128` rule work and lets an exit-code-map be keyed by signal name; without it
+// an intentional `gopherd stop` is recorded as a failure. The fallthrough must
+// stay non-zero: a stopped or continued child has not completed, and booking it
+// as a clean exit lets the default on-success: shutdown take the daemon down.
+func TestWaitStatusCode(t *testing.T) {
 	t.Parallel()
-	// WaitStatus where process exited normally with code 0.
-	ws := syscall.WaitStatus(0) // exited, status 0
-	code := waitStatusCode(ws)
-	if code != 0 {
-		t.Errorf("expected 0, got %d", code)
+	// Linux wait(2) status encoding: exited -> (code << 8); signalled -> signum
+	// in the low 7 bits; stopped -> low byte 0x7f; continued -> 0xffff.
+	tests := []struct {
+		name string
+		ws   syscall.WaitStatus
+		want int
+	}{
+		{"exited 0", syscall.WaitStatus(0), 0},
+		{"exited 1", syscall.WaitStatus(1 << 8), 1},
+		{"exited 42", syscall.WaitStatus(42 << 8), 42},
+		{"exited 255", syscall.WaitStatus(255 << 8), 255},
+		{"signalled SIGINT", syscall.WaitStatus(int(syscall.SIGINT)), 128 + 2},
+		{"signalled SIGKILL", syscall.WaitStatus(int(syscall.SIGKILL)), 128 + 9},
+		{"signalled SIGTERM", syscall.WaitStatus(int(syscall.SIGTERM)), 128 + 15},
+		// Neither exited nor signalled: not a completion, so not a success.
+		{"stopped SIGSTOP", syscall.WaitStatus(0x7f | (int(syscall.SIGSTOP) << 8)), 1},
+		{"continued", syscall.WaitStatus(0xffff), 1},
 	}
-}
-
-func TestWaitStatusCodeExitedNonZero(t *testing.T) {
-	t.Parallel()
-	// WaitStatus for exit code 42: code << 8.
-	ws := syscall.WaitStatus(42 << 8)
-	code := waitStatusCode(ws)
-	if code != 42 {
-		t.Errorf("expected 42, got %d", code)
-	}
-}
-
-func TestWaitStatusCodeSignaled(t *testing.T) {
-	t.Parallel()
-	// WaitStatus for killed by SIGKILL (9).
-	ws := syscall.WaitStatus(int(syscall.SIGKILL))
-	code := waitStatusCode(ws)
-	if code != 128+9 {
-		t.Errorf("expected %d, got %d", 128+9, code)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := waitStatusCode(tc.ws); got != tc.want {
+				t.Errorf("waitStatusCode(%#x) = %d, want %d "+
+					"(exited=%v signalled=%v stopped=%v continued=%v)",
+					uint32(tc.ws), got, tc.want, tc.ws.Exited(), tc.ws.Signaled(),
+					tc.ws.Stopped(), tc.ws.Continued())
+			}
+		})
 	}
 }
 
@@ -461,34 +478,96 @@ func TestStopChecksEmpty(t *testing.T) {
 	}
 }
 
-// TestProcessConfigChangedCommand verifies that changing a service's command
-// must be detected as a configuration change requiring a restart.
-func TestProcessConfigChangedCommand(t *testing.T) {
+// TestProcessConfigChanged covers every field the restart-or-not decision
+// consults, one case each: processConfigChanged is a chain of independent
+// comparisons, and only a per-field table notices one missing link. A dropped
+// link is the quietest reload bug there is — reload reports success, status
+// shows the new config, and the child keeps the old value.
+//
+// Fields deliberately excluded are listed too, so "applied without a restart"
+// stays a tested property rather than an accident.
+func TestProcessConfigChanged(t *testing.T) {
 	t.Parallel()
-	old := service.Process{Command: "/bin/old", Args: []string{"-v"}}
-	updated := service.Process{Command: "/bin/new", Args: []string{"-v"}}
-	if !processConfigChanged(old, updated) {
-		t.Error("processConfigChanged must return true when command changes")
+	base := service.Process{
+		Name:    "app",
+		Command: "/bin/app",
+		Args:    []string{"--port=8080"},
 	}
-}
+	ptrBool := func(b bool) *bool { return &b }
+	ptrInt := func(i int) *int { return &i }
 
-// TestProcessConfigChangedArgs verifies that changing a service's arguments
-// must be detected as a configuration change requiring a restart.
-func TestProcessConfigChangedArgs(t *testing.T) {
-	t.Parallel()
-	old := service.Process{Command: "/bin/app", Args: []string{"--port=8080"}}
-	updated := service.Process{Command: "/bin/app", Args: []string{"--port=9090"}}
-	if !processConfigChanged(old, updated) {
-		t.Error("processConfigChanged must return true when args change")
+	tests := []struct {
+		name string
+		edit func(p *service.Process)
+		want bool
+	}{
+		// Anything the child process is spawned with needs a restart.
+		{"prefix", func(p *service.Process) { p.Prefix = "svc" }, true},
+		{"startup", func(p *service.Process) { p.Startup = "disabled" }, true},
+		{"command", func(p *service.Process) { p.Command = "/bin/other" }, true},
+		{"args", func(p *service.Process) { p.Args = []string{"--port=9090"} }, true},
+		{"args removed", func(p *service.Process) { p.Args = nil }, true},
+		{"user", func(p *service.Process) { p.User = "nobody" }, true},
+		{"group", func(p *service.Process) { p.Group = "nogroup" }, true},
+		{"user-id", func(p *service.Process) { p.UserID = ptrInt(1000) }, true},
+		{"group-id", func(p *service.Process) { p.GroupID = ptrInt(1000) }, true},
+		{"strict-groups", func(p *service.Process) { p.StrictGroups = true }, true},
+		{"working-dir", func(p *service.Process) { p.WorkingDir = "/srv" }, true},
+		{"stop-signal", func(p *service.Process) { p.StopSignal = "SIGUSR1" }, true},
+		{"pass-env", func(p *service.Process) { p.PassEnv = ptrBool(true) }, true},
+		{"log-capture", func(p *service.Process) { p.LogCapture = ptrBool(true) }, true},
+		{"export-socket", func(p *service.Process) { p.ExportSocket = ptrBool(true) }, true},
+		{"environment", func(p *service.Process) { p.Environment = map[string]string{"A": "1"} }, true},
+		{"remove-env", func(p *service.Process) { p.RemoveEnv = []string{"PATH"} }, true},
+		{"dotenv", func(p *service.Process) { p.DotEnv = "/etc/app.env" }, true},
+		{"dotenv-follow", func(p *service.Process) { p.DotEnvFollow = true }, true},
+		{"ready-check", func(p *service.Process) { p.ReadyCheck = "db-up" }, true},
+		{"ready-timeout", func(p *service.Process) { p.ReadyTimeout = "10s" }, true},
+		{"kill-delay", func(p *service.Process) { p.KillDelay = "5s" }, true},
+		{"sd-notify", func(p *service.Process) { p.SDNotify = true }, true},
+		{"sd-notify-timeout", func(p *service.Process) { p.SDNotifyTimeout = "30s" }, true},
+		{"parent-death-signal", func(p *service.Process) { p.ParentDeathSignal = "SIGTERM" }, true},
+
+		// Policy that the reap loop and check callbacks read at runtime is
+		// updated in place by reload(); restarting for it would be a
+		// regression, not a fix.
+		{"unchanged", func(*service.Process) {}, false},
+		{"on-success", func(p *service.Process) { p.OnSuccess = "restart" }, false},
+		{"on-failure", func(p *service.Process) { p.OnFailure = "ignore" }, false},
+		{"on-check-failure", func(p *service.Process) {
+			p.OnCheckFailure = map[string]string{"db": "restart"}
+		}, false},
+		{"requires", func(p *service.Process) { p.Requires = []string{"db"} }, false},
+		{"exit-code-map", func(p *service.Process) { p.ExitCodeMap = map[int]int{143: 0} }, false},
+		{"signal-rewrite", func(p *service.Process) {
+			p.SignalRewrite = map[string]string{"SIGUSR1": "SIGHUP"}
+		}, false},
+		{"backoff-delay", func(p *service.Process) { p.BackoffDelay = "1s" }, false},
+		{"backoff-limit", func(p *service.Process) { p.BackoffLimit = "1m" }, false},
+		{"backoff-factor", func(p *service.Process) { p.BackoffFactor = 3 }, false},
+		{"startup-timeout", func(p *service.Process) { p.StartupTimeout = "9s" }, false},
 	}
-}
 
-// TestProcessConfigChangedNoOp verifies that identical configs report no change.
-func TestProcessConfigChangedNoOp(t *testing.T) {
-	t.Parallel()
-	p := service.Process{Command: "/bin/app", Args: []string{"-x"}}
-	if processConfigChanged(p, p) {
-		t.Error("processConfigChanged must return false for identical config")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			updated := base
+			tc.edit(&updated)
+			if got := processConfigChanged(base, updated); got != tc.want {
+				verb := "must"
+				if !tc.want {
+					verb = "must not"
+				}
+				t.Errorf("processConfigChanged after changing %s = %v; a change to "+
+					"%s %s force a restart", tc.name, got, tc.name, verb)
+			}
+			// The comparison must be symmetric: reloading back to the old
+			// config has to be detected just the same.
+			if got := processConfigChanged(updated, base); got != tc.want {
+				t.Errorf("processConfigChanged is asymmetric for %s: reverse = %v, want %v",
+					tc.name, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -558,6 +637,139 @@ func TestInitiateShutdownIdempotent(t *testing.T) {
 	if d.exitCode.Load() != 1 {
 		t.Errorf("expected exitCode=1, got %d", d.exitCode.Load())
 	}
+}
+
+// TestInitiateShutdownConcurrent pins that shutdown starts exactly once under
+// contention, which sequential idempotence does not cover. Two SIGTERMs, or a
+// SIGTERM racing an exit action, enter initiateShutdown together; a
+// check-then-set instead of a compare-and-swap lets both past and closes
+// shutdownCh twice — "close of closed channel" in PID 1, mid-shutdown.
+func TestInitiateShutdownConcurrent(t *testing.T) {
+	t.Parallel()
+	// The window is a couple of instructions wide, so racers are released by a
+	// spin barrier (tighter than a channel close) over many rounds. Each round
+	// is cheap: with no live services, initiateShutdown is the flag and close.
+	for round := range 400 {
+		d := newTestDaemon([]service.Process{{Name: "app", Command: "/bin/app"}})
+
+		const racers = 64
+		var panicked atomic.Int32
+		var ready, release atomic.Int32
+		var wg sync.WaitGroup
+		for range racers {
+			wg.Go(func() {
+				defer func() {
+					if r := recover(); r != nil {
+						panicked.Add(1)
+					}
+				}()
+				ready.Add(1)
+				for release.Load() == 0 {
+					runtime.Gosched()
+				}
+				d.initiateShutdown(0)
+			})
+		}
+		for ready.Load() < racers {
+			runtime.Gosched()
+		}
+		release.Store(1)
+		wg.Wait()
+
+		if n := panicked.Load(); n != 0 {
+			t.Fatalf("round %d: %d of %d concurrent initiateShutdown calls panicked; "+
+				"entry must be a single compare-and-swap so shutdownCh is closed once",
+				round, n, racers)
+		}
+		if !d.shuttingDown.Load() {
+			t.Fatalf("round %d: daemon not marked as shutting down", round)
+		}
+	}
+}
+
+// TestStartServiceConcurrentForksOnce pins the double-start guard. Callers test
+// IsRunning() without the lock — the startup layer, the control socket, the
+// restart handler — so two can reach startService for one stopped service. The
+// loser's pid would sit in pidMap with nobody waiting on it and its done
+// channel never closed, so shutdown would wait on a service already gone.
+func TestStartServiceConcurrentForksOnce(t *testing.T) {
+	d := newTestDaemon([]service.Process{
+		{Name: "app", Command: "/bin/sleep", Args: []string{"30"}},
+	})
+	svc := d.services["app"]
+	t.Cleanup(func() { killAllChildren(d) })
+
+	const racers = 8
+	var forks atomic.Int32
+	var already atomic.Int32
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range racers {
+		wg.Go(func() {
+			<-start
+			switch _, err := d.startService(svc); err {
+			case nil:
+				forks.Add(1)
+			case errAlreadyRunning:
+				already.Add(1)
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	if got := forks.Load(); got != 1 {
+		t.Errorf("%d of %d concurrent starts forked; exactly 1 must win", got, racers)
+	}
+	if got := already.Load(); got != racers-1 {
+		t.Errorf("%d starts reported errAlreadyRunning, want %d", got, racers-1)
+	}
+	d.mu.Lock()
+	pids := len(d.pidMap)
+	d.mu.Unlock()
+	if pids != 1 {
+		t.Errorf("pidMap holds %d pids after a concurrent start storm, want 1 "+
+			"(a second fork orphans its pid and leaks its done channel)", pids)
+	}
+}
+
+// TestHandleCheckFailureRestartNotDropped pins that a check-driven restart is
+// queued, never discarded. The service is already stopped by the time the
+// request is enqueued, so dropping it leaves it down for good — and since the
+// stop collapses the exit code to 0, the default on-success: shutdown takes the
+// daemon with it. A non-blocking send looks like lock hygiene and does exactly
+// that.
+func TestHandleCheckFailureRestartNotDropped(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon([]service.Process{
+		{Name: "app", Command: "/bin/app", OnCheckFailure: map[string]string{"probe": "restart"}},
+	})
+	// A full channel is the interesting case: the send must wait for room
+	// rather than give up.
+	d.restartCh = make(chan restartReq, 1)
+	d.restartCh <- restartReq{}
+
+	done := make(chan struct{})
+	go func() {
+		d.handleCheckFailure("probe")
+		close(done)
+	}()
+
+	// Make room; the queued request must then arrive.
+	time.Sleep(100 * time.Millisecond)
+	<-d.restartCh
+
+	select {
+	case req := <-d.restartCh:
+		if req.svc == nil || req.svc.Name != "app" {
+			t.Errorf("queued restart is for %v, want app", req.svc)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("check-failure restart was dropped instead of queued; the send " +
+			"must block until the channel has room")
+	}
+	<-done
+	d.senderWg.Wait()
 }
 
 // TestStartServiceRejectsReplacedService verifies that startService returns
@@ -797,5 +1009,199 @@ func TestReloadBlockedDuringStartup(t *testing.T) {
 	d.started.Store(true)
 	if _, err := d.reload(); err == nil || strings.Contains(err.Error(), "starting up") {
 		t.Errorf("after started, reload must pass the gate; got: %v", err)
+	}
+}
+
+// TestRestartPendingBookkeeping pins the take-once semantics of the
+// restart-pending flag: it suppresses exactly one ServiceExited, the one the
+// restart caused. Never cleared, it suppresses every later exit too and
+// `exits`/`fail` stop counting real crashes; set for a service that is not
+// running, it waits around and swallows the next genuine crash.
+func TestRestartPendingBookkeeping(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon([]service.Process{
+		{
+			Name: "app", Command: "/bin/app",
+			OnCheckFailure: map[string]string{"probe": "restart"},
+		},
+	})
+
+	// Taking an unset flag is false, and taking a set flag consumes it.
+	if d.takeRestartPending("app") {
+		t.Error("takeRestartPending on a service with no pending restart = true")
+	}
+	d.markRestartPending("app")
+	if !d.takeRestartPending("app") {
+		t.Fatal("takeRestartPending did not observe the pending restart")
+	}
+	if d.takeRestartPending("app") {
+		t.Error("the pending flag survived being taken; it must suppress exactly " +
+			"one exit, not every exit from now on")
+	}
+
+	// A check failure against a service that is not running must not leave a
+	// flag behind: there will be no matching exit to consume it, so it would
+	// swallow the service's next real crash.
+	d.handleCheckFailure("probe")
+	if d.takeRestartPending("app") {
+		t.Error("a check failure on a stopped service left a restart-pending flag; " +
+			"it would suppress the next genuine crash")
+	}
+	d.senderWg.Wait()
+}
+
+// TestBuildServicesResolvesGlobalPrefix pins that the effective prefix is
+// written back into the process config. Output looks identical either way —
+// service.New takes the global prefix as a parameter — so what breaks is
+// reload: processConfigChanged compares Proc.Prefix, and a changed top-level
+// `prefix:` reads as no change at all.
+func TestBuildServicesResolvesGlobalPrefix(t *testing.T) {
+	t.Parallel()
+	build := func(global, perService string) service.Process {
+		d := &daemon{
+			cfg: &yml.Config{
+				Prefix: global,
+				Processes: []service.Process{
+					{Name: "app", Command: "/bin/app", Prefix: perService},
+				},
+			},
+			m:         metrics.New(),
+			pidMap:    make(map[int]*service.Service),
+			restartCh: make(chan restartReq, 64),
+		}
+		if err := d.buildServices(); err != nil {
+			t.Fatalf("buildServices: %v", err)
+		}
+		return d.services["app"].Proc
+	}
+
+	if got := build("global", "").Prefix; got != "global" {
+		t.Errorf("Proc.Prefix = %q, want the global prefix %q", got, "global")
+	}
+	// An explicit per-service prefix still wins.
+	if got := build("global", "own").Prefix; got != "own" {
+		t.Errorf("Proc.Prefix = %q, want the per-service prefix %q", got, "own")
+	}
+	// And the whole point: a changed global prefix must look like a change.
+	if !processConfigChanged(build("before", ""), build("after", "")) {
+		t.Error("a changed top-level prefix was not detected as a config change, " +
+			"so a reload would leave services labelling output with the old prefix")
+	}
+}
+
+// TestRestartRefusedDuringShutdown pins that the control socket stops accepting
+// restarts once shutdown has begun. Mid-shutdown, a restart either stops a
+// service nothing will bring back or starts one after stopAll, leaving a child
+// that outlives the daemon.
+func TestRestartRefusedDuringShutdown(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon([]service.Process{{Name: "app", Command: "/bin/app"}})
+	ctrl := d.setupControl()
+
+	// Before shutdown the request is accepted.
+	if _, err := ctrl.RestartFn("app"); err != nil {
+		t.Fatalf("restart before shutdown: %v", err)
+	}
+	d.senderWg.Wait()
+
+	d.shuttingDown.Store(true)
+	if _, err := ctrl.RestartFn("app"); err == nil {
+		t.Error("a restart was accepted while the daemon was shutting down")
+	} else if !strings.Contains(err.Error(), "shutting down") {
+		t.Errorf("error %q should say the daemon is shutting down", err)
+	}
+}
+
+// TestLogsUnsubscribeStopsPipeGoroutines pins that tearing down a `logs -f`
+// subscription also releases the goroutines fanning stdout and stderr into the
+// merged channel. Closing the subscription channels does not do it: a fan-in
+// goroutine blocked *sending* into a full buffer never looks at its source
+// again, and only the stop channel frees it. That is the state a disconnected
+// client leaves behind, so each abandoned viewer parks two goroutines for the
+// life of the daemon.
+func TestLogsUnsubscribeStopsPipeGoroutines(t *testing.T) {
+	yes := true
+	d := newTestDaemon([]service.Process{
+		{Name: "app", Command: "/bin/app", LogCapture: &yes},
+	})
+	// Keep the noise out of the test log; the writers are only used as sources.
+	svc := d.services["app"]
+	svc.Stdout = logger.NewPrefixWriter(io.Discard, "app", "none")
+	svc.Stderr = logger.NewPrefixWriter(io.Discard, "app", "none")
+	ctrl := d.setupControl()
+
+	settle := func() int {
+		for range 40 {
+			runtime.Gosched()
+			time.Sleep(10 * time.Millisecond)
+		}
+		return runtime.NumGoroutine()
+	}
+	base := settle()
+
+	const cycles = 15
+	for range cycles {
+		_, merged, unsub, err := ctrl.LogsFn("app", true)
+		if err != nil {
+			t.Fatalf("LogsFn: %v", err)
+		}
+		// Fill the merged buffer and leave a fan-in goroutine mid-send, the way
+		// a client that stopped reading does. Never drain `merged`.
+		for i := range 1000 {
+			fmt.Fprintf(svc.Stdout, "line-%04d\n", i)
+		}
+		time.Sleep(20 * time.Millisecond)
+		if len(merged) == 0 {
+			t.Fatal("merged channel never filled; the test is not exercising the " +
+				"blocked-sender case")
+		}
+		unsub()
+	}
+
+	if after := settle(); after > base+4 {
+		t.Errorf("goroutine count went from %d to %d across %d subscribe/"+
+			"abandon/unsubscribe cycles; unsubscribing must signal the fan-in "+
+			"goroutines, not only close their sources", base, after, cycles)
+	}
+}
+
+// TestStatusRunningWinsOverScheduled pins the order the status branches are
+// tried in. A scheduled service is "scheduled" between ticks, but during a run
+// the operator needs to see that: the next cron time hides a live process, and
+// hides a run overstaying its schedule — which is when someone is looking.
+func TestStatusRunningWinsOverScheduled(t *testing.T) {
+	d := newTestDaemon([]service.Process{
+		{
+			Name: "job", Command: "/bin/sleep", Args: []string{"30"},
+			Startup: "scheduled", Schedule: "0 3 * * *",
+		},
+	})
+	ctrl := d.setupControl()
+	svc := d.services["job"]
+	t.Cleanup(func() { killAllChildren(d) })
+
+	// Between ticks: scheduled, with the next run time.
+	idle, err := ctrl.StatusFn("job")
+	if err != nil {
+		t.Fatalf("StatusFn: %v", err)
+	}
+	if !strings.Contains(idle, "scheduled") {
+		t.Errorf("idle status = %q, want it to mention scheduled", idle)
+	}
+
+	// Mid-run: running, with the pid.
+	if _, err := d.startService(svc); err != nil {
+		t.Fatalf("startService: %v", err)
+	}
+	live, err := ctrl.StatusFn("job")
+	if err != nil {
+		t.Fatalf("StatusFn: %v", err)
+	}
+	if !strings.Contains(live, "running") {
+		t.Errorf("status during a scheduled run = %q, want it to report running "+
+			"(a run in progress must not be reported as merely scheduled)", live)
+	}
+	if !strings.Contains(live, "pid") {
+		t.Errorf("status during a scheduled run = %q, want it to include the pid", live)
 	}
 }

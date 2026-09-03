@@ -15,9 +15,11 @@
 package logger
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -287,5 +289,175 @@ func TestLabelWriterPrependsLabels(t *testing.T) {
 	want := `env=production region="us east" [app] hello` + "\n"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestFileTargetRejectsWorldAccessibleFile pins the permission check on a
+// pre-existing log file. Service output can carry credentials and tokens, so a
+// file other users can *read* is the leak, not just one they can write — hence
+// the read bit is covered too, which only a negative test keeps true.
+func TestFileTargetRejectsWorldAccessibleFile(t *testing.T) {
+	for _, tc := range []struct {
+		mode os.FileMode
+		ok   bool
+	}{
+		{0o600, true},
+		{0o640, true},
+		{0o604, false}, // world-readable
+		{0o606, false}, // world-readable and writable
+		{0o602, false}, // world-writable
+		{0o666, false},
+	} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "app.log")
+		if err := os.WriteFile(path, []byte("existing\n"), tc.mode); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if err := os.Chmod(path, tc.mode); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		tgt, err := NewTarget("t", TargetConfig{Type: "file", Location: path})
+		if err == nil && tgt != nil {
+			tgt.Close()
+		}
+		if tc.ok && err != nil {
+			t.Errorf("mode %04o: unexpected error: %v", tc.mode, err)
+		}
+		if !tc.ok {
+			if err == nil {
+				t.Errorf("mode %04o: accepted a world-accessible log file", tc.mode)
+			} else if !strings.Contains(err.Error(), "world-accessible") {
+				t.Errorf("mode %04o: error %q should say the file is world-accessible",
+					tc.mode, err)
+			}
+		}
+	}
+}
+
+// TestWritersReportInputLength pins the io.Writer contract for every writer
+// that sanitises its input. Sanitising drops bytes, so reporting the number
+// *written* instead of the number *accepted* is a short write: io.Copy treats
+// it as ErrShortWrite and aborts, breaking log forwarding the moment a service
+// emits a control character.
+func TestWritersReportInputLength(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log")
+
+	// A line whose sanitised form is strictly shorter than the input.
+	line := []byte("before\x1b[31mred\x1b[0m\x07after\n")
+
+	tgt, err := NewTarget("t", TargetConfig{Type: "file", Location: path})
+	if err != nil {
+		t.Fatalf("NewTarget: %v", err)
+	}
+	defer tgt.Close()
+	n, err := tgt.Writer.Write(line)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if n != len(line) {
+		t.Errorf("file target Write returned %d for a %d-byte input; a writer that "+
+			"drops bytes while sanitising must still report the full input length",
+			n, len(line))
+	}
+	// Sanity: the bytes on disk really are shorter, so the case is live.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if len(data) >= len(line) {
+		t.Skipf("sanitiser removed nothing (%d bytes written); case not exercised",
+			len(data))
+	}
+
+	// The same contract with labels in front.
+	labelled := newLabelWriter(nopWriteCloser{}, map[string]string{"env": "test"})
+	n, err = labelled.Write(line)
+	if err != nil {
+		t.Fatalf("labelWriter.Write: %v", err)
+	}
+	if n != len(line) {
+		t.Errorf("labelWriter.Write returned %d for a %d-byte input, want %d",
+			n, len(line), len(line))
+	}
+}
+
+// nopWriteCloser discards everything, for exercising a writer's return values.
+type nopWriteCloser struct{}
+
+func (nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (nopWriteCloser) Close() error                { return nil }
+
+// TestNoRotationOnEmptyFile pins that one oversized line does not rotate an
+// empty file. Rotating a 0-byte file gains nothing — the line still has to be
+// written and still exceeds max-size — but it burns a retention slot per write,
+// so a service logging oversized lines spins the whole history out in a few.
+func TestNoRotationOnEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log")
+
+	tgt, err := NewTarget("t", TargetConfig{
+		Type: "file", Location: path, MaxSize: "64B", MaxFiles: 3,
+	})
+	if err != nil {
+		t.Fatalf("NewTarget: %v", err)
+	}
+	defer tgt.Close()
+
+	// One line, comfortably over max-size, into a brand new (empty) file.
+	big := append(bytes.Repeat([]byte("x"), 200), '\n')
+	if _, err := tgt.Writer.Write(big); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := os.Stat(path + ".1"); err == nil {
+		t.Error("an empty file was rotated before its first write; rotation must " +
+			"only happen when there is something to preserve")
+	}
+
+	// The line is on disk, and the next oversized write does rotate — the
+	// guard is about the empty case only.
+	if _, err := tgt.Writer.Write(big); err != nil {
+		t.Fatalf("second Write: %v", err)
+	}
+	if _, err := os.Stat(path + ".1"); err != nil {
+		t.Errorf("a non-empty file over max-size was not rotated: %v", err)
+	}
+}
+
+// TestSyslogWriterReportsInputLength is the syslog half of the contract in
+// TestWritersReportInputLength: sanitising shortens the payload, but Write must
+// report the caller's byte count or io.Copy calls it ErrShortWrite and stops.
+func TestSyslogWriterReportsInputLength(t *testing.T) {
+	// A real UDP sink, so syslog.Dial has somewhere to send.
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("no UDP loopback available: %v", err)
+	}
+	defer pc.Close()
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			if _, _, err := pc.ReadFrom(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	tgt, err := NewTarget("sl", TargetConfig{
+		Type: "syslog", Location: "udp://" + pc.LocalAddr().String(),
+	})
+	if err != nil {
+		t.Skipf("syslog target unavailable: %v", err)
+	}
+	defer tgt.Close()
+
+	line := []byte("before\x1b[31mred\x1b[0m\x07after\n")
+	n, err := tgt.Writer.Write(line)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if n != len(line) {
+		t.Errorf("syslog Write returned %d for a %d-byte input; a writer that "+
+			"sanitises must still report the full input length", n, len(line))
 	}
 }

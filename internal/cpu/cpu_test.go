@@ -15,6 +15,7 @@
 package cpu
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -304,6 +305,56 @@ func TestAvailable_MinOfAll(t *testing.T) {
 	}
 }
 
+// TestAvailable_SingleLimitWins drives Available() with one limit in play at a
+// time. TestAvailable_MinOfAll pairs a CFS quota with a narrower cpuset, so the
+// cpuset masks the quota comparison — available() could ignore the quota there
+// and still be right. Alone, that comparison is all that stands between a
+// quota-limited container and a worker pool sized for the whole host.
+func TestAvailable_SingleLimitWins(t *testing.T) {
+	if runtime.NumCPU() < 3 {
+		t.Skip("needs >= 3 host CPUs to tell a limit apart from the host count")
+	}
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		want  int
+	}{
+		// 200000/100000 = 2 CPUs, and no cpuset at all.
+		{"cfs only", map[string]string{"cpu.max": "200000 100000\n"}, 2},
+		// A cpuset of two CPUs, and no quota at all.
+		{"cpuset only", map[string]string{"cpuset.cpus.effective": "0-1\n"}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := setupFakeFS(t)
+
+			selfCg := filepath.Join(dir, "self_cgroup")
+			if err := os.WriteFile(selfCg, []byte("0::/\n12:cpuset:/\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cgroup.ProcSelfCgroup = selfCg
+
+			cgRoot := filepath.Join(dir, "cg2")
+			if err := os.MkdirAll(cgRoot, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for name, body := range tc.files {
+				if err := os.WriteFile(filepath.Join(cgRoot, name), []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cgroupV2Root = cgRoot
+			cgroupV1CPU = filepath.Join(dir, "nonexistent")
+			cgroupV1Alt = filepath.Join(dir, "nonexistent")
+			cgroupV1Set = filepath.Join(dir, "nonexistent")
+
+			if got := Available(); got != tc.want {
+				t.Errorf("Available() = %d, want %d (the cgroup limit must win over "+
+					"the host's %d CPUs)", got, tc.want, runtime.NumCPU())
+			}
+		})
+	}
+}
+
 func TestCgroupV2PrecedesV1(t *testing.T) {
 	dir := setupFakeFS(t)
 
@@ -426,5 +477,53 @@ func TestParseCPUMax(t *testing.T) {
 				t.Errorf("parseCPUMax(%q) = %d, want %d", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestAvailableIsCached pins that Available() probes the cgroup tree once. The
+// limits cannot change for a running container, and the value is read on every
+// service start and {{cpu}} expansion, so re-probing turns a constant into
+// per-spawn syscalls in PID 1.
+func TestAvailableIsCached(t *testing.T) {
+	dir := setupFakeFS(t)
+	selfCg := filepath.Join(dir, "self_cgroup")
+	if err := os.WriteFile(selfCg, []byte("0::/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cgroup.ProcSelfCgroup = selfCg
+
+	cgRoot := filepath.Join(dir, "cg2")
+	if err := os.MkdirAll(cgRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	quota := func(cpus int) {
+		t.Helper()
+		body := fmt.Sprintf("%d 100000\n", cpus*100000)
+		if err := os.WriteFile(filepath.Join(cgRoot, "cpu.max"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cgroupV2Root = cgRoot
+	cgroupV1CPU = filepath.Join(dir, "nonexistent")
+	cgroupV1Alt = filepath.Join(dir, "nonexistent")
+	cgroupV1Set = filepath.Join(dir, "nonexistent")
+
+	if runtime.NumCPU() < 3 {
+		t.Skip("needs >= 3 host CPUs to distinguish two quota values")
+	}
+	quota(1)
+	first := Available()
+	if first != 1 {
+		t.Fatalf("Available() = %d, want 1", first)
+	}
+
+	quota(2)
+	if second := Available(); second != first {
+		t.Errorf("Available() = %d after the quota changed, want the cached %d",
+			second, first)
+	}
+	resetCache()
+	if third := Available(); third != 2 {
+		t.Errorf("Available() = %d after resetCache, want 2", third)
 	}
 }

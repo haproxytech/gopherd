@@ -15,11 +15,13 @@
 package service
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -277,5 +279,88 @@ func TestResolveCredentialStrictGroups(t *testing.T) {
 	// Strict must never grant more groups than non-strict.
 	if len(strict.Groups) > len(loose.Groups) {
 		t.Errorf("strict granted more groups (%v) than non-strict (%v)", strict.Groups, loose.Groups)
+	}
+}
+
+// TestStrictGroupsNeedsAnExplicitGroup pins that `strict-groups` narrows the
+// group list only when a group was actually named. It means "use exactly the
+// group I named", so with none named there is nothing to be strict about, and
+// dropping the user's supplementary memberships instead removes access it is
+// meant to have — a docker socket, a shared data directory — with no config to
+// explain it.
+//
+// It needs a user with a supplementary group, which no stock account here has,
+// so the test creates one and restores /etc/group verbatim. Root-only.
+func TestStrictGroupsNeedsAnExplicitGroup(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to add a temporary group")
+	}
+	const (
+		groupFile = "/etc/group"
+		extraGID  = 60123
+		extraName = "gopherd-mutation-test"
+	)
+
+	original, err := os.ReadFile(groupFile)
+	if err != nil {
+		t.Skipf("cannot read %s: %v", groupFile, err)
+	}
+	if strings.Contains(string(original), extraName) {
+		t.Skipf("%s already contains %s", groupFile, extraName)
+	}
+	restore := func() {
+		tmp := groupFile + ".gopherd-test"
+		if err := os.WriteFile(tmp, original, 0o644); err == nil {
+			_ = os.Rename(tmp, groupFile)
+		}
+	}
+	// Append atomically: write the new content to a sibling and rename over.
+	updated := append(append([]byte{}, original...),
+		[]byte(fmt.Sprintf("%s:x:%d:root\n", extraName, extraGID))...)
+	tmp := groupFile + ".gopherd-test"
+	if err := os.WriteFile(tmp, updated, 0o644); err != nil {
+		t.Skipf("cannot stage %s: %v", tmp, err)
+	}
+	if err := os.Rename(tmp, groupFile); err != nil {
+		_ = os.Remove(tmp)
+		t.Skipf("cannot replace %s: %v", groupFile, err)
+	}
+	t.Cleanup(restore)
+
+	// Sanity: the supplementary group is visible, otherwise the case is not live.
+	u, err := user.Lookup("root")
+	if err != nil {
+		t.Fatalf("lookup root: %v", err)
+	}
+	ids, err := u.GroupIds()
+	if err != nil {
+		t.Skipf("GroupIds: %v", err)
+	}
+	if !slices.Contains(ids, strconv.Itoa(extraGID)) {
+		t.Skipf("supplementary group not visible to os/user (%v); nothing to assert", ids)
+	}
+
+	// strict-groups with no explicit group: the user keeps its memberships.
+	cred, err := ResolveCredential("root", "", nil, nil, true)
+	if err != nil {
+		t.Fatalf("ResolveCredential: %v", err)
+	}
+	if cred == nil {
+		t.Fatal("ResolveCredential returned nil for a named user")
+	}
+	if !slices.Contains(cred.Groups, uint32(extraGID)) {
+		t.Errorf("Groups = %v, want the user's supplementary group %d to be kept; "+
+			"strict-groups must only narrow the list when a group was named",
+			cred.Groups, extraGID)
+	}
+
+	// strict-groups *with* an explicit group: exactly that group, nothing else.
+	strict, err := ResolveCredential("root", "root", nil, nil, true)
+	if err != nil {
+		t.Fatalf("ResolveCredential (explicit group): %v", err)
+	}
+	if len(strict.Groups) != 1 || strict.Groups[0] != strict.Gid {
+		t.Errorf("Groups = %v, want exactly [%d] when strict-groups is set with an "+
+			"explicit group", strict.Groups, strict.Gid)
 	}
 }

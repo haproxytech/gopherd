@@ -52,6 +52,50 @@ func TestDeliverUnknownPidReturnsFalse(t *testing.T) {
 	}
 }
 
+// waiterCount reads the registry size under its own lock; same-package access
+// keeps this a test-only detail rather than exported surface.
+func waiterCount(r *Registry) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.waiters)
+}
+
+// TestDeliverConsumesWaiter pins that a delivered pid is unregistered. Each
+// status channel buffers exactly one send, so a waiter left behind makes the
+// next Deliver for that recycled pid block on a full buffer — holding the
+// registry lock, stalling the reap loop for good — and leaks a map entry per
+// probe besides.
+func TestDeliverConsumesWaiter(t *testing.T) {
+	r := New(nil)
+	pid, status, err := r.Start(func() (int, error) { return 42, nil })
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !r.Deliver(pid, 7) {
+		t.Fatal("first Deliver returned false for a registered pid")
+	}
+	// Drain so a lingering waiter's buffer would have room; the point is that
+	// no waiter should remain to claim a second delivery at all.
+	<-status
+	if r.Deliver(pid, 9) {
+		t.Fatal("second Deliver claimed the same pid again: the waiter was not " +
+			"removed on delivery")
+	}
+
+	// The registry must not grow across many probe lifecycles.
+	for i := range 200 {
+		p, ch, err := r.Start(func() (int, error) { return 1000 + i, nil })
+		if err != nil {
+			t.Fatalf("Start %d: %v", i, err)
+		}
+		r.Deliver(p, 0)
+		<-ch
+	}
+	if n := waiterCount(r); n != 0 {
+		t.Errorf("registry holds %d waiters after 200 delivered probes, want 0", n)
+	}
+}
+
 func TestForgetDropsWaiter(t *testing.T) {
 	r := New(nil)
 	pid, _, err := r.Start(func() (int, error) { return 42, nil })

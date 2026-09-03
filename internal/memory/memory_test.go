@@ -15,6 +15,7 @@
 package memory
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -265,5 +266,57 @@ func TestCgroupV2_PathTraversalBlocked(t *testing.T) {
 	got := cgroupV2MemMiB()
 	if got != 0 {
 		t.Errorf("cgroupV2MemMiB() with traversal path = %d, want 0", got)
+	}
+}
+
+// TestAvailableIsCached pins that Available() reads the system once. The value
+// is consulted on every service start and {{mem}} expansion and cannot change
+// for a running container, so without the cache PID 1 re-reads /proc/meminfo
+// and walks the cgroup tree per spawn. A cache is only observable from outside
+// by changing the source and still getting the old answer.
+func TestAvailableIsCached(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "meminfo")
+	orig := procMeminfo
+	t.Cleanup(func() { procMeminfo = orig; resetCache() })
+	procMeminfo = path
+	resetCache()
+
+	write := func(kb int) {
+		t.Helper()
+		body := fmt.Sprintf("MemTotal:       %d kB\nMemFree: 1 kB\n", kb)
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write meminfo: %v", err)
+		}
+	}
+
+	write(2 * 1024 * 1024) // 2 GiB
+	first, err := Available()
+	if err != nil {
+		t.Fatalf("Available: %v", err)
+	}
+	if first != 2048 {
+		t.Fatalf("Available() = %d MiB, want 2048", first)
+	}
+
+	// Change the source out from under it: the cached answer must stand.
+	write(8 * 1024 * 1024) // 8 GiB
+	second, err := Available()
+	if err != nil {
+		t.Fatalf("Available (cached): %v", err)
+	}
+	if second != first {
+		t.Errorf("Available() = %d MiB after the source changed, want the cached "+
+			"%d MiB; the value must be read once, not on every call", second, first)
+	}
+
+	// And the cache is resettable, so the new value is picked up deliberately.
+	resetCache()
+	third, err := Available()
+	if err != nil {
+		t.Fatalf("Available (after reset): %v", err)
+	}
+	if third != 8192 {
+		t.Errorf("Available() = %d MiB after resetCache, want 8192", third)
 	}
 }

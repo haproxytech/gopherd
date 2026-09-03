@@ -51,6 +51,43 @@ func TestSelfPath(t *testing.T) {
 	}
 }
 
+// TestSelfPathControllerExactMatch pins that a controller name is matched whole,
+// not as a substring. "cpu" prefixes both "cpuacct" and "cpuset", which on a
+// real host have their own lines and paths, so a substring match takes whichever
+// comes first and reads another controller's limits.
+func TestSelfPathControllerExactMatch(t *testing.T) {
+	dir := t.TempDir()
+	orig := ProcSelfCgroup
+	t.Cleanup(func() { ProcSelfCgroup = orig })
+
+	selfCg := filepath.Join(dir, "self_cgroup")
+	// cpuset and cpuacct are listed before cpu, each with a distinct path, so a
+	// substring match cannot accidentally land on the right one.
+	if err := os.WriteFile(selfCg, []byte(
+		"11:cpuset:/set-path\n"+
+			"10:cpuacct:/acct-path\n"+
+			"9:cpu:/cpu-path\n"+
+			"8:memory:/mem-path\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ProcSelfCgroup = selfCg
+
+	for _, tc := range []struct{ ctrl, want string }{
+		{"cpu", "/cpu-path"},
+		{"cpuset", "/set-path"},
+		{"cpuacct", "/acct-path"},
+		{"memory", "/mem-path"},
+		// A prefix of a real controller is not a controller.
+		{"cp", ""},
+		{"mem", ""},
+	} {
+		if got := SelfPath(tc.ctrl); got != tc.want {
+			t.Errorf("SelfPath(%q) = %q, want %q", tc.ctrl, got, tc.want)
+		}
+	}
+}
+
 func TestWalkUpLimit(t *testing.T) {
 	dir := t.TempDir()
 

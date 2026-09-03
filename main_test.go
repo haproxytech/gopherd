@@ -172,6 +172,92 @@ log-targets:
 	}
 }
 
+// TestReadConfigFileRejectsUntrustedFile pins the trust checks on the config
+// path. They have no functional symptom by construction — a world-writable or
+// foreign-owned config parses exactly like a safe one — so only a negative test
+// keeps them in place. The file dictates what PID 1 executes and as whom, so
+// anyone who can write it owns the container.
+func TestReadConfigFileRejectsUntrustedFile(t *testing.T) {
+	const body = "processes:\n  - name: app\n    command: \"true\"\n"
+
+	// Accepted: owner-only and group-readable modes owned by us.
+	for _, mode := range []os.FileMode{0o400, 0o600, 0o640, 0o644} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "ok.yml")
+		if err := os.WriteFile(path, []byte(body), mode); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		if _, err := readConfigFile(path); err != nil {
+			t.Errorf("mode %04o: unexpected error: %v", mode, err)
+		}
+	}
+
+	// Rejected: any mode another user can write to.
+	for _, mode := range []os.FileMode{0o602, 0o606, 0o642, 0o666, 0o777} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "loose.yml")
+		if err := os.WriteFile(path, []byte(body), mode); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		_, err := readConfigFile(path)
+		if err == nil {
+			t.Errorf("mode %04o: expected refusal for a world-writable config", mode)
+			continue
+		}
+		if !strings.Contains(err.Error(), "world-writable") {
+			t.Errorf("mode %04o: error %q should say the config is world-writable",
+				mode, err)
+		}
+	}
+
+	// Rejected: a symlinked config path. O_NOFOLLOW makes the check atomic with
+	// the open, so there is no window to swap the target.
+	t.Run("symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "real.yml")
+		link := filepath.Join(dir, "link.yml")
+		if err := os.WriteFile(target, []byte(body), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		if _, err := readConfigFile(link); err == nil {
+			t.Error("expected refusal for a symlinked config path")
+		} else if !strings.Contains(err.Error(), "symlink") {
+			t.Errorf("error %q should say the config is a symlink", err)
+		}
+	})
+
+	// Rejected: owned by a different, non-root uid. Only meaningful when the
+	// test process can chown, i.e. running as root.
+	t.Run("foreign owner", func(t *testing.T) {
+		if os.Geteuid() != 0 {
+			t.Skip("needs root to chown the config to another uid")
+		}
+		dir := t.TempDir()
+		path := filepath.Join(dir, "foreign.yml")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		const otherUID = 65534 // nobody
+		if err := os.Chown(path, otherUID, otherUID); err != nil {
+			t.Skipf("chown unavailable: %v", err)
+		}
+		if _, err := readConfigFile(path); err == nil {
+			t.Errorf("expected refusal for a config owned by uid %d", otherUID)
+		} else if !strings.Contains(err.Error(), "owned by uid") {
+			t.Errorf("error %q should name the unexpected owner", err)
+		}
+	})
+}
+
 // TestReadConfigFileRejectsOversized verifies that readConfigFile refuses a
 // config file larger than the size cap. Without the cap, a misconfigured
 // GOPHERD_CONFIG or a swapped-out config could drive PID 1 into an

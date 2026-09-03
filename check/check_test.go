@@ -16,12 +16,17 @@ package check
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -651,5 +656,156 @@ func TestHTTPCheckIsolatedTransport(t *testing.T) {
 	}
 	if c.httpClient.Transport == http.DefaultTransport {
 		t.Error("HTTP check shares http.DefaultTransport; pool must be isolated")
+	}
+}
+
+// TestFailureActionFiresOncePerTransition pins that the failure action is edge
+// triggered, not level triggered. The callback is the daemon's
+// restart/shutdown trigger, so firing it every probe while a service stays down
+// turns one unhealthy service into a restart per period, forever. Only counting
+// callbacks over several periods sees it; waiting for the first call passes
+// either way.
+func TestFailureActionFiresOncePerTransition(t *testing.T) {
+	t.Parallel()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer ts.Close()
+
+	var fires atomic.Int32
+	c, err := New("edge", Config{
+		HTTP:         &HTTP{URL: ts.URL},
+		Period:       "50ms",
+		Timeout:      "500ms",
+		Threshold:    1,
+		InitialDelay: "0s",
+	}, func(string) { fires.Add(1) }, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	c.Run()
+	defer c.Stop()
+
+	// Stay unhealthy for many periods.
+	time.Sleep(600 * time.Millisecond)
+	if got := fires.Load(); got != 1 {
+		t.Errorf("failure action fired %d times while the check stayed down, want 1: "+
+			"the action must fire on the healthy->unhealthy transition only", got)
+	}
+}
+
+// TestHTTPDoesNotFollowRedirects pins that the HTTP probe treats a redirect as
+// a failure instead of chasing it. Following one makes the probe an SSRF
+// primitive — a health URL that 302s to a metadata endpoint, fetched by PID 1 —
+// and makes a broken service look healthy when its proxy redirects to a login
+// page.
+func TestHTTPDoesNotFollowRedirects(t *testing.T) {
+	t.Parallel()
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHits.Add(1)
+		w.WriteHeader(200)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	c, err := New("redirect", Config{
+		HTTP:    &HTTP{URL: redirector.URL},
+		Period:  "1s",
+		Timeout: "2s",
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := c.Execute(); err == nil {
+		t.Error("a 302 response must fail the check, not be followed to its target")
+	}
+	if got := targetHits.Load(); got != 0 {
+		t.Errorf("redirect target was fetched %d times; the probe must not follow "+
+			"redirects (SSRF)", got)
+	}
+}
+
+// TestExecProbeCancelKillsProcessGroup pins that a timed-out exec probe takes
+// its whole process group with it. Probes run every period, so one that leaves
+// a forked grandchild behind per timeout accumulates orphans for the life of
+// the container.
+func TestExecProbeCancelKillsProcessGroup(t *testing.T) {
+	t.Parallel()
+	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
+
+	c, err := New("group", Config{
+		// Fork a long sleeper, publish its pid, then outlive the timeout.
+		Exec: &Exec{Command: "/bin/sh", Args: []string{
+			"-c", "sleep 60 & echo $! > " + pidFile + "; sleep 60",
+		}},
+		Period:  "1s",
+		Timeout: "300ms",
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := c.Execute(); err == nil {
+		t.Fatal("probe should have timed out")
+	}
+
+	// The grandchild pid must be gone: the cancel has to signal the group.
+	var pid int
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		data, rerr := os.ReadFile(pidFile)
+		if rerr == nil {
+			if p, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil && p > 0 {
+				pid = p
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if pid == 0 {
+		t.Skip("probe never published a grandchild pid")
+	}
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return // gone: correct
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL) // don't leak the stray
+	t.Errorf("grandchild %d survived the probe timeout; cancelling an exec probe "+
+		"must signal the whole process group, not just the leader", pid)
+}
+
+// TestTCPPortBoundaries pins both ends of the valid TCP port range. 65535 is
+// legitimate, and rejecting it turns a working config into a load failure — an
+// off-by-one no test sees unless the boundary itself is in the table.
+func TestTCPPortBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		port int
+		ok   bool
+	}{
+		{1, true},
+		{80, true},
+		{65534, true},
+		{65535, true}, // the last valid port
+		{0, false},
+		{-1, false},
+		{65536, false},
+	} {
+		_, err := New("tcp-bound", Config{
+			TCP:    &TCP{Host: "localhost", Port: tc.port},
+			Period: "1s", Timeout: "1s",
+		}, nil, nil)
+		if tc.ok && err != nil {
+			t.Errorf("port %d rejected: %v", tc.port, err)
+		}
+		if !tc.ok && err == nil {
+			t.Errorf("port %d accepted, want rejection", tc.port)
+		}
 	}
 }

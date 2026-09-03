@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -169,10 +170,69 @@ func TestSubscribeSlowConsumerNoCorruption(t *testing.T) {
 	unsub()
 	<-done
 
+	// Shape alone is not enough: a buffer overwritten while queued is replaced
+	// by another well-formed line. The give-away is a repeated or out-of-order
+	// sequence number — the same buffer handed over twice.
+	seen := make(map[int]bool, len(received))
+	prev := -1
 	for i, line := range received {
 		s := strings.TrimSuffix(string(line), "\n")
 		if !strings.HasPrefix(s, "line-") || len(s) != len("line-000000") {
 			t.Fatalf("received[%d] = %q; corrupted line (writer overwrote a buf still in-flight)", i, s)
+		}
+		n, err := strconv.Atoi(strings.TrimPrefix(s, "line-"))
+		if err != nil {
+			t.Fatalf("received[%d] = %q: unparseable sequence number", i, s)
+		}
+		if seen[n] {
+			t.Fatalf("received[%d] = %q: line delivered twice — the writer reused a "+
+				"buffer that was still queued for the subscriber", i, s)
+		}
+		seen[n] = true
+		if n <= prev {
+			t.Fatalf("received[%d] = %q arrived after line-%06d; queued buffers must "+
+				"not be overwritten out of order", i, s, prev)
+		}
+		prev = n
+	}
+	if len(received) == 0 {
+		t.Fatal("subscriber received nothing")
+	}
+}
+
+// TestRecentReturnsIndependentCopies pins that Recent hands out deep copies.
+// The ring reuses its slots, so returning them lets the writer rewrite bytes
+// the control-socket handler is still formatting: torn `gopherd logs` output,
+// and a data race. Re-reading the returned slices after the ring has moved on
+// is what exposes the aliasing.
+func TestRecentReturnsIndependentCopies(t *testing.T) {
+	t.Parallel()
+	pw := NewPrefixWriter(io.Discard, "svc", "none")
+
+	// Originals long, overwrites short: the ring reuses a slot in place only
+	// when the new line fits the old capacity, which is when aliasing shows.
+	const pad = "-padding-padding-padding-padding-padding-padding"
+	for i := range 5 {
+		fmt.Fprintf(pw, "original-%02d%s\n", i, pad)
+	}
+	snap := pw.Recent()
+	if len(snap) != 5 {
+		t.Fatalf("Recent() returned %d lines, want 5", len(snap))
+	}
+	before := make([]string, len(snap))
+	for i, line := range snap {
+		before[i] = string(line)
+	}
+
+	// Fill the ring several times over so every slot is reused.
+	for i := range defaultRingSize * 3 {
+		fmt.Fprintf(pw, "x-%04d\n", i)
+	}
+
+	for i, line := range snap {
+		if got := string(line); got != before[i] {
+			t.Errorf("Recent()[%d] changed from %q to %q after later writes; "+
+				"Recent must copy each slot, not alias the ring", i, before[i], got)
 		}
 	}
 }
