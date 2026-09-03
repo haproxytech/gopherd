@@ -162,6 +162,14 @@ func run(entrypointArgs []string) int {
 
 	d.startServiceLayers(cfg, startLayers)
 
+	// Hand Wait4(-1) to the reap loop before starting anything that forks: a
+	// probe that sees an inactive registry waits on its own child, loses the
+	// status to the loop once it starts, and reports inconclusive. It must
+	// stay after startServiceLayers, whose oneshot waits and ready probes are
+	// correct only while the registry is inactive. Registering before the
+	// loop exists is safe -- wakeReapLoop is a buffered, non-blocking send.
+	d.reaper.Activate()
+
 	d.startChecks()
 	d.startSchedulers()
 
@@ -248,10 +256,9 @@ func run(entrypointArgs []string) int {
 	// it so the reap loop's idle path reads no shared (reloadable) config.
 	subreaper := cfg.Subreaper
 
-	// Single reap loop: handles managed children and orphaned zombies. From
-	// here on it owns Wait4(-1), so exec probes must take exit statuses from
-	// the registry instead of waiting themselves.
-	d.reaper.Activate()
+	// Single reap loop: handles managed children and orphaned zombies. It owns
+	// Wait4(-1), so probes take their exit statuses from the registry
+	// (activated above) rather than waiting themselves and racing this loop.
 	for {
 		var ws syscall.WaitStatus
 		pid, err := syscall.Wait4(-1, &ws, 0, nil)

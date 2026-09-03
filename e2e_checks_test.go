@@ -435,3 +435,118 @@ processes:
 		t.Fatal("daemon did not exit after threshold breaches")
 	}
 }
+
+// TestE2EExecProbesAreNeverInconclusive pins that exec probes take their exit
+// status from the reap loop's registry instead of waiting on the child. Once
+// the daemon owns Wait4(-1) a targeted cmd.Wait() loses with ECHILD, and the
+// probe reports ErrInconclusive — neither success nor failure, by design. So
+// exec checks quietly stop working: nothing is ever marked unhealthy, no action
+// fires, and this log line is the only trace. A check that trips its threshold
+// anyway proves nothing; the absence of lost statuses does.
+//
+// The startup window — each check's first probe, before the reap loop runs —
+// is covered by TestE2EExecProbeAtStartupKeepsItsStatus.
+func TestE2EExecProbesAreNeverInconclusive(t *testing.T) {
+	td := startDaemon(t, `
+processes:
+  - name: app
+    command: sleep
+    args: ["300"]
+    on-success: ignore
+    on-failure: ignore
+    on-check-failure:
+      quick-a: ignore
+      quick-b: ignore
+      quick-c: ignore
+
+checks:
+  quick-a:
+    exec:
+      command: /bin/true
+    period: 50ms
+    timeout: 2s
+    threshold: 10000
+    initial-delay: 0s
+  quick-b:
+    exec:
+      command: /bin/true
+    period: 50ms
+    timeout: 2s
+    threshold: 10000
+    initial-delay: 0s
+  quick-c:
+    exec:
+      command: /bin/true
+    period: 50ms
+    timeout: 2s
+    threshold: 10000
+    initial-delay: 0s
+`)
+	defer td.kill()
+	td.WaitRunning("app", 10*time.Second)
+
+	// Three checks at 50 ms for 5 s is on the order of 300 probes — enough
+	// that a raced status is a near-certainty rather than a coin flip.
+	time.Sleep(5 * time.Second)
+	out := td.Output()
+	if n := strings.Count(out, "inconclusive probe"); n != 0 {
+		t.Errorf("%d exec probes lost their exit status; the probe must take its "+
+			"status from the reap loop's registry instead of waiting on the child "+
+			"itself", n)
+	}
+
+	td.stop()
+}
+
+// TestE2EExecProbeAtStartupKeepsItsStatus covers the startup window: a probe
+// firing before the reap loop runs must still get its exit status.
+//
+// Ordering is the whole point. A probe decides at *fork* time whether to wait on
+// its own child or read the registry, so activating the registry after the
+// checkers start leaves a window where it chooses to wait and then loses the
+// status to Wait4(-1) moments later.
+//
+// The window is about a millisecond wide and landing in it is down to goroutine
+// scheduling, so the test does not depend on one probe: `initial-delay: 0s`
+// aims every check at it at once, enough that all of them missing is unlikely.
+func TestE2EExecProbeAtStartupKeepsItsStatus(t *testing.T) {
+	const probes = 12
+	var checks, actions strings.Builder
+	checks.WriteString("\nchecks:\n")
+	for i := range probes {
+		fmt.Fprintf(&actions, "      startup-%02d: ignore\n", i)
+		fmt.Fprintf(&checks, `  startup-%02d:
+    exec:
+      command: /bin/sh
+      args: ["-c", "sleep 0.2"]
+    period: 30s
+    timeout: 10s
+    threshold: 100
+    initial-delay: 0s
+`, i)
+	}
+
+	td := startDaemon(t, fmt.Sprintf(`
+processes:
+  - name: app
+    command: sleep
+    args: ["300"]
+    on-success: ignore
+    on-failure: ignore
+    on-check-failure:
+%s%s`, actions.String(), checks.String()))
+	defer td.kill()
+	td.WaitRunning("app", 15*time.Second)
+
+	// Every probe fires immediately and runs for ~200 ms; give them time to be
+	// reaped and reported.
+	time.Sleep(2 * time.Second)
+
+	out := td.Output()
+	if strings.Contains(out, "inconclusive") || strings.Contains(out, "probe result lost") {
+		t.Errorf("a probe lost its exit status at startup; the reap-loop registry "+
+			"must be activated before any checker can fork:\n%s", out)
+	}
+
+	td.stop()
+}
