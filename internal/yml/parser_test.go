@@ -858,3 +858,248 @@ func TestParseUnknownBlockIndicatorRejected(t *testing.T) {
 		t.Errorf("error %q should mention the indicator and line 1", err.Error())
 	}
 }
+
+// TestParseRejectsDuplicateMappingKey pins that a repeated key is an error, not
+// a silent pick. `Get` returns the first match, so a duplicated key would keep
+// the *first* value — the opposite of every other YAML implementation, and of
+// what an operator editing the file expects.
+func TestParseRejectsDuplicateMappingKey(t *testing.T) {
+	t.Parallel()
+	for _, src := range []string{
+		"prefix: a\nprefix: b\n",
+		"processes:\n  - name: app\n    command: /bin/a\n    command: /bin/b\n",
+		"control:\n  socket: /a\n  socket: /b\n",
+	} {
+		_, err := Parse([]byte(src))
+		if err == nil {
+			t.Errorf("duplicate key accepted in:\n%s", src)
+			continue
+		}
+		if !strings.Contains(err.Error(), "duplicate key") {
+			t.Errorf("error %q does not mention a duplicate key (source:\n%s)", err, src)
+		}
+	}
+}
+
+// TestParseRejectsTabIndentation pins the tab rejection. Indentation is counted
+// in spaces, so a tab-indented line measures as indent 0 and attaches to the
+// document root: a nested process key becomes a top-level key and is dropped,
+// silently.
+func TestParseRejectsTabIndentation(t *testing.T) {
+	t.Parallel()
+	for _, src := range []string{
+		"processes:\n\t- name: app\n",
+		"control:\n\tsocket: /run/x.sock\n",
+	} {
+		_, err := Parse([]byte(src))
+		if err == nil {
+			t.Errorf("tab indentation accepted in %q", src)
+			continue
+		}
+		if !strings.Contains(err.Error(), "tab") {
+			t.Errorf("error %q should name the tab character (source %q)", err, src)
+		}
+	}
+}
+
+// TestParseSiblingIndentMustMatchExactly pins that a block's keys are exactly
+// those at its own indent. An over-indented key belongs to the previous key's
+// block, not this one; tolerating a near-enough indent would let a two-space
+// slip move a setting into a different mapping with no error.
+//
+// It also documents the consequence: an over-indented key under a scalar value
+// is dropped silently, which is what the exact comparison produces.
+func TestParseSiblingIndentMustMatchExactly(t *testing.T) {
+	t.Parallel()
+	// `socket` is indented two spaces deeper than its sibling `socket-mode`.
+	src := "control:\n  socket-mode: \"0660\"\n    socket: /run/x.sock\n"
+	n, err := Parse([]byte(src))
+	if err != nil {
+		return // rejecting it outright is also acceptable
+	}
+	control := n.Get("control")
+	if got := control.Get("socket").String(); got != "" {
+		t.Errorf("over-indented key became a sibling (control.socket = %q); only "+
+			"keys at the block's own indent are its members", got)
+	}
+	var keys []string
+	for _, e := range control.Entries() {
+		keys = append(keys, e.Key)
+	}
+	if len(keys) != 1 || keys[0] != "socket-mode" {
+		t.Errorf("control keys = %v, want exactly [socket-mode]", keys)
+	}
+}
+
+// TestLiteralBlockChomping pins the exact bytes each block-scalar indicator
+// produces: `|` clips to one trailing newline, `|-` strips all, `|+` keeps
+// them. The payloads are embedded scripts and PEM blobs, which care about
+// their final newline, so the assertions are byte-exact.
+func TestLiteralBlockChomping(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"clip", "script: |\n  one\n  two\n", "one\ntwo\n"},
+		{"strip", "script: |-\n  one\n  two\n", "one\ntwo"},
+		{"keep", "script: |+\n  one\n  two\n", "one\ntwo\n"},
+		// A single line exercises the same three rules without the join.
+		{"clip single", "script: |\n  only\n", "only\n"},
+		{"strip single", "script: |-\n  only\n", "only"},
+		// Blank lines inside the block are content, not separators to drop.
+		{"blank line kept", "script: |\n  one\n\n  two\n", "one\n\ntwo\n"},
+		// Indentation relative to the first content line must survive.
+		{
+			"relative indent", "script: |\n  outer\n    inner\n  outer2\n",
+			"outer\n  inner\nouter2\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			n, err := Parse([]byte(tc.src))
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tc.src, err)
+			}
+			if got := n.Get("script").String(); got != tc.want {
+				t.Errorf("Parse(%q) script = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseRejectsUnplaceableLine pins that no line is ever silently discarded.
+//
+// parseBlock reports how far it got so its caller can continue in the enclosing
+// block. Two call sites have none — the top level and a list item's own block —
+// so there a leftover line is one the parser could not place, and ignoring the
+// position loses everything after it. That is how a two-space slip used to
+// delete whole config sections without a word.
+//
+// Both paths are covered: the top-level one truncates the rest of the document,
+// the list-item one the rest of that item.
+func TestParseRejectsUnplaceableLine(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		src  string
+		// line number the error must identify
+		line string
+	}{
+		{
+			// Over-indented key under a scalar value: everything after it,
+			// including whole top-level sections, used to vanish.
+			name: "top level truncated by an over-indented key",
+			src: "control:\n" +
+				"  socket: /run/x.sock\n" +
+				"    socket-mode: \"0660\"\n" +
+				"log-targets:\n" +
+				"  audit:\n" +
+				"    type: file\n",
+			line: "line 3",
+		},
+		{
+			name: "over-indented top-level key",
+			src:  "prefix: a\n  stray: b\n",
+			line: "line 2",
+		},
+		{
+			// Inside a list item: the rest of the item used to be dropped, so a
+			// service silently lost its args, env, or user.
+			name: "list item key over-indented under a scalar",
+			src: "processes:\n" +
+				"  - name: app\n" +
+				"    command: sleep\n" +
+				"      args: [\"300\"]\n",
+			line: "line 4",
+		},
+		{
+			name: "list item key under-indented",
+			src: "processes:\n" +
+				"  - name: app\n" +
+				"   command: sleep\n",
+			line: "line 3",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := Parse([]byte(tc.src))
+			if err == nil {
+				t.Fatalf("a line the parser cannot place was accepted, so the rest "+
+					"of the input was discarded silently:\n%s", tc.src)
+			}
+			if !strings.Contains(err.Error(), tc.line) {
+				t.Errorf("error %q should identify %s", err, tc.line)
+			}
+			if !strings.Contains(err.Error(), "indent") {
+				t.Errorf("error %q should say the problem is indentation", err)
+			}
+		})
+	}
+}
+
+// TestParseAcceptsLegitimateNesting is the counterweight to
+// TestParseRejectsUnplaceableLine: the consumed-position check must not reject
+// the shapes the format actually uses. Blocks under a valueless key, nested
+// lists, block scalars and inline maps all leave the parser legitimately
+// mid-input at some depth.
+func TestParseAcceptsLegitimateNesting(t *testing.T) {
+	t.Parallel()
+	src := `prefix: "[%s] "
+
+control:
+  socket: /run/gopherd.sock
+  socket-mode: "0660"
+
+processes:
+  - name: app
+    command: /bin/app
+    args: ["--flag", "value"]
+    environment:
+      FOO: bar
+      BAZ: qux
+    after: [db]
+    exit-code-map: {SIGTERM: 0}
+  - name: db
+    command: /bin/db
+    startup: oneshot
+
+checks:
+  http:
+    http:
+      url: http://localhost:8080/health
+    period: 5s
+
+log-targets:
+  audit:
+    type: file
+    location: /var/log/audit.log
+    services: [app]
+    labels:
+      env: prod
+`
+	n, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("legitimate nesting rejected: %v", err)
+	}
+	// Spot-check one value at each depth the document reaches.
+	if got := n.Get("control").Get("socket-mode").String(); got != "0660" {
+		t.Errorf("control.socket-mode = %q", got)
+	}
+	procs := n.Get("processes").Items()
+	if len(procs) != 2 {
+		t.Fatalf("parsed %d processes, want 2", len(procs))
+	}
+	if got := procs[0].Get("environment").Get("BAZ").String(); got != "qux" {
+		t.Errorf("processes[0].environment.BAZ = %q", got)
+	}
+	if got := procs[1].Get("startup").String(); got != "oneshot" {
+		t.Errorf("processes[1].startup = %q", got)
+	}
+	if got := n.Get("log-targets").Get("audit").Get("labels").Get("env").String(); got != "prod" {
+		t.Errorf("log-targets.audit.labels.env = %q", got)
+	}
+}

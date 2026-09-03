@@ -1333,3 +1333,162 @@ processes:
 		t.Errorf("error %q should name both options", err)
 	}
 }
+
+// TestStartupEnvValueIsNotFileExpanded pins the order of the two expansion
+// passes on `startup`: {{file "..."}} resolves first, then {{.VAR}}, so an
+// environment value is a final answer and never a new template. Swapped, an
+// env var the operator does not fully control could smuggle a {{file "/path"}}
+// payload past the second pass and let a file's contents decide whether a
+// service runs.
+func TestStartupEnvValueIsNotFileExpanded(t *testing.T) {
+	dir := t.TempDir()
+	gate := filepath.Join(dir, "gate")
+	if err := os.WriteFile(gate, []byte("disabled"), 0o600); err != nil {
+		t.Fatalf("write gate: %v", err)
+	}
+	// GATE's value looks like a file reference. It must be treated as literal
+	// text, which is not a valid startup value, so the config must be rejected
+	// rather than quietly resolving to whatever the file says.
+	withEnv(t, map[string]string{"START_X": `{{file "` + gate + `"}}`})
+
+	cfg, err := Unmarshal([]byte(`
+processes:
+  - name: svc
+    command: /bin/svc
+    startup: "{{.START_X}}"
+`))
+	if err == nil {
+		t.Fatalf("expected an error for an env value that is not a valid startup; "+
+			"got Startup = %q (the file reference in the env value was followed)",
+			cfg.Processes[0].Startup)
+	}
+	// And the raw template, not the expansion, is what gets reported: the
+	// expanded value can hold a secret (see the startup-redaction case above).
+	if !strings.Contains(err.Error(), "{{.START_X}}") {
+		t.Errorf("error %q should name the raw template, not its expansion", err)
+	}
+}
+
+// TestControlSocketModeIsOctal pins that socket-mode is read as octal. Modes
+// are written in octal by convention, so reading "0660" as decimal 660 yields
+// 0o1224 — sticky bit set, wrong permissions on the control socket, no error.
+func TestControlSocketModeIsOctal(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want os.FileMode
+	}{
+		{"0600", 0o600},
+		{"0660", 0o660},
+		{"0666", 0o666},
+		{"600", 0o600},
+		{"0700", 0o700},
+	} {
+		cfg, err := Unmarshal([]byte(`
+control:
+  socket: /run/x.sock
+  socket-mode: "` + tc.in + `"
+
+processes:
+  - name: svc
+    command: /bin/svc
+`))
+		if err != nil {
+			t.Errorf("socket-mode %q: %v", tc.in, err)
+			continue
+		}
+		if got := cfg.Control.SocketMode; got != tc.want {
+			t.Errorf("socket-mode %q parsed as %04o, want %04o (octal, not decimal)",
+				tc.in, got, tc.want)
+		}
+	}
+	// A non-octal digit must be rejected rather than silently reinterpreted.
+	if _, err := Unmarshal([]byte(`
+control:
+  socket: /run/x.sock
+  socket-mode: "0680"
+
+processes:
+  - name: svc
+    command: /bin/svc
+`)); err == nil {
+		t.Error("socket-mode \"0680\" has a non-octal digit and must be rejected")
+	}
+}
+
+// TestUnmarshalNeverSilentlyDropsASection is the operator-facing half of
+// TestParseRejectsUnplaceableLine. What it guards against is not a parse error
+// but the absence of one: a two-space indent slip used to load cleanly and
+// start the daemon with whole sections missing — log forwarding off, services
+// absent — and nothing in the output to say so.
+func TestUnmarshalNeverSilentlyDropsASection(t *testing.T) {
+	// `socket-mode` is indented one level too deep. Everything after it used to
+	// be discarded, so log-targets disappeared while the daemon started happily.
+	const slipped = `
+processes:
+  - name: app
+    command: sleep
+    args: ["300"]
+
+control:
+  socket: /run/x.sock
+    socket-mode: "0660"
+
+log-targets:
+  audit:
+    type: file
+    location: /var/log/audit.log
+`
+	cfg, err := Unmarshal([]byte(slipped))
+	if err == nil {
+		t.Fatalf("config with an over-indented key loaded successfully: "+
+			"%d processes, socket %q, %d log-targets — the sections after the slip "+
+			"were dropped without an error",
+			len(cfg.Processes), cfg.Control.SocketPath, len(cfg.LogTargets))
+	}
+	if !strings.Contains(err.Error(), "line 9") {
+		t.Errorf("error %q should point at the offending line", err)
+	}
+
+	// The same slip inside a process entry: the keys after it used to be lost,
+	// so a service would start with default args or no environment at all.
+	const slippedItem = `
+processes:
+  - name: app
+    command: /bin/app
+      args: ["--serve"]
+    environment:
+      TOKEN: secret
+`
+	if cfg, err := Unmarshal([]byte(slippedItem)); err == nil {
+		t.Errorf("process entry with an over-indented key loaded successfully: "+
+			"args=%v environment=%v — the rest of the entry was dropped",
+			cfg.Processes[0].Args, cfg.Processes[0].Environment)
+	}
+
+	// Control: the corrected config loads, and every section survives.
+	const fixed = `
+processes:
+  - name: app
+    command: sleep
+    args: ["300"]
+
+control:
+  socket: /run/x.sock
+  socket-mode: "0660"
+
+log-targets:
+  audit:
+    type: file
+    location: /var/log/audit.log
+`
+	good, err := Unmarshal([]byte(fixed))
+	if err != nil {
+		t.Fatalf("the corrected config must load: %v", err)
+	}
+	if len(good.Processes) != 1 || len(good.LogTargets) != 1 ||
+		good.Control.SocketMode != 0o660 {
+		t.Errorf("corrected config lost something: %d processes, %d log-targets, "+
+			"socket-mode %04o", len(good.Processes), len(good.LogTargets),
+			good.Control.SocketMode)
+	}
+}

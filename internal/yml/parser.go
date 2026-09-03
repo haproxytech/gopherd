@@ -78,9 +78,17 @@ func Parse(data []byte) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	n, _, err := parseBlock(lines, 0, -1, 0)
+	n, pos, err := parseBlock(lines, 0, -1, 0)
 	if err != nil {
 		return nil, err
+	}
+	// At the top level there is no enclosing block for parseBlock to stop for,
+	// so a leftover line is one it could not place. Returning the node anyway
+	// would discard the rest of the file, whole sections included, in silence.
+	if pos < len(lines) {
+		return nil, fmt.Errorf("line %d: unexpected indentation for %q; it is "+
+			"indented too deeply to be a top-level key and does not belong to the "+
+			"block above it", lines[pos].num, lines[pos].text)
 	}
 	return n, nil
 }
@@ -150,13 +158,12 @@ func blockIndicator(content string) (string, bool) {
 	return s, true
 }
 
-// collectLiteralBlock gathers the indented body of a literal block scalar.
-// The indicator selects chomping: "|" clips to one trailing newline, "|-"
-// strips all, "|+" keeps every trailing break. Folded scalars (">") and
-// other indicators are rejected. Body lines are taken raw — '#' is content,
-// not a comment — with indentation beyond the first content line preserved
-// and blank lines kept as empty lines. Returns the scalar text and the index
-// of the first line after the block.
+// collectLiteralBlock gathers the indented body of a literal block scalar and
+// returns it with the index of the first line after the block. The indicator
+// selects chomping: "|" clips to one trailing newline, "|-" strips all, "|+"
+// keeps every break. Folded scalars (">") are rejected. Body lines are raw:
+// '#' is content, blank lines are kept, and indentation past the first content
+// line is preserved.
 func collectLiteralBlock(raw []string, start, headerIndent int, indicator string) (string, int, error) {
 	switch indicator {
 	case "|", "|-", "|+":
@@ -359,9 +366,17 @@ func parseSequence(lines []rawLine, pos, seqIndent, depth int) (*Node, int, erro
 			seq.sequence = append(seq.sequence, item)
 			continue
 		}
-		item, _, err := parseBlock(itemLines, 0, itemIndent-1, depth+1)
+		item, used, err := parseBlock(itemLines, 0, itemIndent-1, depth+1)
 		if err != nil {
 			return nil, pos, err
+		}
+		// itemLines is the item's complete block, so an unconsumed line has no
+		// enclosing block to belong to: the same silent discard, one item down.
+		if used < len(itemLines) {
+			bad := itemLines[used]
+			return nil, pos, fmt.Errorf("line %d: unexpected indentation for %q; it "+
+				"does not line up with the other keys of the list item starting on "+
+				"line %d", bad.num, bad.text, line.num)
 		}
 		seq.sequence = append(seq.sequence, item)
 	}
