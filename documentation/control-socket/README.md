@@ -25,6 +25,10 @@ Commands (`gopherd <service> <action>` or `gopherd <action> <service>`):
 - `status` — overview table; `status app` for one service.
 - `start app` / `stop app` / `restart app` — lifecycle control.
 - `signal app SIGUSR1` — send an arbitrary signal.
+- `stop app --wait` / `start app --wait` / `restart app --wait [--timeout 15s]` —
+  block until the process has exited, has passed its readiness gates
+  (`ready-check`, `sd-notify`), or both. Default timeout 60s; on timeout the
+  reply is an `error:` line (exit 1) while the action itself still proceeds.
 
 ## Expected behavior
 

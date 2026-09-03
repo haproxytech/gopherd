@@ -345,3 +345,54 @@ func TestIsAliveRejectsForeignOwner(t *testing.T) {
 		t.Error("IsAlive rejected our own listener")
 	}
 }
+
+func TestBuildClientCommandWaitFlags(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		args    []string
+		want    string
+		wantErr bool
+	}{
+		{[]string{"stop", "app", "--wait"}, "stop app --wait", false},
+		{[]string{"app", "stop", "--wait"}, "stop app --wait", false},
+		{[]string{"start", "app", "--wait", "--timeout", "15s"}, "start app --wait --timeout 15s", false},
+		{[]string{"app", "restart", "--timeout", "2m", "--wait"}, "restart app --wait --timeout 2m0s", false},
+		// --timeout only makes sense with --wait.
+		{[]string{"stop", "app", "--timeout", "15s"}, "", true},
+		// Not a duration.
+		{[]string{"stop", "app", "--wait", "--timeout", "soon"}, "", true},
+		// Zero or negative would never wait.
+		{[]string{"stop", "app", "--wait", "--timeout", "0"}, "", true},
+		// Above the cap the daemon would outlive the client's read deadline.
+		{[]string{"stop", "app", "--wait", "--timeout", "6m"}, "", true},
+		// Nothing after --timeout.
+		{[]string{"stop", "app", "--wait", "--timeout"}, "", true},
+		// Only lifecycle actions can wait.
+		{[]string{"status", "app", "--wait"}, "", true},
+		{[]string{"reload", "--wait"}, "", true},
+		{[]string{"signal", "app", "SIGHUP", "--wait"}, "", true},
+	}
+	for _, tt := range tests {
+		got, err := buildClientCommand(tt.args)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("buildClientCommand(%v) = %q, nil; want error", tt.args, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("buildClientCommand(%v) error: %v", tt.args, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("buildClientCommand(%v) = %q; want %q", tt.args, got, tt.want)
+		}
+	}
+}
+
+// The client must outlast any --timeout the daemon accepts.
+func TestMaxWaitTimeoutBelowClientIdle(t *testing.T) {
+	if MaxWaitTimeout >= clientReadIdleTimeout {
+		t.Fatalf("MaxWaitTimeout %s must stay below clientReadIdleTimeout %s", MaxWaitTimeout, clientReadIdleTimeout)
+	}
+}

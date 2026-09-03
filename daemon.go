@@ -893,15 +893,34 @@ func (d *daemon) setupControl() *control.Server {
 			return fmt.Sprintf("%s: stopped", name), nil
 		}
 	}
-	ctrlServer.StartFn = func(name string) (string, error) {
+	ctrlServer.StartFn = func(name string, opts control.ActionOptions) (string, error) {
 		d.mu.RLock()
 		svc, ok := d.services[name]
+		cfg := d.cfg
 		d.mu.RUnlock()
 		if !ok {
 			return "", fmt.Errorf("unknown service %q", name)
 		}
 		if svc.IsRunning() {
 			return fmt.Sprintf("%s: already running (pid %d)", name, int(svc.Pid.Load())), nil
+		}
+		if opts.Wait {
+			// Same readiness sequence as boot: ready-check gate, spawn, READY=1.
+			ctx, cancel := waitContext(opts)
+			defer cancel()
+			switch err := d.startGated(ctx, cfg, svc); err {
+			case nil:
+				if svc.Proc.SDNotify {
+					return fmt.Sprintf("%s: ready (pid %d)", name, int(svc.Pid.Load())), nil
+				}
+				return fmt.Sprintf("%s: started (pid %d)", name, int(svc.Pid.Load())), nil
+			case errAlreadyRunning:
+				return fmt.Sprintf("%s: already running (pid %d)", name, int(svc.Pid.Load())), nil
+			case errConditionUnmet:
+				return fmt.Sprintf("%s: skipped (%s)", name, svc.Proc.UnmetCondition()), nil
+			default:
+				return "", fmt.Errorf("start %s: %w", name, err)
+			}
 		}
 		pid, err := d.startService(svc)
 		if err != nil {
@@ -916,7 +935,7 @@ func (d *daemon) setupControl() *control.Server {
 		}
 		return fmt.Sprintf("%s: started (pid %d)", name, pid), nil
 	}
-	ctrlServer.StopFn = func(name string) (string, error) {
+	ctrlServer.StopFn = func(name string, opts control.ActionOptions) (string, error) {
 		d.mu.RLock()
 		svc, ok := d.services[name]
 		d.mu.RUnlock()
@@ -926,8 +945,18 @@ func (d *daemon) setupControl() *control.Server {
 		if !svc.IsRunning() {
 			return fmt.Sprintf("%s: already stopped", name), nil
 		}
+		// Capture before Stop so a fast exit cannot be missed.
+		done := svc.Done()
 		svc.Stop()
-		return fmt.Sprintf("%s: stop signal sent", name), nil
+		if !opts.Wait {
+			return fmt.Sprintf("%s: stop signal sent", name), nil
+		}
+		ctx, cancel := waitContext(opts)
+		defer cancel()
+		if err := d.waitExit(ctx, svc, done); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%s: stopped", name), nil
 	}
 	ctrlServer.SignalFn = func(name, sigName string) (string, error) {
 		d.mu.RLock()
@@ -946,7 +975,7 @@ func (d *daemon) setupControl() *control.Server {
 		svc.Signal(sig)
 		return fmt.Sprintf("%s: sent %s", name, sigName), nil
 	}
-	ctrlServer.RestartFn = func(name string) (string, error) {
+	ctrlServer.RestartFn = func(name string, opts control.ActionOptions) (string, error) {
 		d.mu.Lock()
 		svc, ok := d.services[name]
 		if !ok {
@@ -958,6 +987,10 @@ func (d *daemon) setupControl() *control.Server {
 		if d.shuttingDown.Load() {
 			d.mu.Unlock()
 			return "", fmt.Errorf("daemon is shutting down")
+		}
+		if opts.Wait {
+			d.mu.Unlock()
+			return d.restartOrdered(svc, opts)
 		}
 		// Capture done under d.mu. Use senderWg.Go for a tracked blocking send,
 		// synchronised with the shutdown path (run.go waits for senderWg before

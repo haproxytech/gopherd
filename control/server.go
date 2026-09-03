@@ -41,9 +41,9 @@ type Server struct {
 	listener net.Listener
 
 	// Callbacks wired from main.
-	StartFn   func(name string) (string, error)
-	StopFn    func(name string) (string, error)
-	RestartFn func(name string) (string, error)
+	StartFn   func(name string, opts ActionOptions) (string, error)
+	StopFn    func(name string, opts ActionOptions) (string, error)
+	RestartFn func(name string, opts ActionOptions) (string, error)
 	StatusFn  func(name string) (string, error)
 	SignalFn  func(name, signal string) (string, error)
 	ReloadFn  func() (string, error)
@@ -324,7 +324,14 @@ func (cs *Server) handleCommand(parts []string) string {
 			return fmt.Sprintf("error: %s requires a service name", cmd)
 		}
 		name := parts[1]
-		var fn func(string) (string, error)
+		extra, opts, err := extractWaitFlags(parts[2:])
+		if err != nil {
+			return fmt.Sprintf("error: %v", err)
+		}
+		if len(extra) > 0 {
+			return fmt.Sprintf("error: %s: unexpected argument %q", cmd, extra[0])
+		}
+		var fn func(string, ActionOptions) (string, error)
 		switch cmd {
 		case "start":
 			fn = cs.StartFn
@@ -336,7 +343,7 @@ func (cs *Server) handleCommand(parts []string) string {
 		if fn == nil {
 			return fmt.Sprintf("error: %s not supported", cmd)
 		}
-		msg, err := fn(name)
+		msg, err := fn(name, opts)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err)
 		}

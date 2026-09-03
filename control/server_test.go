@@ -44,19 +44,19 @@ func newTestServer(t *testing.T) *Server {
 		}
 		return "", fmt.Errorf("unknown service %q", name)
 	}
-	cs.StartFn = func(name string) (string, error) {
+	cs.StartFn = func(name string, _ ActionOptions) (string, error) {
 		if name == "svc1" {
 			return "svc1: started (pid 100)", nil
 		}
 		return "", fmt.Errorf("unknown service %q", name)
 	}
-	cs.StopFn = func(name string) (string, error) {
+	cs.StopFn = func(name string, _ ActionOptions) (string, error) {
 		if name == "svc1" {
 			return "svc1: stop signal sent", nil
 		}
 		return "", fmt.Errorf("unknown service %q", name)
 	}
-	cs.RestartFn = func(name string) (string, error) {
+	cs.RestartFn = func(name string, _ ActionOptions) (string, error) {
 		if name == "svc1" {
 			return "svc1: restart scheduled", nil
 		}
@@ -206,9 +206,9 @@ func TestSocketCleanup(t *testing.T) {
 	path := testSocket(t)
 	cs := NewServer(Config{SocketPath: path})
 	cs.StatusFn = func(string) (string, error) { return "", nil }
-	cs.StartFn = func(string) (string, error) { return "", nil }
-	cs.StopFn = func(string) (string, error) { return "", nil }
-	cs.RestartFn = func(string) (string, error) { return "", nil }
+	cs.StartFn = func(string, ActionOptions) (string, error) { return "", nil }
+	cs.StopFn = func(string, ActionOptions) (string, error) { return "", nil }
+	cs.RestartFn = func(string, ActionOptions) (string, error) { return "", nil }
 	cs.SignalFn = func(string, string) (string, error) { return "", nil }
 
 	if err := cs.Start(); err != nil {
@@ -748,5 +748,52 @@ func TestStreamingDoesNotHoldCommandSlot(t *testing.T) {
 		t.Errorf("%d of %d one-shot commands were answered while %d log streams "+
 			"were open; a streaming session must release its command slot",
 			got, commands, maxStreaming)
+	}
+}
+
+// Wait flags on the wire reach the lifecycle callbacks as ActionOptions.
+func TestLifecycleWaitOptions(t *testing.T) {
+	t.Parallel()
+	cs := NewServer(Config{SocketPath: testSocket(t)})
+	var got ActionOptions
+	record := func(name string, opts ActionOptions) (string, error) {
+		got = opts
+		return name + ": ok", nil
+	}
+	cs.StartFn, cs.StopFn, cs.RestartFn = record, record, record
+	if err := cs.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(cs.Stop)
+
+	tests := []struct {
+		cmd  string
+		want ActionOptions
+	}{
+		{"stop svc1", ActionOptions{}},
+		{"stop svc1 --wait", ActionOptions{Wait: true}},
+		{"start svc1 --wait --timeout 15s", ActionOptions{Wait: true, Timeout: 15 * time.Second}},
+		{"restart svc1 --wait --timeout 2m0s", ActionOptions{Wait: true, Timeout: 2 * time.Minute}},
+	}
+	for _, tt := range tests {
+		got = ActionOptions{}
+		if resp := sendCommand(t, cs.SocketPath, tt.cmd); resp != "svc1: ok" {
+			t.Fatalf("%q: unexpected response %q", tt.cmd, resp)
+		}
+		if got != tt.want {
+			t.Errorf("%q: opts = %+v, want %+v", tt.cmd, got, tt.want)
+		}
+	}
+
+	for _, bad := range []string{
+		"stop svc1 --timeout 15s",
+		"stop svc1 --wait --timeout nope",
+		"stop svc1 --wait --timeout",
+		"stop svc1 --wait --timeout 6m",
+		"stop svc1 --bogus",
+	} {
+		if resp := sendCommand(t, cs.SocketPath, bad); !strings.HasPrefix(resp, "error:") {
+			t.Errorf("%q: expected error, got %q", bad, resp)
+		}
 	}
 }

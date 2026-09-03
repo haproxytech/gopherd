@@ -308,7 +308,7 @@ func TestSetupControl(t *testing.T) {
 	}
 
 	// Test StopFn for non-running service.
-	msg, err := ctrl.StopFn("app")
+	msg, err := ctrl.StopFn("app", control.ActionOptions{})
 	if err != nil {
 		t.Errorf("StopFn(app): %v", err)
 	}
@@ -323,7 +323,7 @@ func TestSetupControl(t *testing.T) {
 	}
 
 	// Test unknown service for StartFn.
-	_, err = ctrl.StartFn("nonexistent")
+	_, err = ctrl.StartFn("nonexistent", control.ActionOptions{})
 	if err == nil {
 		t.Error("expected error for unknown service")
 	}
@@ -1099,13 +1099,13 @@ func TestRestartRefusedDuringShutdown(t *testing.T) {
 	ctrl := d.setupControl()
 
 	// Before shutdown the request is accepted.
-	if _, err := ctrl.RestartFn("app"); err != nil {
+	if _, err := ctrl.RestartFn("app", control.ActionOptions{}); err != nil {
 		t.Fatalf("restart before shutdown: %v", err)
 	}
 	d.senderWg.Wait()
 
 	d.shuttingDown.Store(true)
-	if _, err := ctrl.RestartFn("app"); err == nil {
+	if _, err := ctrl.RestartFn("app", control.ActionOptions{}); err == nil {
 		t.Error("a restart was accepted while the daemon was shutting down")
 	} else if !strings.Contains(err.Error(), "shutting down") {
 		t.Errorf("error %q should say the daemon is shutting down", err)

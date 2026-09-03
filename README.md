@@ -30,7 +30,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Log prefixing** — service name and timestamp on every output line (configurable format; requires `log-capture`)
 - **Log targets** — forward logs to syslog (UDP/TCP) or files (requires `log-capture`)
 - **Status reporting** — service uptime, restarts, exits, and health check results via `gopherd status`
-- **Control socket** — start/stop/restart/status/signal/reload/logs services at runtime via Unix socket
+- **Control socket** — start/stop/restart/status/signal/reload/logs services at runtime via Unix socket; `--wait` blocks until the action has taken effect
 - **Log streaming** — `gopherd logs <service> -f` for live log tailing via control socket
 - **Hot reload** — `gopherd reload` or SIGHUP to re-read config and reconcile services without restart
 - **Exit code propagation** — gopherd exits with the actual exit code of the service that triggered shutdown
@@ -96,6 +96,9 @@ When invoked with a known command, `gopherd` connects to the running daemon via 
 ./gopherd app start                  # start a stopped service
 ./gopherd app stop                   # stop a running service
 ./gopherd app restart                # restart a service
+./gopherd app stop --wait            # block until the process has exited (default timeout 60s)
+./gopherd app start --wait           # run the boot readiness gates (ready-check, sd-notify), then return
+./gopherd app restart --wait --timeout 15s   # both; a timeout returns an error and exit code 1
 ./gopherd app status                 # show one service's status
 ./gopherd status                     # overview of all services and checks
 ./gopherd status -o json             # overview as JSON (pipe to jq, etc.)
@@ -109,6 +112,8 @@ When invoked with a known command, `gopherd` connects to the running daemon via 
 ```
 
 The `start`/`stop`/`restart`/`status` actions accept either order: `gopherd app stop` and `gopherd stop app` are equivalent.
+
+Without `--wait`, `stop` returns once the stop signal is sent, `start` once the process is forked, and `restart` once the restart is queued. With `--wait`, `stop` returns after the exit is reaped; `start` runs the same readiness sequence as boot (the `ready-check` gate before spawning, then the `sd-notify` READY=1 wait) and reports `started` or `ready`; `restart` chains both. `--timeout` bounds the wait (default 60s); on timeout the command prints `error: ...` and exits 1, while the underlying stop or start still proceeds.
 
 Override the control socket path with the `GOPHERD_SOCKET` env var (default: `/run/gopherd.sock`). It applies to both the daemon and the client, and takes precedence over `control: socket:` in the config — handy for rootless deployments where `/run` is not writable (point it at a writable path).
 

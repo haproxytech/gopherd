@@ -102,14 +102,30 @@ func buildClientCommand(args []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	positional, waitOpts, err := extractWaitFlags(positional)
+	if err != nil {
+		return "", err
+	}
 	cmd, err := buildPositionalCommand(positional)
 	if err != nil {
 		return "", err
+	}
+	if waitOpts.Wait {
+		if !waitableCommand(cmd) {
+			return "", fmt.Errorf("--wait is only valid with start, stop, or restart")
+		}
+		cmd += " " + waitOpts.wire()
 	}
 	if flagSuffix != "" {
 		return cmd + " " + flagSuffix, nil
 	}
 	return cmd, nil
+}
+
+// waitableCommand reports whether the wire command is a lifecycle action.
+func waitableCommand(cmd string) bool {
+	action, _, _ := strings.Cut(cmd, " ")
+	return action == "start" || action == "stop" || action == "restart"
 }
 
 func buildPositionalCommand(args []string) (string, error) {
@@ -163,6 +179,7 @@ func RunClient(args []string) {
 	command, err := buildClientCommand(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
+		fmt.Fprintf(os.Stderr, "       gopherd <service> <start|stop|restart> [--wait [--timeout <dur>]]\n")
 		fmt.Fprintf(os.Stderr, "       gopherd signal <service> <signal-name>\n")
 		fmt.Fprintf(os.Stderr, "       gopherd logs <service> [-f]\n")
 		fmt.Fprintf(os.Stderr, "       gopherd reload\n")

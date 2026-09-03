@@ -78,7 +78,7 @@ go test ./documentation/...
 
 ## Runtime control
 
-- [control-socket](control-socket/) — start/stop/status over the socket
+- [control-socket](control-socket/) — start/stop/status over the socket, `--wait` for blocking actions
 - [export-socket](export-socket/) — client commands from inside services
 - [hot-reload](hot-reload/) — `gopherd reload` / SIGHUP config reconcile
 - [subreaper](subreaper/) — `PR_SET_CHILD_SUBREAPER` for non-PID-1 use

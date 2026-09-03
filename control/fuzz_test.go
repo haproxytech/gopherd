@@ -58,9 +58,9 @@ func FuzzHandleCommand(f *testing.F) {
 	srv := &Server{
 		// Wire every callback so each branch is reachable; return values
 		// must not influence whether a panic occurs.
-		StartFn:   func(name string) (string, error) { return "started " + name, nil },
-		StopFn:    func(name string) (string, error) { return "stopped " + name, nil },
-		RestartFn: func(name string) (string, error) { return "restarted " + name, nil },
+		StartFn:   func(name string, _ ActionOptions) (string, error) { return "started " + name, nil },
+		StopFn:    func(name string, _ ActionOptions) (string, error) { return "stopped " + name, nil },
+		RestartFn: func(name string, _ ActionOptions) (string, error) { return "restarted " + name, nil },
 		StatusFn:  func(name string) (string, error) { return "ok " + name, nil },
 		SignalFn:  func(name, sig string) (string, error) { return "signaled " + name + " " + sig, nil },
 		ReloadFn:  func() (string, error) { return "reloaded", nil },

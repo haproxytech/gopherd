@@ -26,7 +26,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/haproxytech/gopherd/check"
 	"github.com/haproxytech/gopherd/control"
 	"github.com/haproxytech/gopherd/internal/metrics"
 	"github.com/haproxytech/gopherd/internal/order"
@@ -553,67 +552,11 @@ func (d *daemon) startLayerNonOneshots(cfg *yml.Config, layer []string) {
 	wg.Wait()
 }
 
-// startNonOneshot runs the full gating sequence for one long-running service:
-// optional ready-check, fork+exec, then optional sd_notify wait. Any gate
-// failure is fatal — the daemon cannot safely proceed past a failed gate.
+// startNonOneshot gates one long-running service at boot; gate failures are fatal, skips are not.
 func (d *daemon) startNonOneshot(cfg *yml.Config, svc *service.Service) {
-	if svc.Proc.ReadyCheck != "" {
-		checkCfg, ok := cfg.Checks[svc.Proc.ReadyCheck]
-		if !ok {
-			log.Fatalf("%s: ready-check %q not found in [checks]", svc.Name, svc.Proc.ReadyCheck)
-		}
-		c, err := check.New(svc.Proc.ReadyCheck, checkCfg, nil, nil)
-		if err != nil {
-			log.Fatalf("%s: ready check: %v", svc.Name, err)
-		}
-		c.SetReaper(d.reaper)
-		if checkCfg.Exec != nil {
-			cred, credErr := service.ResolveCredential(svc.Proc.User, svc.Proc.Group, svc.Proc.UserID, svc.Proc.GroupID, svc.Proc.StrictGroups)
-			if credErr != nil {
-				log.Printf("warning: %s: ready-check credential: %v", svc.Name, credErr)
-			} else if cred != nil {
-				c.SetCredential(cred)
-			}
-		}
-		readyTimeout := 60 * time.Second
-		if svc.Proc.ReadyTimeout != "" {
-			readyTimeout, err = time.ParseDuration(svc.Proc.ReadyTimeout)
-			if err != nil {
-				log.Fatalf("%s: invalid ready-timeout %q: %v", svc.Name, svc.Proc.ReadyTimeout, err)
-			}
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), readyTimeout)
-		err = c.WaitReady(ctx)
-		cancel()
-		if err != nil {
-			log.Fatalf("%s: ready-check %q did not pass within %s (ready-check runs before %s starts; it should poll a dependency already running, not the service itself)", svc.Name, svc.Proc.ReadyCheck, readyTimeout, svc.Name)
-		}
-		log.Printf("%s: ready (check %s passed)", svc.Name, svc.Proc.ReadyCheck)
-	}
-
-	// errAlreadyRunning: a control client started this service between the
-	// layer's IsRunning() check and here — not a startup failure.
-	if _, err := d.startService(svc); err != nil {
-		if err == errConditionUnmet {
-			return // skipped, already logged; no sd_notify gate to wait on
-		}
-		if err != errAlreadyRunning {
-			log.Fatalf("start %s: %v", svc.Name, err)
-		}
-	}
-
-	if svc.Proc.SDNotify {
-		sdNotifyTimeout := 60 * time.Second
-		if svc.Proc.SDNotifyTimeout != "" {
-			sdNotifyTimeout, _ = time.ParseDuration(svc.Proc.SDNotifyTimeout)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), sdNotifyTimeout)
-		err := svc.WaitSDNotifyReady(ctx)
-		cancel()
-		if err != nil {
-			log.Fatalf("%s: sd_notify readiness did not arrive within %s: %v", svc.Name, sdNotifyTimeout, err)
-		}
-		log.Printf("%s: ready (READY=1 received)", svc.Name)
+	err := d.startGated(context.Background(), cfg, svc)
+	if err != nil && err != errAlreadyRunning && err != errConditionUnmet {
+		log.Fatalf("start %s: %v", svc.Name, err)
 	}
 }
 
