@@ -1,0 +1,16 @@
+# restart-with-dependents: `gopherd restart db` also bounces the running
+# services that require db, in dependency order.
+control:
+  socket: {{SOCKET}}
+processes:
+  - name: db
+    command: /usr/local/bin/db
+    args: ["300"]
+    restart-with-dependents: true
+    on-failure: ignore
+
+  - name: web
+    command: /usr/local/bin/web
+    args: ["300"]
+    requires: [db]
+    on-failure: ignore

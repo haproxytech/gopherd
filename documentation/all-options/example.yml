@@ -110,6 +110,7 @@ processes:
     after: [init-permissions]            # start after these services
     # before: [other]                    # start before these services
     requires: [init-permissions]         # hard dependencies (failure cascades)
+    # restart-with-dependents: true      # `gopherd restart app` also bounces running services that require app
     ready-check: app-http                # block dependents until this check passes
     ready-timeout: 60s                   # max wait for ready check (default: 60s)
     # sd-notify: true                    # systemd sd_notify: dependents wait for READY=1 on $NOTIFY_SOCKET

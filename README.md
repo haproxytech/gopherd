@@ -31,6 +31,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Log targets** — forward logs to syslog (UDP/TCP) or files (requires `log-capture`)
 - **Status reporting** — service uptime, restarts, exits, and health check results via `gopherd status`
 - **Control socket** — start/stop/restart/status/signal/reload/logs services at runtime via Unix socket; `--wait` blocks until the action has taken effect
+- **Restart with dependents** — `restart-with-dependents: true` makes a control-socket restart bounce the running services that `requires` the target, in dependency order
 - **Log streaming** — `gopherd logs <service> -f` for live log tailing via control socket
 - **Hot reload** — `gopherd reload` or SIGHUP to re-read config and reconcile services without restart
 - **Exit code propagation** — gopherd exits with the actual exit code of the service that triggered shutdown
@@ -113,7 +114,7 @@ When invoked with a known command, `gopherd` connects to the running daemon via 
 
 The `start`/`stop`/`restart`/`status` actions accept either order: `gopherd app stop` and `gopherd stop app` are equivalent.
 
-Without `--wait`, `stop` returns once the stop signal is sent, `start` once the process is forked, and `restart` once the restart is queued. With `--wait`, `stop` returns after the exit is reaped; `start` runs the same readiness sequence as boot (the `ready-check` gate before spawning, then the `sd-notify` READY=1 wait) and reports `started` or `ready`; `restart` chains both. `--timeout` bounds the wait (default 60s); on timeout the command prints `error: ...` and exits 1, while the underlying stop or start still proceeds.
+Without `--wait`, `stop` returns once the stop signal is sent, `start` once the process is forked, and `restart` once the restart is queued. With `--wait`, `stop` returns after the exit is reaped; `start` runs the same readiness sequence as boot (the `ready-check` gate before spawning, then the `sd-notify` READY=1 wait) and reports `started` or `ready`; `restart` chains both. `--timeout` bounds the wait (default 60s, at most 5m); on timeout the command prints `error: ...` and exits 1, while the underlying stop or start still proceeds. A service with `restart-with-dependents: true` extends `restart` to its running requirers — see [documentation/restart-with-dependents/](documentation/restart-with-dependents/).
 
 Override the control socket path with the `GOPHERD_SOCKET` env var (default: `/run/gopherd.sock`). It applies to both the daemon and the client, and takes precedence over `control: socket:` in the config — handy for rootless deployments where `/run` is not writable (point it at a writable path).
 
@@ -468,6 +469,7 @@ processes:
     backoff-limit: 30s               # max restart delay (default: 30s)
     after: [init-config, sidecar]    # start after these services
     requires: [db]                   # hard dependencies (failure cascades)
+    # restart-with-dependents: true  # `gopherd restart app` also bounces running services that require app
     ready-check: health              # block dependents until this check passes
     ready-timeout: 30s               # max wait for ready check (default: 60s)
     # prefix: "none"                 # per-process prefix override (see global prefix)
@@ -593,6 +595,7 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `after` | string[] | `[]` | Start after these services |
 | `before` | string[] | `[]` | Start before these services |
 | `requires` | string[] | `[]` | Hard dependencies. If a required service fails, its running dependents are stopped (systemd `Requires=` semantics). Dependents are **not** automatically restarted when the dependency recovers — they stay stopped until manually restarted |
+| `restart-with-dependents` | bool | `false` | A control-socket `restart` of this service first stops the running services that transitively `requires` it (last-started first), restarts this service through its readiness gates, then starts them again in start order. Stopped requirers are left alone; automatic restarts do not cascade. Without `--wait` the sequence runs in the background |
 | `on-check-failure` | map | `{}` | Check name -> action mapping |
 | `use-entrypoint-args` | bool | `false` | append Docker/K8s entrypoint args to this service |
 | `ready-check` | string | | Health check name that gates dependents |

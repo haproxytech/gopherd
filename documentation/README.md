@@ -32,6 +32,7 @@ go test ./documentation/...
 
 - [dependencies](dependencies/) — `after:` start ordering
 - [requires](requires/) — hard dependencies with failure coupling
+- [restart-with-dependents](restart-with-dependents/) — `restart` bounces running requirers in dependency order
 - [stop-signal](stop-signal/) — per-service `stop-signal` + `kill-delay` escalation
 - [oneshot](oneshot/) — run-to-completion startup tasks
 - [scheduled](scheduled/) — cron-scheduled oneshot-style runs

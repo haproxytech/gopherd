@@ -1492,3 +1492,25 @@ log-targets:
 			good.Control.SocketMode)
 	}
 }
+
+func TestLoadRestartWithDependents(t *testing.T) {
+	t.Parallel()
+	cfg, err := Unmarshal([]byte(`
+processes:
+  - name: db
+    command: /bin/db
+    restart-with-dependents: true
+  - name: web
+    command: /bin/web
+    requires: [db]
+`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !cfg.Processes[0].RestartWithDependents {
+		t.Error("expected RestartWithDependents=true for db")
+	}
+	if cfg.Processes[1].RestartWithDependents {
+		t.Error("expected RestartWithDependents=false by default for web")
+	}
+}

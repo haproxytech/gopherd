@@ -955,6 +955,57 @@ func TestStartServiceErrServiceReplacedNotFatal(t *testing.T) {
 	}
 }
 
+// A leg replaced by reload is done, not failed; dependents must still come back.
+func TestRunRestartStaleInstanceStillStartsDependents(t *testing.T) {
+	d := newTestDaemon([]service.Process{
+		{Name: "db", Command: "/bin/sleep", Args: []string{"30"}},
+		{Name: "web", Command: "/bin/sleep", Args: []string{"30"}, Requires: []string{"db"}},
+	})
+	t.Cleanup(func() { killAllChildren(d) })
+	stale := d.services["db"]
+	web := d.services["web"]
+
+	replacement, err := service.New(service.Process{Name: "db", Command: "/bin/sleep", Args: []string{"30"}}, "")
+	if err != nil {
+		t.Fatalf("service.New: %v", err)
+	}
+	d.mu.Lock()
+	d.services["db"] = replacement
+	d.mu.Unlock()
+
+	if err := d.runRestart(stale, []*service.Service{web}); err != nil {
+		t.Fatalf("runRestart with a stale instance: %v", err)
+	}
+	if !web.IsRunning() {
+		t.Error("dependent web was not started after the stale-instance leg")
+	}
+	if d.shuttingDown.Load() {
+		t.Error("a stale instance must not shut the daemon down")
+	}
+	if n := d.pendingRestarts.Load(); n != 0 {
+		t.Errorf("pendingRestarts = %d after the cascade settled, want 0", n)
+	}
+}
+
+// An unstartable leg leaves a service down for good, so gopherd exits like an automatic restart.
+func TestRunRestartStartFailureShutsDown(t *testing.T) {
+	d := newTestDaemon([]service.Process{
+		{Name: "app", Command: "/nonexistent/gopherd-test-binary"},
+	})
+	svc := d.services["app"]
+
+	err := d.runRestart(svc, nil)
+	if err == nil {
+		t.Fatal("runRestart with an unstartable command returned nil")
+	}
+	if !d.shuttingDown.Load() {
+		t.Error("a failed restart leg must initiate shutdown")
+	}
+	if code := d.exitCode.Load(); code != 1 {
+		t.Errorf("exit code = %d after a failed restart leg, want 1", code)
+	}
+}
+
 // TestAnyRunningCheckUsesPidMap verifies that the anyRunning sentinel used
 // during shutdown is based on d.pidMap and not d.services, so that services
 // removed by a reload (still in pidMap but gone from services) are counted.
@@ -1203,5 +1254,26 @@ func TestStatusRunningWinsOverScheduled(t *testing.T) {
 	}
 	if !strings.Contains(live, "pid") {
 		t.Errorf("status during a scheduled run = %q, want it to include the pid", live)
+	}
+}
+
+// Transitive requirers are collected; the root and unrelated services are not.
+func TestDependentClosure(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon([]service.Process{
+		{Name: "db", Command: "/bin/db"},
+		{Name: "api", Command: "/bin/api", Requires: []string{"db"}},
+		{Name: "web", Command: "/bin/web", Requires: []string{"api"}},
+		{Name: "cache", Command: "/bin/cache", After: []string{"db"}},
+	})
+	got := dependentClosure(d.services, "db")
+	want := map[string]bool{"api": true, "web": true}
+	if len(got) != len(want) {
+		t.Fatalf("closure = %v, want %v", got, want)
+	}
+	for name := range want {
+		if !got[name] {
+			t.Errorf("closure missing %s: %v", name, got)
+		}
 	}
 }

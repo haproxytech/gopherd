@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -779,6 +780,7 @@ func (d *daemon) reload() (string, error) {
 			oldSvc.Requires = newSvc.Requires
 			oldSvc.Proc.ExitCodeMap = newSvc.Proc.ExitCodeMap
 			oldSvc.Proc.SignalRewrite = newSvc.Proc.SignalRewrite
+			oldSvc.Proc.RestartWithDependents = newSvc.Proc.RestartWithDependents
 			d.services[name] = oldSvc
 		} else if oldSvc.IsRunning() {
 			// Config changed — stop old instance, ignoring its exit so the reap
@@ -905,10 +907,11 @@ func (d *daemon) setupControl() *control.Server {
 			return fmt.Sprintf("%s: already running (pid %d)", name, int(svc.Pid.Load())), nil
 		}
 		if opts.Wait {
-			// Same readiness sequence as boot: ready-check gate, spawn, READY=1.
-			ctx, cancel := waitContext(opts)
-			defer cancel()
-			switch err := d.startGated(ctx, cfg, svc); err {
+			// Boot's readiness sequence; the gates keep their own timeouts, --timeout only bounds the reply.
+			err := d.observe(opts, name, "start", func() error {
+				return d.startGated(context.Background(), cfg, svc)
+			})
+			switch err {
 			case nil:
 				if svc.Proc.SDNotify {
 					return fmt.Sprintf("%s: ready (pid %d)", name, int(svc.Pid.Load())), nil
@@ -988,9 +991,13 @@ func (d *daemon) setupControl() *control.Server {
 			d.mu.Unlock()
 			return "", fmt.Errorf("daemon is shutting down")
 		}
-		if opts.Wait {
+		var deps []*service.Service
+		if svc.Proc.RestartWithDependents {
+			deps = d.runningDependentsLocked(name)
+		}
+		if opts.Wait || len(deps) > 0 {
 			d.mu.Unlock()
-			return d.restartOrdered(svc, opts)
+			return d.restartOrdered(svc, deps, opts)
 		}
 		// Capture done under d.mu. Use senderWg.Go for a tracked blocking send,
 		// synchronised with the shutdown path (run.go waits for senderWg before
@@ -1148,8 +1155,7 @@ func processConfigChanged(oldp, newp service.Process) bool {
 	if oldp.ParentDeathSignal != newp.ParentDeathSignal {
 		return true
 	}
-	// Exit-code-map and signal-rewrite are consulted at runtime, so reload()
-	// updates them in-place without a restart — no check needed here.
+	// Remaining runtime-read fields are updated in-place by reload() without a restart.
 	return false
 }
 

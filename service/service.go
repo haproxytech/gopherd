@@ -164,6 +164,8 @@ type Process struct {
 	// ancestor. Enable for K8s ..data/ mounts or paths under /var/run; mirrors
 	// the {{file}} follow modifier.
 	DotEnvFollow bool
+	// RestartWithDependents makes a control-socket restart also bounce the running services that `requires` it.
+	RestartWithDependents bool
 }
 
 // Service wraps a Process config with runtime state for lifecycle management.

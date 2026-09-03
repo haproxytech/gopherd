@@ -215,3 +215,160 @@ processes:
 	}
 	td.stop()
 }
+
+// restart-with-dependents: running requirers stop first (reverse start order),
+// the target restarts, then they start again in start order. Stopped
+// requirers stay stopped.
+func TestE2EControlRestartWithDependents(t *testing.T) {
+	dir := t.TempDir()
+	stamp := doctest.Tool(t, "stamp")
+	td := startDaemon(t, fmt.Sprintf(`
+processes:
+  - name: db
+    command: sh
+    args: ["-c", "%[1]s %[2]s/db-start; exec sleep 300"]
+    restart-with-dependents: true
+    kill-delay: 2s
+    on-success: ignore
+    on-failure: ignore
+  - name: web
+    command: sh
+    args: ["-c", "trap '%[1]s %[2]s/web-stop; exit 0' TERM; %[1]s %[2]s/web-start; while :; do sleep 0.1; done"]
+    requires: [db]
+    kill-delay: 2s
+    on-success: ignore
+    on-failure: ignore
+  - name: idle
+    command: sleep
+    args: ["300"]
+    requires: [db]
+    on-success: ignore
+    on-failure: ignore
+`, stamp, dir))
+	defer td.kill()
+	td.WaitRunning("web", 5*time.Second)
+	td.WaitRunning("idle", 5*time.Second)
+	if resp := td.sendCommand("stop idle --wait"); !strings.Contains(resp, "idle: stopped") {
+		t.Fatalf("stop idle: %s", resp)
+	}
+	dbPid, webPid := runningPid(t, td, "db"), runningPid(t, td, "web")
+
+	resp := td.sendCommand("restart db --wait")
+	if !strings.Contains(resp, "db: restarted") || !strings.Contains(resp, "web") {
+		t.Fatalf("expected db restarted with web listed, got: %s", resp)
+	}
+	if strings.Contains(resp, "idle") {
+		t.Fatalf("stopped dependent must not be touched, got: %s", resp)
+	}
+	if p := runningPid(t, td, "db"); p == 0 || p == dbPid {
+		t.Fatalf("db pid: old=%d new=%d", dbPid, p)
+	}
+	if p := runningPid(t, td, "web"); p == 0 || p == webPid {
+		t.Fatalf("web pid: old=%d new=%d", webPid, p)
+	}
+	if resp := td.sendCommand("status idle"); !strings.Contains(resp, "stopped") {
+		t.Fatalf("expected idle still stopped, got: %s", resp)
+	}
+
+	// The reply returns at fork time; the shells stamp a few ms later.
+	var dbStarts, webStarts, webStops []int64
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		dbStarts = readStamps(t, filepath.Join(dir, "db-start"))
+		webStarts = readStamps(t, filepath.Join(dir, "web-start"))
+		webStops = readStamps(t, filepath.Join(dir, "web-stop"))
+		if len(dbStarts) == 2 && len(webStarts) == 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(dbStarts) != 2 || len(webStarts) != 2 || len(webStops) != 1 {
+		t.Fatalf("stamps: db-start=%d web-start=%d web-stop=%d", len(dbStarts), len(webStarts), len(webStops))
+	}
+	if !(webStops[0] < dbStarts[1] && dbStarts[1] < webStarts[1]) {
+		t.Fatalf("order violated: web-stop=%d db-restart=%d web-restart=%d", webStops[0], dbStarts[1], webStarts[1])
+	}
+	td.stop()
+}
+
+// Without --wait the cascade runs in the background and the reply names it.
+func TestE2EControlRestartWithDependentsAsync(t *testing.T) {
+	td := startDaemon(t, `
+processes:
+  - name: db
+    command: sleep
+    args: ["300"]
+    restart-with-dependents: true
+    kill-delay: 2s
+    on-success: ignore
+    on-failure: ignore
+  - name: web
+    command: sleep
+    args: ["300"]
+    requires: [db]
+    kill-delay: 2s
+    on-success: ignore
+    on-failure: ignore
+`)
+	defer td.kill()
+	td.WaitRunning("web", 5*time.Second)
+	dbPid, webPid := runningPid(t, td, "db"), runningPid(t, td, "web")
+
+	resp := td.sendCommand("restart db")
+	if !strings.Contains(resp, "restart scheduled") || !strings.Contains(resp, "web") {
+		t.Fatalf("expected scheduled cascade naming web, got: %s", resp)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if p := runningPid(t, td, "web"); p != 0 && p != webPid && runningPid(t, td, "db") != dbPid {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if p := runningPid(t, td, "db"); p == 0 || p == dbPid {
+		t.Fatalf("db pid: old=%d new=%d", dbPid, p)
+	}
+	if p := runningPid(t, td, "web"); p == 0 || p == webPid {
+		t.Fatalf("web pid: old=%d new=%d", webPid, p)
+	}
+	td.stop()
+}
+
+// A reload that only flips restart-with-dependents takes effect without
+// restarting the service.
+func TestE2EControlRestartWithDependentsReload(t *testing.T) {
+	base := `
+processes:
+  - name: db
+    command: sleep
+    args: ["300"]
+    kill-delay: 2s
+    on-success: ignore
+    on-failure: ignore
+%s
+  - name: web
+    command: sleep
+    args: ["300"]
+    requires: [db]
+    kill-delay: 2s
+    on-success: ignore
+    on-failure: ignore
+`
+	td := startDaemon(t, fmt.Sprintf(base, ""))
+	defer td.kill()
+	td.WaitRunning("web", 5*time.Second)
+	dbPid := runningPid(t, td, "db")
+
+	td.updateConfig(fmt.Sprintf(base, "    restart-with-dependents: true"))
+	if resp := td.sendCommand("reload"); strings.Contains(resp, "error") {
+		t.Fatalf("reload: %s", resp)
+	}
+	if p := runningPid(t, td, "db"); p != dbPid {
+		t.Fatalf("reload must not restart db: old=%d new=%d", dbPid, p)
+	}
+	resp := td.sendCommand("restart db --wait")
+	if !strings.Contains(resp, "dependents restarted: web") {
+		t.Fatalf("expected cascade after reload, got: %s", resp)
+	}
+	td.stop()
+}

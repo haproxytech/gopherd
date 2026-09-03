@@ -433,6 +433,8 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		ParentDeathSignal: n.Get("parent-death-signal").String(),
 		SignalRewrite:     n.Get("signal-rewrite").StringMap(),
 
+		RestartWithDependents: n.Get("restart-with-dependents").Bool(),
+
 		ConditionFileExists:  n.Get("condition-file-exists").String(),
 		ConditionFileMissing: n.Get("condition-file-missing").String(),
 	}
