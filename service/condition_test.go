@@ -181,3 +181,24 @@ func TestUnmetConditionStatError(t *testing.T) {
 		t.Error("symlink loop should leave condition-file-missing unmet")
 	}
 }
+
+// Reload swaps the live conditions; Proc keeps the values the service was created with.
+func TestServiceSetFileConditions(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	present := filepath.Join(dir, "present")
+	if err := os.WriteFile(present, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := mustNew(t, Process{Command: "sleep", ConditionFileExists: present}, "")
+	if reason := svc.UnmetCondition(); reason != "" {
+		t.Fatalf("initial reason = %q, want empty", reason)
+	}
+	svc.SetFileConditions(FileConditions{Exists: filepath.Join(dir, "absent")})
+	if reason := svc.UnmetCondition(); !strings.Contains(reason, "absent") {
+		t.Errorf("after swap reason = %q, want the new path", reason)
+	}
+	if svc.Proc.ConditionFileExists != present {
+		t.Errorf("Proc mutated to %q", svc.Proc.ConditionFileExists)
+	}
+}

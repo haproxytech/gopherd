@@ -194,6 +194,9 @@ type Service struct {
 	// read it without holding svc.mu.
 	Schedule *cron.Schedule
 
+	// conds holds the live file conditions; nil falls back to Proc's.
+	conds atomic.Pointer[FileConditions]
+
 	Name string
 	// ControlSocket is the daemon's resolved control socket path, exported to
 	// children as GOPHERD_SOCKET so client commands work from inside services.
@@ -398,10 +401,10 @@ func dotenvUnescapeDouble(s string) string {
 	return b.String()
 }
 
-// isValidEnvKey reports whether k is a valid POSIX environment variable name:
+// IsValidEnvKey reports whether k is a valid POSIX environment variable name:
 // [A-Za-z_][A-Za-z0-9_]*. Rejecting malformed keys prevents shell-unsafe
 // values from leaking into cmd.Env.
-func isValidEnvKey(k string) bool {
+func IsValidEnvKey(k string) bool {
 	if k == "" {
 		return false
 	}
@@ -513,7 +516,7 @@ func parseDotEnv(path string, follow bool) (map[string]string, error) {
 			// Skip "=value" lines; an empty key yields an invalid cmd.Env entry (B5).
 			continue
 		}
-		if !isValidEnvKey(k) {
+		if !IsValidEnvKey(k) {
 			return nil, fmt.Errorf("dotenv %s: invalid env key %q (must match [A-Za-z_][A-Za-z0-9_]*)", path, k)
 		}
 		v = strings.TrimSpace(v)

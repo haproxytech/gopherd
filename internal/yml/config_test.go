@@ -17,9 +17,11 @@ package yml
 import (
 	"bytes"
 	"fmt"
+	"github.com/haproxytech/gopherd/service"
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -1512,5 +1514,180 @@ processes:
 	}
 	if cfg.Processes[1].RestartWithDependents {
 		t.Error("expected RestartWithDependents=false by default for web")
+	}
+}
+
+// A non-mapping value would otherwise parse as "no condition" and open the gate.
+func TestLoadConditionEnvEqualsRejectsNonMapping(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"web", "[web]"} {
+		_, err := Unmarshal([]byte(`
+processes:
+  - name: app
+    command: /bin/app
+    condition-env-equals: ` + value + `
+`))
+		if err == nil || !strings.Contains(err.Error(), "condition-env-equals must be a key-value map") {
+			t.Errorf("value %s: err = %v, want mapping error", value, err)
+		}
+	}
+}
+
+func TestLoadConditionEnvEqualsRejectsInvalidKey(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{`"INVALID=KEY"`, `""`, `"1ST"`} {
+		_, err := Unmarshal([]byte(`
+processes:
+  - name: app
+    command: /bin/app
+    condition-env-equals:
+      ` + key + `: val
+`))
+		if err == nil || !strings.Contains(err.Error(), `process "app": condition-env-equals key`) {
+			t.Errorf("key %s: err = %v, want invalid-key error naming the process", key, err)
+		}
+	}
+}
+
+// Unmet env condition drops the process; the reason names only key and expected value.
+func TestLoadConditionEnvEqualsExcludes(t *testing.T) {
+	load := func(t *testing.T, env map[string]string, conditions string) *Config {
+		t.Helper()
+		withEnv(t, env)
+		cfg, err := Unmarshal([]byte(`
+processes:
+  - name: app
+    command: /bin/app
+    condition-env-equals:
+` + conditions + `
+  - name: always
+    command: /bin/always
+`))
+		if err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		return cfg
+	}
+	names := func(cfg *Config) []string {
+		var out []string
+		for _, p := range cfg.Processes {
+			out = append(out, p.Name)
+		}
+		return out
+	}
+
+	const mismatch = `condition-env-equals: ROLE does not match "api"`
+	tests := []struct {
+		name       string
+		env        map[string]string
+		conditions string
+		want       string // "" = kept
+	}{
+		{"all match", map[string]string{"ROLE": "api", "ENABLE": "true"}, "      ROLE: api\n      ENABLE: \"true\"", ""},
+		{"mismatch", map[string]string{"ROLE": "worker-secret"}, "      ROLE: api", mismatch},
+		{"unset is unmet", map[string]string{}, "      ROLE: api", mismatch},
+		{"unset equals empty", map[string]string{}, "      ROLE: \"\"", ""},
+		{"exact, no folding", map[string]string{"ROLE": "Api "}, "      ROLE: api", mismatch},
+		{"first key alphabetically", map[string]string{"A_KEY": "wrong", "B_KEY": "wrong"}, "      B_KEY: b\n      A_KEY: a", `condition-env-equals: A_KEY does not match "a"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := load(t, tt.env, tt.conditions)
+			if tt.want == "" {
+				if got := names(cfg); !slices.Equal(got, []string{"app", "always"}) {
+					t.Fatalf("processes = %v, want both kept", got)
+				}
+				if len(cfg.Excluded) != 0 {
+					t.Errorf("Excluded = %v, want none", cfg.Excluded)
+				}
+				return
+			}
+			if got := names(cfg); !slices.Equal(got, []string{"always"}) {
+				t.Fatalf("processes = %v, want app excluded", got)
+			}
+			if !slices.Equal(cfg.Excluded, []Exclusion{{Name: "app", Reason: tt.want}}) {
+				t.Errorf("Excluded = %v, want app with %q", cfg.Excluded, tt.want)
+			}
+		})
+	}
+	// The observed value may be a secret: the reason names key and expectation only.
+	cfg := load(t, map[string]string{"ROLE": "worker-secret"}, "      ROLE: api")
+	if strings.Contains(cfg.Excluded[0].Reason, "front-secret") {
+		t.Errorf("reason %q leaks the observed value", cfg.Excluded[0].Reason)
+	}
+}
+
+// Edges to an excluded process vanish; edges to an undefined one still fail downstream.
+func TestLoadConditionEnvEqualsStripsEdges(t *testing.T) {
+	withEnv(t, map[string]string{"ROLE": "worker"})
+	cfg, err := Unmarshal([]byte(`
+processes:
+  - name: db
+    command: /bin/db
+    condition-env-equals:
+      ROLE: api
+  - name: init
+    command: /bin/init
+    startup: oneshot
+    before: [db, web]
+  - name: web
+    command: /bin/web
+    after: [init, db]
+    requires: [db]
+`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	byName := map[string]service.Process{}
+	for _, p := range cfg.Processes {
+		byName[p.Name] = p
+	}
+	if _, ok := byName["db"]; ok {
+		t.Fatal("db should be excluded")
+	}
+	if got := byName["init"].Before; !slices.Equal(got, []string{"web"}) {
+		t.Errorf("init.before = %v, want [web]", got)
+	}
+	if got := byName["web"].After; !slices.Equal(got, []string{"init"}) {
+		t.Errorf("web.after = %v, want [init]", got)
+	}
+	if got := byName["web"].Requires; len(got) != 0 {
+		t.Errorf("web.requires = %v, want empty", got)
+	}
+}
+
+// Exclusion follows validation, so a broken excluded process still fails the load.
+func TestLoadConditionEnvEqualsValidatesExcluded(t *testing.T) {
+	withEnv(t, map[string]string{"ROLE": "worker"})
+	_, err := Unmarshal([]byte(`
+processes:
+  - name: app
+    command: /bin/app
+    on-success: explode
+    condition-env-equals:
+      ROLE: api
+  - name: always
+    command: /bin/always
+`))
+	if err == nil || !strings.Contains(err.Error(), `process "app" on-success`) {
+		t.Fatalf("err = %v, want on-success validation error for the excluded process", err)
+	}
+}
+
+// A config with every process excluded still loads; the daemon idles as a supervisor.
+func TestLoadConditionEnvEqualsAllExcluded(t *testing.T) {
+	withEnv(t, map[string]string{})
+	cfg, err := Unmarshal([]byte(`
+processes:
+  - name: app
+    command: /bin/app
+    condition-env-equals:
+      ROLE: api
+`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(cfg.Processes) != 0 || len(cfg.Excluded) != 1 {
+		t.Fatalf("processes = %d excluded = %d, want 0 and 1", len(cfg.Processes), len(cfg.Excluded))
 	}
 }

@@ -634,6 +634,9 @@ func (d *daemon) reload() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reload config: %w", err)
 	}
+	for _, x := range newCfg.Excluded {
+		log.Printf("reload: %s excluded (%s)", x.Name, x.Reason)
+	}
 
 	// Enforce use-entrypoint-args uniqueness, matching the startup check in run(),
 	// so a hot-reload can't install a config that startup would have rejected.
@@ -781,6 +784,8 @@ func (d *daemon) reload() (string, error) {
 			oldSvc.Proc.ExitCodeMap = newSvc.Proc.ExitCodeMap
 			oldSvc.Proc.SignalRewrite = newSvc.Proc.SignalRewrite
 			oldSvc.Proc.RestartWithDependents = newSvc.Proc.RestartWithDependents
+			// Conditions gate only starts; swapped atomically since readers run off d.mu.
+			oldSvc.SetFileConditions(newSvc.Proc.FileConditions())
 			d.services[name] = oldSvc
 		} else if oldSvc.IsRunning() {
 			// Config changed — stop old instance, ignoring its exit so the reap
@@ -886,7 +891,7 @@ func (d *daemon) setupControl() *control.Server {
 		case !svc.Enabled:
 			return fmt.Sprintf("%s: disabled", name), nil
 		default:
-			if reason := svc.Proc.UnmetCondition(); reason != "" {
+			if reason := svc.UnmetCondition(); reason != "" {
 				return fmt.Sprintf("%s: skipped (%s)", name, reason), nil
 			}
 			if d.m.IsPending(name) {
@@ -920,7 +925,7 @@ func (d *daemon) setupControl() *control.Server {
 			case errAlreadyRunning:
 				return fmt.Sprintf("%s: already running (pid %d)", name, int(svc.Pid.Load())), nil
 			case errConditionUnmet:
-				return fmt.Sprintf("%s: skipped (%s)", name, svc.Proc.UnmetCondition()), nil
+				return fmt.Sprintf("%s: skipped (%s)", name, svc.UnmetCondition()), nil
 			default:
 				return "", fmt.Errorf("start %s: %w", name, err)
 			}
@@ -932,7 +937,7 @@ func (d *daemon) setupControl() *control.Server {
 				return fmt.Sprintf("%s: already running (pid %d)", name, pid), nil
 			}
 			if err == errConditionUnmet {
-				return fmt.Sprintf("%s: skipped (%s)", name, svc.Proc.UnmetCondition()), nil
+				return fmt.Sprintf("%s: skipped (%s)", name, svc.UnmetCondition()), nil
 			}
 			return "", fmt.Errorf("start %s: %w", name, err)
 		}

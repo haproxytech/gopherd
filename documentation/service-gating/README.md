@@ -74,6 +74,23 @@ should also see the variable.
   `gopherd sidecar start` still starts it.
 - `ENABLE_SIDECAR=enabled`: both services auto-start.
 
+## `startup` template or `condition-env-equals`?
+
+Both read the environment at config load and again on reload. They differ
+in what an unmet gate means:
+
+- `startup: "{{.VAR}}"` switches auto-start on or off by presence. The
+  service stays defined: status shows `disabled` and a manual `start` over
+  the control socket still works.
+- `condition-env-equals` compares against a value and, when unmet, drops
+  the service from the loaded config. It is absent from `status`, cannot
+  be started, and edges pointing at it vanish so dependents run without
+  it. See [service-conditions](../service-conditions/).
+
+Pick `startup` when an operator should be able to start the service by
+hand anyway, `condition-env-equals` when the service simply does not
+belong in this container.
+
 ## Test
 
 Run level. One test launches with the variable empty and asserts

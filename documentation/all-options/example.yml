@@ -69,6 +69,11 @@ processes:
     # followed). Unmet: the start is skipped and counts as success.
     # condition-file-exists: /data/enable  # run only if the path exists
     # condition-file-missing: /data/done   # run only if the path does not exist
+    # Env condition: define this process only when gopherd's own environment
+    # matches at load; otherwise it is dropped from the config entirely.
+    # condition-env-equals:                # every key must match (AND)
+    #   ROLE: api                          # exists only in the api role ...
+    #   TIER: "1"                          # ... on tier 1 (values are strings)
     on-failure: ignore
     working-dir: /
     user: root

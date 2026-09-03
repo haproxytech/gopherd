@@ -50,6 +50,9 @@ func run(entrypointArgs []string) int {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	for _, x := range cfg.Excluded {
+		log.Printf("%s excluded (%s)", x.Name, x.Reason)
+	}
 
 	// GOPHERD_SOCKET overrides the configured control socket so a deployment
 	// can relocate it (e.g. writable path when rootless) without editing config.

@@ -66,3 +66,55 @@ func TestServiceConditions(t *testing.T) {
 		t.Errorf("run 2: expected clean exit 0, got %d", code)
 	}
 }
+
+// Boots one config twice: excluded by ROLE, then included via the inherited environment.
+func TestServiceConditionsEnv(t *testing.T) {
+	cfg := `
+processes:
+  - name: app
+    command: /bin/sh
+    args: ["-c", "exec sleep 300"]
+    condition-env-equals:
+      ROLE: api
+      ENABLE_FEATURE: "true"
+    on-failure: shutdown
+  - name: always
+    command: /bin/sh
+    args: ["-c", "exec sleep 300"]
+    after: [app]
+    on-failure: shutdown
+`
+
+	// Run 1: excluded. The daemon has no such service; `always` lost its edge.
+	t.Setenv("ROLE", "worker")
+	t.Setenv("ENABLE_FEATURE", "true")
+	d1 := doctest.RunConfig(t, cfg, doctest.Options{})
+	d1.WaitRunning("always", 5*time.Second)
+	if got := d1.Command("status"); strings.Contains(got, "app ") {
+		t.Errorf("status lists the excluded service:\n%s", got)
+	}
+	if got := d1.Command("status app"); !strings.Contains(got, "error: unknown service") {
+		t.Errorf("status app = %q, want unknown service", got)
+	}
+	if got := d1.Command("start app"); !strings.Contains(got, "error: unknown service") {
+		t.Errorf("start app = %q, want unknown service", got)
+	}
+	if !strings.Contains(d1.Output(), `app excluded (condition-env-equals: ROLE does not match "api")`) {
+		t.Errorf("daemon log lacks the exclusion line:\n%s", d1.Output())
+	}
+	if code := d1.Stop(); code != 0 {
+		t.Errorf("expected clean exit 0, got %d", code)
+	}
+
+	// Run 2: met.
+	t.Setenv("ROLE", "api")
+	t.Setenv("ENABLE_FEATURE", "true")
+	d2 := doctest.RunConfig(t, cfg, doctest.Options{})
+	d2.WaitRunning("app", 5*time.Second)
+	if gotRunning := d2.Command("status app"); !strings.Contains(gotRunning, "running") {
+		t.Errorf("status = %q, want running", gotRunning)
+	}
+	if code := d2.Stop(); code != 0 {
+		t.Errorf("expected clean exit 0, got %d", code)
+	}
+}

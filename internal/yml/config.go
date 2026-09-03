@@ -17,6 +17,7 @@ package yml
 import (
 	"fmt"
 	"log"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -58,7 +59,9 @@ const (
 type Config struct {
 	Checks     map[string]check.Config
 	LogTargets map[string]logger.TargetConfig
-	Prefix     string
+	// Excluded lists processes dropped by condition-env-equals, in config order, for logging.
+	Excluded []Exclusion
+	Prefix   string
 	// PassEnv is the global default for the per-service pass-env flag.
 	// nil means "not set", treated as false: child processes do not inherit
 	// gopherd's environment, so operator secrets cannot silently leak into
@@ -190,10 +193,16 @@ func Unmarshal(data []byte) (*Config, error) {
 	// config, so new values are still picked up.
 	env := envFromOS()
 
+	// Resolved at load: the daemon env never changes. Excluded entries are validated, then dropped.
+	excluded := map[string]bool{}
 	for _, item := range root.Get("processes").Items() {
 		p, err := parseProcess(item, env)
 		if err != nil {
 			return nil, err
+		}
+		if reason := conditionEnvUnmet(item, env); reason != "" {
+			excluded[procName(p)] = true
+			cfg.Excluded = append(cfg.Excluded, Exclusion{Name: procName(p), Reason: reason})
 		}
 		// Unset per-service pass-env inherits the global default. If both
 		// stay nil, the consumer treats it as false.
@@ -282,6 +291,9 @@ func Unmarshal(data []byte) (*Config, error) {
 		}
 	}
 
+	if len(excluded) > 0 {
+		cfg.Processes = excludeProcesses(cfg.Processes, excluded)
+	}
 	return cfg, nil
 }
 
@@ -459,6 +471,15 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		}
 		return p, fmt.Errorf("process %q: condition-file-exists and condition-file-missing name the same path %q; the conditions can never both hold", name, p.ConditionFileExists)
 	}
+	// A scalar would parse as an empty map and silently disable the gate.
+	if err := requireMapping(n, "condition-env-equals", p.Name, p.Command); err != nil {
+		return p, err
+	}
+	for k := range n.Get("condition-env-equals").StringMap() {
+		if !service.IsValidEnvKey(k) {
+			return p, fmt.Errorf("process %q: condition-env-equals key %q is invalid", procName(p), k)
+		}
+	}
 	// exit-code-map: YAML keys parse as strings; convert to an int-keyed map.
 	// Both sides accept a raw integer ("143") or a signal name ("SIGTERM" /
 	// "TERM"); signal names map to the shell convention 128+signum, matching
@@ -569,6 +590,50 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 // argSecretTemplateRe matches arg templates whose value lands in argv
 // ({{file}}, {{.VAR}}). {{cpu}}/{{mem}} expand to integers, so excluded.
 var argSecretTemplateRe = regexp.MustCompile(`\{\{\s*(?:file\b|\.)`)
+
+// Exclusion records a process removed from the loaded config and why.
+type Exclusion struct {
+	Name   string
+	Reason string
+}
+
+// conditionEnvUnmet compares against the load-time env; unset is "". Reasons never echo secrets.
+func conditionEnvUnmet(n *Node, env map[string]string) string {
+	envEquals := n.Get("condition-env-equals").StringMap()
+	// Sorted: deterministic reason when several keys mismatch.
+	for _, k := range slices.Sorted(maps.Keys(envEquals)) {
+		if env[k] != envEquals[k] {
+			return fmt.Sprintf("condition-env-equals: %s does not match %q", k, envEquals[k])
+		}
+	}
+	return ""
+}
+
+// excludeProcesses drops the named processes and every edge pointing at them.
+func excludeProcesses(procs []service.Process, excluded map[string]bool) []service.Process {
+	keep := make([]service.Process, 0, len(procs))
+	strip := func(deps []string) []string {
+		return slices.DeleteFunc(slices.Clone(deps), func(d string) bool { return excluded[d] })
+	}
+	for _, p := range procs {
+		if excluded[procName(p)] {
+			continue
+		}
+		p.After = strip(p.After)
+		p.Before = strip(p.Before)
+		p.Requires = strip(p.Requires)
+		keep = append(keep, p)
+	}
+	return keep
+}
+
+// procName is the process label for load errors: its name, else its command.
+func procName(p service.Process) string {
+	if p.Name != "" {
+		return p.Name
+	}
+	return p.Command
+}
 
 // requireMapping rejects a value that cannot hold a key-value table: a scalar
 // or list parses to an empty map, so the setting would be ignored in silence

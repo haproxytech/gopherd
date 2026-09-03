@@ -21,31 +21,54 @@ import (
 	"syscall"
 )
 
-// UnmetCondition evaluates the process's file conditions and returns a
-// human-readable reason when a start should be skipped, or "" to proceed.
-//
-// os.Stat follows symlinks so a k8s ..data mount resolves to its target and a
-// dangling symlink counts as missing. The check is advisory: the state can
-// change between this probe and the exec. A Stat error other than not-exist
-// leaves the condition unmet and names the error, so a permission problem
-// never masquerades as a missing file.
+// FileConditions is the start-gating subset of Process; reload swaps it atomically on running services.
+type FileConditions struct {
+	Exists  string
+	Missing string
+}
+
+// FileConditions extracts the start-gating paths from p.
+func (p *Process) FileConditions() FileConditions {
+	return FileConditions{Exists: p.ConditionFileExists, Missing: p.ConditionFileMissing}
+}
+
+// UnmetCondition evaluates the file conditions, returning the skip reason, or "".
 func (p *Process) UnmetCondition() string {
-	if p.ConditionFileExists != "" {
-		exists, err := fileExists(p.ConditionFileExists)
+	return p.FileConditions().Unmet()
+}
+
+// UnmetCondition evaluates the live file conditions, returning the skip reason, or "".
+func (s *Service) UnmetCondition() string {
+	c := s.conds.Load()
+	if c == nil {
+		return s.Proc.UnmetCondition()
+	}
+	return c.Unmet()
+}
+
+// SetFileConditions replaces the live conditions; Proc keeps the original ones.
+func (s *Service) SetFileConditions(c FileConditions) {
+	s.conds.Store(&c)
+}
+
+// Unmet evaluates the conditions, returning the skip reason, or "".
+func (c FileConditions) Unmet() string {
+	if c.Exists != "" {
+		exists, err := fileExists(c.Exists)
 		if err != nil {
 			return fmt.Sprintf("condition-file-exists: %v", err)
 		}
 		if !exists {
-			return fmt.Sprintf("condition-file-exists: %s is missing", p.ConditionFileExists)
+			return fmt.Sprintf("condition-file-exists: %s is missing", c.Exists)
 		}
 	}
-	if p.ConditionFileMissing != "" {
-		exists, err := fileExists(p.ConditionFileMissing)
+	if c.Missing != "" {
+		exists, err := fileExists(c.Missing)
 		if err != nil {
 			return fmt.Sprintf("condition-file-missing: %v", err)
 		}
 		if exists {
-			return fmt.Sprintf("condition-file-missing: %s exists", p.ConditionFileMissing)
+			return fmt.Sprintf("condition-file-missing: %s exists", c.Missing)
 		}
 	}
 	return ""

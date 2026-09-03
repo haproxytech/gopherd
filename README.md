@@ -24,6 +24,7 @@ A minimal PID 1 init process and service supervisor for Docker containers, espec
 - **Service dependencies** — `after`, `before`, `requires` with topological sort
 - **Oneshot tasks** — run-once init tasks (e.g. config generation, permission setup) that complete before dependents start, with optional `startup-timeout`
 - **Scheduled tasks** — cron-scheduled oneshot-style runs (`startup: scheduled` + `schedule: "0 3 * * *"`); each run is bounded by the optional `startup-timeout`, and a tick is skipped while the previous run is still going
+- **Start conditions** — skip a start when a file is present or missing (`condition-file-exists` / `condition-file-missing`), a skip counting as success for dependents; or drop a service from the config altogether when environment variables do not match (`condition-env-equals`), for one image serving several roles
 - **Health checks** — HTTP (including over Unix socket), TCP, and exec-based checks with configurable period, timeout, and threshold
 - **Readiness gates** — block dependent services until a health check passes or the service writes `READY=1` to `$NOTIFY_SOCKET` (systemd-compatible sd_notify)
 - **Zero-overhead output by default** — children write directly to the container's stdout/stderr; opt in with `log-capture: true` to enable prefixing, `logs`, and log-targets
@@ -596,6 +597,9 @@ File-target rotation keys (all optional; omit `max-size` to disable rotation):
 | `before` | string[] | `[]` | Start before these services |
 | `requires` | string[] | `[]` | Hard dependencies. If a required service fails, its running dependents are stopped (systemd `Requires=` semantics). Dependents are **not** automatically restarted when the dependency recovers — they stay stopped until manually restarted |
 | `restart-with-dependents` | bool | `false` | A control-socket `restart` of this service first stops the running services that transitively `requires` it (last-started first), restarts this service through its readiness gates, then starts them again in start order. Stopped requirers are left alone; automatic restarts do not cascade. Without `--wait` the sequence runs in the background |
+| `condition-file-exists` | string | | Gate every start attempt on this absolute path existing (evaluated with `os.Stat`, symlinks followed) |
+| `condition-file-missing` | string | | Gate every start attempt on this absolute path missing (evaluated with `os.Stat`, symlinks followed) |
+| `condition-env-equals` | map[string]string | `{}` | Define this service only when every listed variable in gopherd's own environment equals its value exactly. Resolved at config load and on reload; an excluded service is absent from `status`, cannot be started, and edges to it are dropped |
 | `on-check-failure` | map | `{}` | Check name -> action mapping |
 | `use-entrypoint-args` | bool | `false` | append Docker/K8s entrypoint args to this service |
 | `ready-check` | string | | Health check name that gates dependents |

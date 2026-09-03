@@ -1267,8 +1267,8 @@ func TestIsValidEnvKey(t *testing.T) {
 		{"FOO=BAR", false},
 		{"FOO.BAR", false},
 	} {
-		if got := isValidEnvKey(tc.key); got != tc.ok {
-			t.Errorf("isValidEnvKey(%q) = %v, want %v", tc.key, got, tc.ok)
+		if got := IsValidEnvKey(tc.key); got != tc.ok {
+			t.Errorf("IsValidEnvKey(%q) = %v, want %v", tc.key, got, tc.ok)
 		}
 	}
 }

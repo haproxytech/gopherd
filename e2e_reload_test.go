@@ -447,3 +447,71 @@ processes:
 
 	td.stop()
 }
+
+// Reload re-resolves the env condition: a newly included service starts like an added one.
+func TestE2EHotReloadConditionEnvEquals(t *testing.T) {
+	t.Setenv("ROLE", "worker")
+	cfg := `
+processes:
+  - name: keeper
+    command: sleep
+    args: ["300"]
+    on-success: ignore
+    on-failure: ignore
+  - name: gated-app
+    command: sleep
+    args: ["300"]
+    condition-env-equals:
+      ROLE: %s
+    on-success: ignore
+    on-failure: ignore
+`
+	td := startDaemon(t, fmt.Sprintf(cfg, "api"))
+	defer td.kill()
+	td.WaitRunning("keeper", 5*time.Second)
+	if resp := td.sendCommand("status gated-app"); !strings.Contains(resp, "unknown service") {
+		t.Fatalf("expected gated-app to be excluded, got: %s", resp)
+	}
+
+	td.updateConfig(fmt.Sprintf(cfg, "worker"))
+	if resp := td.sendCommand("reload"); strings.Contains(resp, "error") {
+		t.Fatalf("reload failed: %s", resp)
+	}
+	td.WaitRunning("gated-app", 5*time.Second)
+	td.stop()
+}
+
+// The reverse: an unmet condition on reload removes the running service like a deletion.
+func TestE2EHotReloadConditionEnvEqualsRunning(t *testing.T) {
+	t.Setenv("ROLE", "api")
+	cfg := `
+processes:
+  - name: keeper
+    command: sleep
+    args: ["300"]
+    on-success: ignore
+    on-failure: ignore
+  - name: gated-app
+    command: sleep
+    args: ["300"]
+    condition-env-equals:
+      ROLE: %s
+    on-success: ignore
+    on-failure: ignore
+`
+	td := startDaemon(t, fmt.Sprintf(cfg, "api"))
+	defer td.kill()
+	td.WaitRunning("gated-app", 5*time.Second)
+
+	td.updateConfig(fmt.Sprintf(cfg, "worker"))
+	if resp := td.sendCommand("reload"); strings.Contains(resp, "error") {
+		t.Fatalf("reload failed: %s", resp)
+	}
+	if resp := td.sendCommand("status gated-app"); !strings.Contains(resp, "unknown service") {
+		t.Fatalf("expected gated-app removed by reload, got: %s", resp)
+	}
+	if resp := td.sendCommand("status"); strings.Contains(resp, "gated-app") {
+		t.Fatalf("overview still lists gated-app:\n%s", resp)
+	}
+	td.stop()
+}

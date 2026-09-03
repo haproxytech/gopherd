@@ -224,7 +224,7 @@ func (d *daemon) runRestart(svc *service.Service, deps []*service.Service) error
 	}
 	if err := d.startForRestart(ctx, cfg, svc); err != nil {
 		if err == errConditionUnmet {
-			return fmt.Errorf("%s skipped (%s)", svc.Name, svc.Proc.UnmetCondition())
+			return fmt.Errorf("%s skipped (%s)", svc.Name, svc.UnmetCondition())
 		}
 		return err
 	}
