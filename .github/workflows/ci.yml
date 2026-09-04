@@ -40,7 +40,12 @@ jobs:
       - name: tidy
         run: go mod tidy
       - name: changes
-        run: test -z "$(git diff 2> /dev/null)" || exit "Go modules not tidied, issue \`go mod tidy\` and commit the result"
+        run: |
+          if ! git diff --quiet; then
+            echo "Go modules not tidied, issue \`go mod tidy\` and commit the result" >&2
+            git diff
+            exit 1
+          fi
   format:
     name: gofumpt
     runs-on: ubuntu-latest
@@ -51,6 +56,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
+          check-latest: true
       - name: Allow Go toolchain downloads
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
       - name: Install Task
@@ -61,7 +67,12 @@ jobs:
       - name: format
         run: task format
       - name: changes
-        run: test -z "$(git diff 2> /dev/null)" || exit "Go code not formatted, issue \`task format\` and commit the result"
+        run: |
+          if ! git diff --quiet; then
+            echo "Go code not formatted, issue \`task format\` and commit the result" >&2
+            git diff
+            exit 1
+          fi
   lint:
     name: lint
     needs: ["tidy", "format"]

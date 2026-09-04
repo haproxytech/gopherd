@@ -3,7 +3,7 @@ build:
   needs: []
   extends: .all-pipelines
   image:
-    name: $HAPROXY_REGISTRY_GO/golang:latest-alpine
+    name: $HAPROXY_REGISTRY_GO/golang:$GO_VERSION-alpine
     entrypoint: [""]
   tags:
     - go

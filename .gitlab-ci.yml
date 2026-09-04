@@ -17,6 +17,8 @@ stages:
   - build
 variables:
   HAPROXY_REGISTRY_GO: "registry.haproxy.com/gophers"
+  # One toolchain for every job, matching go.mod: `go fix` output differs between releases.
+  GO_VERSION: "1.27"
   JUNIT_FILE: "junit-report.xml"
   GOTESTSUM_JUNITFILE: "junit-report.xml"
 

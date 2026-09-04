@@ -3,7 +3,7 @@ tidy:
   needs: []
   extends: .all-pipelines
   image:
-    name: $HAPROXY_REGISTRY_GO/golang:latest-alpine
+    name: $HAPROXY_REGISTRY_GO/golang:$GO_VERSION-alpine
     entrypoint: [""]
   tags:
     - go
@@ -11,7 +11,11 @@ tidy:
     - go version
   script:
     - go mod tidy
-    - test -z "$(git diff 2> /dev/null)" || exit 'Go modules not tidied, issue \`go mod tidy\` and commit the result'
+    - |
+      if ! git diff --quiet; then
+        echo 'Go modules not tidied, issue `go mod tidy` and commit the result' >&2
+        exit 1
+      fi
   after_script:
     - |
       if [ "$CI_JOB_STATUS" == "success" ]; then
@@ -30,7 +34,7 @@ format:
   needs: []
   extends: .all-pipelines
   image:
-    name: $HAPROXY_REGISTRY_GO/golang:latest-alpine
+    name: $HAPROXY_REGISTRY_GO/golang:$GO_VERSION-alpine
     entrypoint: [""]
   tags:
     - go
@@ -38,7 +42,11 @@ format:
     - go version
   script:
     - task format
-    - test -z "$(git diff 2> /dev/null)" || exit 'Go code not formatted, issue \`task format\` and commit the result'
+    - |
+      if ! git diff --quiet; then
+        echo 'Go code not formatted, issue `task format` and commit the result' >&2
+        exit 1
+      fi
   after_script:
     - |
       if [ "$CI_JOB_STATUS" == "success" ]; then
@@ -58,7 +66,7 @@ lint:
   needs: []
   extends: .all-pipelines
   image:
-    name: $HAPROXY_REGISTRY_GO/golang:latest-alpine
+    name: $HAPROXY_REGISTRY_GO/golang:$GO_VERSION-alpine
     entrypoint: [""]
   tags:
     - go

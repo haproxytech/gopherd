@@ -16,7 +16,6 @@ test-e2e:
   variables:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_DRIVER: overlay2
-    GO_VERSION: "1.26"
     DOCKER_VERSION: "29.1"
     # dind resolves `docker run -v` paths on its own filesystem; only /builds
     # is shared with the job container, so bind-mounted test dirs must live
@@ -40,7 +39,7 @@ test:
   needs: []
   extends: .all-pipelines
   image:
-    name: $HAPROXY_REGISTRY_GO/golang:latest-alpine
+    name: $HAPROXY_REGISTRY_GO/golang:$GO_VERSION-alpine
     entrypoint: [""]
   tags:
     - go

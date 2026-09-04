@@ -1,3 +1,3 @@
 module github.com/haproxytech/gopherd
 
-go 1.26
+go 1.27

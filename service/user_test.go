@@ -316,7 +316,7 @@ func TestStrictGroupsNeedsAnExplicitGroup(t *testing.T) {
 	}
 	// Append atomically: write the new content to a sibling and rename over.
 	updated := append(append([]byte{}, original...),
-		[]byte(fmt.Sprintf("%s:x:%d:root\n", extraName, extraGID))...)
+		fmt.Appendf(nil, "%s:x:%d:root\n", extraName, extraGID)...)
 	tmp := groupFile + ".gopherd-test"
 	if err := os.WriteFile(tmp, updated, 0o644); err != nil {
 		t.Skipf("cannot stage %s: %v", tmp, err)
