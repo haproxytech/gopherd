@@ -69,17 +69,29 @@ func TestSetFromDevBuildWithoutVCS(t *testing.T) {
 	}
 }
 
+// The toolchain already appends +dirty to Main.Version for a modified tree,
+// so no second marker is added.
 func TestSetFromGitBuild(t *testing.T) {
-	setFrom(&debug.BuildInfo{
-		Main: debug.Module{Path: "github.com/haproxytech/gopherd", Version: "(devel)"},
-		Settings: []debug.BuildSetting{
-			{Key: "vcs.revision", Value: "0123456789abcdef"},
-			{Key: "vcs.modified", Value: "true"},
-		},
-	})
-
-	if Version != "dev.01234567.dirty" {
-		t.Errorf("Version = %q, want %q", Version, "dev.01234567.dirty")
+	tests := []struct {
+		name, mainVersion, want string
+	}{
+		{"clean tag", "v1.3.0", "v1.3.0.01234567"},
+		{"dirty tag", "v1.3.0+dirty", "v1.3.0+dirty.01234567"},
+		{"devel", "(devel)", "dev.01234567"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setFrom(&debug.BuildInfo{
+				Main: debug.Module{Path: "github.com/haproxytech/gopherd", Version: tt.mainVersion},
+				Settings: []debug.BuildSetting{
+					{Key: "vcs.revision", Value: "0123456789abcdef"},
+					{Key: "vcs.modified", Value: "true"},
+				},
+			})
+			if Version != tt.want {
+				t.Errorf("Version = %q, want %q", Version, tt.want)
+			}
+		})
 	}
 }
 

@@ -61,11 +61,8 @@ func setFrom(buildInfo *debug.BuildInfo) {
 		commit = "unknown"
 	}
 
-	var dirty string
-	if get(buildInfo, "vcs.modified") == "true" {
-		dirty = ".dirty"
-	}
-	Version = Tag + "." + commit + dirty
+	// Main.Version already carries +dirty for a modified tree.
+	Version = Tag + "." + commit
 }
 
 func get(buildInfo *debug.BuildInfo, key string) string {
