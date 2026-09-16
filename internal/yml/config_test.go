@@ -1059,6 +1059,38 @@ processes:
 	}
 }
 
+// An off-by-default gate: the service starts only when the operator explicitly
+// opts in, and an explicit "disabled" must not be mistaken for "enabled".
+func TestStartupEnvDefaultDisabledGate(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"unset stays disabled", map[string]string{}, "disabled"},
+		{"empty stays disabled", map[string]string{"START_X": ""}, "disabled"},
+		{"explicit disabled", map[string]string{"START_X": "disabled"}, "disabled"},
+		{"explicit enabled", map[string]string{"START_X": "enabled"}, "enabled"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withEnv(t, tt.env)
+			cfg, err := Unmarshal([]byte(`
+processes:
+  - name: svc
+    command: /bin/svc
+    startup: "{{.START_X:-disabled}}"
+`))
+			if err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if cfg.Processes[0].Startup != tt.want {
+				t.Errorf("Startup = %q, want %q", cfg.Processes[0].Startup, tt.want)
+			}
+		})
+	}
+}
+
 func TestStartupEnvGarbageErrors(t *testing.T) {
 	withEnv(t, map[string]string{"START_X": "garbage"})
 	_, err := Unmarshal([]byte(`

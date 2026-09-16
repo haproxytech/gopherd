@@ -210,3 +210,57 @@ processes:
 
 	td.stop()
 }
+
+// A service gated by "{{.VAR:-disabled}}" must stay off unless the operator
+// explicitly enables it; an explicit "disabled" is not an opt-in.
+func TestE2EStartupEnvDefaultDisabledGate(t *testing.T) {
+	const config = `
+processes:
+  - name: app
+    command: /bin/sleep
+    args: ["300"]
+  - name: gated
+    command: /bin/sleep
+    args: ["300"]
+    startup: "{{.E2E_ENABLE_GATED:-disabled}}"
+    on-success: restart
+    on-failure: restart
+`
+	assertDisabled := func(t *testing.T, td *testDaemon) {
+		t.Helper()
+		td.WaitRunning("app", 5*time.Second)
+		if resp := td.sendCommand("status gated"); !strings.Contains(resp, "disabled") {
+			t.Fatalf("expected gated disabled, got: %s", resp)
+		}
+		if out := td.Output(); strings.Contains(out, "started gated") {
+			t.Fatalf("gated must not be started, log:\n%s", out)
+		}
+	}
+
+	t.Run("unset", func(t *testing.T) {
+		// Setenv registers the restore; Unsetenv makes it truly absent.
+		t.Setenv("E2E_ENABLE_GATED", "")
+		os.Unsetenv("E2E_ENABLE_GATED")
+		td := startDaemon(t, config)
+		defer td.kill()
+		assertDisabled(t, td)
+		td.stop()
+	})
+
+	t.Run("explicit disabled", func(t *testing.T) {
+		t.Setenv("E2E_ENABLE_GATED", "disabled")
+		td := startDaemon(t, config)
+		defer td.kill()
+		assertDisabled(t, td)
+		td.stop()
+	})
+
+	t.Run("explicit enabled", func(t *testing.T) {
+		t.Setenv("E2E_ENABLE_GATED", "enabled")
+		td := startDaemon(t, config)
+		defer td.kill()
+		td.WaitRunning("app", 5*time.Second)
+		td.WaitRunning("gated", 5*time.Second)
+		td.stop()
+	})
+}
