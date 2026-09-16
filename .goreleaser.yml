@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 version: 2
+# Build output must not dirty the checkout: Go stamps any untracked path as
+# a modified tree. .local is already ignored.
+dist: .local/dist
 before:
   hooks:
     - go mod tidy
