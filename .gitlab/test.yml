@@ -34,6 +34,32 @@ test-e2e:
   script:
     - go test -count=1 -v ./e2e/
 
+# Release image assembly plus the COPY --from smoke path (task docker-test).
+# Every Dockerfile involved is FROM scratch, so nothing is pulled from any
+# registry and no login is needed, unlike test-e2e.
+test-docker:
+  stage: test
+  needs: []
+  extends: .all-pipelines
+  image: $CI_REGISTRY_GO/docker:$DOCKER_VERSION-go$GO_VERSION
+  services:
+    - name: $CI_REGISTRY_GO/docker:$DOCKER_VERSION-dind
+      alias: docker
+      variables:
+        DOCKER_INSECURE_NO_IPTABLES_RAW: "1"
+  tags:
+    - go
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_DRIVER: overlay2
+    DOCKER_VERSION: "29.1"
+  before_script:
+    # docker-build relies on buildx for the TARGETPLATFORM build arg.
+    - docker buildx version >/dev/null
+    - go version
+  script:
+    - task docker-test
+
 test:
   stage: test
   needs: []

@@ -79,3 +79,34 @@ release:
 
     Build date: {{.Date}}
   name_template: "gopherd v{{.Version}}"
+# One multi-arch image per release, pushed to Docker Hub and GHCR. GoReleaser
+# stages each platform's binary in the build context; the Dockerfile only
+# assembles the image, so all architectures build without emulation.
+dockers_v2:
+  - images:
+      - haproxytech/gopherd
+      - ghcr.io/haproxytech/gopherd
+    dockerfile: Dockerfile
+    platforms:
+      - linux/386
+      - linux/amd64
+      - linux/arm/v5
+      - linux/arm/v6
+      - linux/arm/v7
+      - linux/arm64
+      - linux/ppc64le
+      - linux/riscv64
+      - linux/s390x
+    tags:
+      - "{{ .Version }}"
+      - "{{ .Major }}.{{ .Minor }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    labels:
+      "org.opencontainers.image.title": "gopherd"
+      "org.opencontainers.image.description": "Minimal PID 1 init process and service supervisor for containers"
+      "org.opencontainers.image.url": "https://github.com/haproxytech/gopherd"
+      "org.opencontainers.image.source": "https://github.com/haproxytech/gopherd"
+      "org.opencontainers.image.version": "{{ .Version }}"
+      "org.opencontainers.image.revision": "{{ .FullCommit }}"
+      "org.opencontainers.image.licenses": "Apache-2.0"
+      "org.opencontainers.image.created": "{{ .Date }}"

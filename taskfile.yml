@@ -83,6 +83,59 @@ tasks:
         echo "all builds OK ({{.OUT}}/)"
       - rm -rf {{.OUT}}
 
+  docker-build:
+    desc: "build the release container image locally (host platform, no push)"
+    vars:
+      IMAGE: '{{default "gopherd" .IMAGE}}'
+      TAG: '{{default "dev" .TAG}}'
+      CTX: '{{default ".local/docker-image" .CTX}}'
+      PLATFORM:
+        sh: |
+          arch="$(go env GOARCH)"
+          if [ "$arch" = "arm" ]; then
+            echo "linux/arm/v$(go env GOARM)"
+          else
+            echo "linux/${arch}"
+          fi
+    cmds:
+      - rm -rf "{{.CTX}}"
+      - mkdir -p "{{.CTX}}/{{.PLATFORM}}"
+      # Stage the same build context GoReleaser produces for dockers_v2.
+      - CGO_ENABLED=0 go build -trimpath -ldflags="-s" -o "{{.CTX}}/{{.PLATFORM}}/gopherd" .
+      - cp Dockerfile "{{.CTX}}/"
+      - docker buildx build --load --platform "{{.PLATFORM}}" -t "{{.IMAGE}}:{{.TAG}}" "{{.CTX}}"
+
+  docker-test:
+    desc: "smoke-test the COPY --from path: version, then a rootless control socket"
+    vars:
+      IMAGE: '{{default "gopherd" .IMAGE}}'
+      TAG: '{{default "dev" .TAG}}'
+      CTX: '{{default ".local/docker-image" .CTX}}'
+    cmds:
+      - task: docker-build
+        vars:
+          IMAGE: "{{.IMAGE}}"
+          TAG: "{{.TAG}}"
+          CTX: "{{.CTX}}"
+      # The image is a binary source only, so there is no entrypoint to invoke.
+      - docker run --rm "{{.IMAGE}}:{{.TAG}}" /usr/local/sbin/gopherd version
+      - |
+        set -e
+        trap 'docker rm -f gopherd-smoke >/dev/null 2>&1 || true; docker rmi -f "{{.IMAGE}}:{{.TAG}}-smoke" >/dev/null 2>&1 || true' EXIT
+        printf '%s\n' \
+          'processes:' \
+          '  - name: beacon' \
+          '    command: /usr/local/sbin/gopherd' \
+          '    args: ["tag"]' \
+          '    startup: oneshot' \
+          '    on-success: ignore' > "{{.CTX}}/smoke.yml"
+        printf 'FROM scratch\nCOPY --from=%s /usr/local/sbin/gopherd /usr/local/sbin/gopherd\nCOPY smoke.yml /etc/gopherd/gopherd.yml\nUSER 1000:1000\nENTRYPOINT ["/usr/local/sbin/gopherd"]\n' \
+          "{{.IMAGE}}:{{.TAG}}" > "{{.CTX}}/Dockerfile.smoke"
+        docker build -q -f "{{.CTX}}/Dockerfile.smoke" -t "{{.IMAGE}}:{{.TAG}}-smoke" "{{.CTX}}"
+        docker run -d --name gopherd-smoke --mount type=tmpfs,destination=/run,tmpfs-mode=1777 "{{.IMAGE}}:{{.TAG}}-smoke" >/dev/null
+        sleep 1
+        docker exec gopherd-smoke /usr/local/sbin/gopherd status
+
   test:
     desc: "run Go tests"
     deps:

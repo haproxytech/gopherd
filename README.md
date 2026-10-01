@@ -72,6 +72,15 @@ Verify the download against `checksums.txt` from the same release before install
 > binaries and `checksums.txt` are replaced — if a pinned checksum stops matching,
 > re-fetch `checksums.txt` from the release page.
 
+Container images are published on every release to both Docker Hub and GitHub Container Registry:
+
+```bash
+docker pull haproxytech/gopherd:1.2.3          # Docker Hub
+docker pull ghcr.io/haproxytech/gopherd:1.2.3  # GitHub Container Registry
+```
+
+Image tags follow the release: `1.2.3` (full version), `1.2` (minor line), and `latest` (stable releases only). Each release is a single multi-arch manifest for Linux — `amd64`, `386`, `arm/v5`, `arm/v6`, `arm/v7`, `arm64`, `ppc64le`, `riscv64`, `s390x` — and `scratch`-based, carrying only the static `gopherd` binary at `/usr/local/sbin/gopherd`. The image is a source for `COPY --from`; build your own image on a base that fits your services (see [Docker](#docker)).
+
 #### Build
 
 ```bash
@@ -80,6 +89,9 @@ task ci                       # full CI: check-commit, tidy, format, lint, test
 task test                     # run tests with gotestsum
 task lint                     # revive + staticcheck + betteralign
 task format                   # go fix + betteralign + gofumpt
+task docker-build             # build the release image locally (host arch, no push)
+task docker-test              # build + smoke-test the COPY --from path (version, control socket)
+goreleaser release --snapshot --clean   # build the full multi-arch image set (no push)
 ```
 
 #### Run as init (daemon mode)
@@ -374,14 +386,18 @@ processes:
 
 #### Docker
 
+Use the published image as the source of the binary. It is `scratch`-based, so use a different base for your app image:
+
 ```dockerfile
 FROM your-base-image
-COPY gopherd /sbin/gopherd
+COPY --from=haproxytech/gopherd:1.2.3 /usr/local/sbin/gopherd /usr/local/sbin/gopherd
 COPY gopherd.yml /etc/gopherd/gopherd.yml
-ENTRYPOINT ["/sbin/gopherd"]
+ENTRYPOINT ["/usr/local/sbin/gopherd"]
 # Normal: runs as PID 1 init system
 # Debug:  docker run <image> /bin/sh  → passthrough to shell
 ```
+
+The control socket (`/run/gopherd.sock`) needs a writable `/run` in your image, and gopherd should run as a non-root user. It refuses a config owned by any uid other than root or the running one, and rejects world-writable ones: a config copied into the image is root-owned and accepted, while a config bind-mounted from the host must be chowned to the container's uid (or run as its owner). To use a different uid, point `GOPHERD_SOCKET` at a path that uid can write (or mount a writable `/run`).
 
 If your Dockerfile uses a custom `STOPSIGNAL`, add it to `init-stop-signal` so gopherd shuts down gracefully when the runtime sends it:
 
@@ -700,7 +716,7 @@ gopherd is designed for Linux containers. It also compiles and runs on macOS and
 
 #### Build targets
 
-Release binaries are built for Linux, macOS, and FreeBSD on every architecture Go supports — including all architectures used by the official `haproxy` Docker Library image and the `haproxytech/*` Docker images. Windows is not supported. See `.goreleaser.yml` for the full build matrix.
+Release binaries are built for Linux, macOS, and FreeBSD on every architecture Go supports — including all architectures used by the official `haproxy` Docker Library image and the `haproxytech/*` Docker images. Windows is not supported. The same Linux architectures are published as a single multi-arch container image to Docker Hub and GHCR on each release. See `.goreleaser.yml` for the full build matrix.
 
 ### Contributing
 
