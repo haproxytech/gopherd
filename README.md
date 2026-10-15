@@ -3,7 +3,6 @@
 ## gopherd
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Go Report Card](https://goreportcard.com/badge/github.com/haproxytech/gopherd)](https://goreportcard.com/report/github.com/haproxytech/gopherd)
 
 ### Description
 
