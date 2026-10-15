@@ -186,6 +186,12 @@ type Service struct {
 	killTimer *time.Timer // deferred group SIGKILL; fires even after leader exit (probe guards pid reuse)
 	done      chan struct{}
 
+	// capture holds the read ends of the current instance's log-capture
+	// pipes (stdout, stderr). Owned here rather than by os/exec, which only
+	// releases them in Cmd.Wait; the reap loop owns Wait4(-1), so Wait never
+	// runs. Closed by MarkExited after captureDrainGrace. Guarded by svc.mu.
+	capture []*os.File
+
 	// sdNotifyListener owns the sd_notify abstract socket when Proc.SDNotify
 	// is set. Created in Start, closed in MarkExited; nil otherwise. Guarded
 	// by svc.mu.
@@ -634,40 +640,20 @@ func expandTemplates(values []string, env map[string]string, totalMiB int64, tot
 			b.WriteString(s[prev:])
 			s = b.String()
 		}
-		// Expand {{file "/path"}} before {{.VAR}} so file contents containing
-		// template-like text are not re-expanded.
-		if strings.Contains(s, "{{") && strings.Contains(s, "file") {
-			expanded, err := ExpandFileRefs(s)
-			if err != nil {
-				return nil, err
+		// {{file}} and {{.VAR}} in one pass so inlined file contents are never
+		// re-scanned as a template (and env values never as a {{file}} read).
+		expanded, err := ExpandRefs(s, env, func(name string) {
+			// A silent empty substitution can corrupt arguments (e.g. an
+			// empty password flag). Warn once per missing key.
+			if _, already := warned[name]; !already {
+				warned[name] = struct{}{}
+				log.Printf("warning: template variable {{.%s}} is not set in environment; expanding to empty string", name)
 			}
-			s = expanded
+		})
+		if err != nil {
+			return nil, err
 		}
-		if locs := templateRe.FindAllStringSubmatchIndex(s, -1); locs != nil {
-			var b strings.Builder
-			prev := 0
-			for _, loc := range locs {
-				b.WriteString(s[prev:loc[0]])
-				name := s[loc[2]:loc[3]]
-				val, ok := env[name]
-				hasDefault := loc[4] >= 0
-				if (!ok || val == "") && hasDefault {
-					val = s[loc[4]:loc[5]]
-				} else if !ok {
-					// A silent empty substitution can corrupt arguments (e.g.
-					// an empty password flag). Warn once per missing key.
-					if _, already := warned[name]; !already {
-						warned[name] = struct{}{}
-						log.Printf("warning: template variable {{.%s}} is not set in environment; expanding to empty string", name)
-					}
-				}
-				b.WriteString(val)
-				prev = loc[1]
-			}
-			b.WriteString(s[prev:])
-			s = b.String()
-		}
-		out[i] = s
+		out[i] = expanded
 	}
 	return out, nil
 }
@@ -734,10 +720,9 @@ func (s *Service) PrepareStart() (*StartPlan, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.LogCapture {
-		cmd.Stdout = s.Stdout
-		cmd.Stderr = s.Stderr
-	} else {
+	// With log capture, FinishStart wires gopherd-owned pipes into
+	// Stdout/Stderr (see openCapture); the plan itself owns no OS resources.
+	if !s.LogCapture {
 		// *os.File makes os/exec pass the FD to the child directly — no pipe,
 		// no copy goroutine, gopherd stays out of the output path.
 		cmd.Stdout = os.Stdout
@@ -892,15 +877,45 @@ func (s *Service) FinishStart(plan *StartPlan) (int, error) {
 		plan.cmd.Env = append(plan.cmd.Env, "NOTIFY_SOCKET="+l.Path())
 	}
 
-	if err := plan.cmd.Start(); err != nil {
+	var capture, writers []*os.File
+	if s.LogCapture {
+		var err error
+		if capture, writers, err = openCapture(); err != nil {
+			if plan.sdNotify && s.sdNotifyListener != nil {
+				_ = s.sdNotifyListener.Close()
+				s.sdNotifyListener = nil
+			}
+			return 0, fmt.Errorf("log capture: %w", err)
+		}
+		plan.cmd.Stdout, plan.cmd.Stderr = writers[0], writers[1]
+	}
+	err := plan.cmd.Start()
+	// The child holds its own copies of the write ends; ours must go, or the
+	// copy goroutines never see EOF.
+	for _, w := range writers {
+		_ = w.Close()
+	}
+	if err != nil {
 		// Don't leak the abstract socket name on a failed spawn.
 		if plan.sdNotify && s.sdNotifyListener != nil {
 			_ = s.sdNotifyListener.Close()
 			s.sdNotifyListener = nil
 		}
+		for _, r := range capture {
+			_ = r.Close()
+		}
 		return 0, err
 	}
 
+	s.releaseCapture() // a previous instance's pipes, if MarkExited never ran
+	s.capture = capture
+	for i, r := range capture {
+		dst := s.Stdout
+		if i == 1 {
+			dst = s.Stderr
+		}
+		go copyCapture(dst, r)
+	}
 	s.cmd = plan.cmd
 	s.Pid.Store(int64(plan.cmd.Process.Pid))
 	s.done = make(chan struct{})
@@ -1016,7 +1031,59 @@ func (s *Service) MarkExited() time.Duration {
 		_ = s.sdNotifyListener.Close()
 		s.sdNotifyListener = nil
 	}
+	// A descendant that outlived the leader still holds the pipe write ends,
+	// so EOF may never come. Close the read ends after a grace period for
+	// output already in flight; without this each restart pins two fds and
+	// two goroutines in PID 1 for as long as such a descendant lives.
+	s.releaseCapture()
+	// The pid is already reaped by the caller; drop the process handle
+	// (pidfd) now instead of waiting for the GC.
+	if s.cmd != nil && s.cmd.Process != nil {
+		_ = s.cmd.Process.Release()
+	}
 	return time.Since(s.startedAt)
+}
+
+// captureDrainGrace bounds how long a log-capture pipe outlives its instance.
+const captureDrainGrace = 2 * time.Second
+
+// releaseCapture closes the current capture read ends after captureDrainGrace.
+// Caller must hold s.mu.
+func (s *Service) releaseCapture() {
+	capture := s.capture
+	if capture == nil {
+		return
+	}
+	s.capture = nil
+	time.AfterFunc(captureDrainGrace, func() {
+		for _, r := range capture {
+			_ = r.Close()
+		}
+	})
+}
+
+// openCapture creates the stdout and stderr log-capture pipes: read ends for
+// gopherd, write ends for the child.
+func openCapture() (readers, writers []*os.File, err error) {
+	for range 2 {
+		r, w, perr := os.Pipe()
+		if perr != nil {
+			for _, f := range append(readers, writers...) {
+				_ = f.Close()
+			}
+			return nil, nil, perr
+		}
+		readers = append(readers, r)
+		writers = append(writers, w)
+	}
+	return readers, writers, nil
+}
+
+// copyCapture forwards one capture pipe into its PrefixWriter until EOF or
+// until MarkExited closes the read end.
+func copyCapture(dst io.Writer, r *os.File) {
+	_, _ = io.Copy(dst, r)
+	_ = r.Close()
 }
 
 // WaitGroupExit blocks until the stopped instance's whole process group is

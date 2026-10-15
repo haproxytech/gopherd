@@ -54,6 +54,44 @@ func TestListenerPathFormat(t *testing.T) {
 	}
 }
 
+// A name another process bound first must not fail Listen: the suffix keeps the
+// real name unpredictable, so a squatter can only hold names nobody uses.
+func TestListenerIgnoresSquattedName(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("abstract socket names are Linux-only")
+	}
+	const pid = 4242
+	squat, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Net: "unixgram", Name: fmt.Sprintf("@gopherd-sd-notify-%d-victim", pid)})
+	if err != nil {
+		t.Fatalf("squat: %v", err)
+	}
+	defer squat.Close()
+
+	n, err := Listen("victim", pid, os.Getuid())
+	if err != nil {
+		t.Fatalf("Listen with the unsuffixed name already bound: %v", err)
+	}
+	defer n.Close()
+}
+
+func TestListenerNameIsUniquePerListener(t *testing.T) {
+	t.Parallel()
+	a, err := Listen("same", 7, os.Getuid())
+	if err != nil {
+		t.Fatalf("Listen a: %v", err)
+	}
+	defer a.Close()
+	b, err := Listen("same", 7, os.Getuid())
+	if err != nil {
+		t.Fatalf("Listen b (same name and pid while a is open): %v", err)
+	}
+	defer b.Close()
+	if a.Path() == b.Path() {
+		t.Fatalf("two listeners share path %q", a.Path())
+	}
+}
+
 func TestListenerReady(t *testing.T) {
 	t.Parallel()
 	n, err := Listen("ready", os.Getpid(), os.Getuid())

@@ -403,9 +403,9 @@ func validateSignalRewrite(procName string, rewrite map[string]string, shutdownS
 
 func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 	rawStartup := n.Get("startup").String()
-	// {{file}} expands before {{.VAR}}: file contents that look like a
-	// template must not be re-expanded.
-	fileExpanded, err := service.ExpandFileRefs(rawStartup)
+	// {{file}} and {{.VAR}} expand in one pass: file contents that look like
+	// a template must not be re-expanded.
+	expanded, err := service.ExpandRefs(rawStartup, env, nil)
 	if err != nil {
 		name := n.Get("name").String()
 		if name == "" {
@@ -416,7 +416,7 @@ func parseProcess(n *Node, env map[string]string) (service.Process, error) {
 		}
 		return service.Process{}, fmt.Errorf("process %q startup: %w", name, err)
 	}
-	startup := strings.TrimSpace(service.ExpandEnvRefs(fileExpanded, env))
+	startup := strings.TrimSpace(expanded)
 	// An env-var reference resolving to empty means "disabled", so
 	// `startup: "{{.START_X}}"` gates the service on whether $START_X is set.
 	// A literal empty string (no reference) falls through to "enabled".

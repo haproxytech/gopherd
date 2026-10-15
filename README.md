@@ -397,7 +397,7 @@ ENTRYPOINT ["/usr/local/sbin/gopherd"]
 # Debug:  docker run <image> /bin/sh  → passthrough to shell
 ```
 
-The control socket (`/run/gopherd.sock`) needs a writable `/run` in your image, and gopherd should run as a non-root user. It refuses a config owned by any uid other than root or the running one, and rejects world-writable ones: a config copied into the image is root-owned and accepted, while a config bind-mounted from the host must be chowned to the container's uid (or run as its owner). To use a different uid, point `GOPHERD_SOCKET` at a path that uid can write (or mount a writable `/run`).
+The control socket (`/run/gopherd.sock`) needs a writable `/run` in your image, and gopherd should run as a non-root user. It refuses a config owned by any uid other than root or the running one, and rejects world-writable ones: a config copied into the image is root-owned and accepted, while a config bind-mounted from the host must be chowned to the container's uid (or run as its owner). To use a different uid, point `GOPHERD_SOCKET` at a path that uid can write (or mount a writable `/run`). gopherd refuses to start if a node it cannot remove already occupies the socket path (for example another uid's socket in a sticky directory); any other bind failure only disables the control socket. The client refuses a socket whose listener is neither root nor its own uid.
 
 If your Dockerfile uses a custom `STOPSIGNAL`, add it to `init-stop-signal` so gopherd shuts down gracefully when the runtime sends it:
 
@@ -650,6 +650,8 @@ service triggers a shutdown action or it receives an `init-stop-signal`.
 | `http` | `url`, `socket` | GET request, expect 2xx status. Optional `socket` for Unix socket transport |
 | `tcp` | `host`, `port` | TCP connection, expect success |
 | `exec` | `command`, `args` | Run command, expect exit 0 |
+
+An exec check referenced by a service (`ready-check` or `on-check-failure`) runs as that service's `user`/`group`. In that case it gets the environment gopherd would give the service: gopherd's own environment only with `pass-env: true`, otherwise just `PATH`. An exec check that runs as gopherd itself inherits gopherd's environment.
 
 ### Architecture
 

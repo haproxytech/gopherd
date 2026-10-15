@@ -1404,6 +1404,29 @@ processes:
 	}
 }
 
+// The other direction: a {{.VAR}} inside a file read by {{file}} is literal
+// text, so the file cannot pull a startup value out of the loader's env.
+func TestStartupFileContentIsNotEnvExpanded(t *testing.T) {
+	dir := t.TempDir()
+	gate := filepath.Join(dir, "gate")
+	if err := os.WriteFile(gate, []byte("{{.START_X}}"), 0o600); err != nil {
+		t.Fatalf("write gate: %v", err)
+	}
+	withEnv(t, map[string]string{"START_X": "oneshot"})
+
+	cfg, err := Unmarshal(fmt.Appendf(nil, `
+processes:
+  - name: svc
+    command: /bin/svc
+    startup: '{{file "%s"}}'
+`, gate))
+	if err == nil {
+		t.Fatalf("expected an error for file content that is not a valid startup; "+
+			"got Startup = %q (a placeholder inside the file was expanded)",
+			cfg.Processes[0].Startup)
+	}
+}
+
 // TestControlSocketModeIsOctal pins that socket-mode is read as octal. Modes
 // are written in octal by convention, so reading "0660" as decimal 660 yields
 // 0o1224 — sticky bit set, wrong permissions on the control socket, no error.

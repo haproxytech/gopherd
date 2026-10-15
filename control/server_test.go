@@ -16,6 +16,7 @@ package control
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -795,5 +796,96 @@ func TestLifecycleWaitOptions(t *testing.T) {
 		if resp := sendCommand(t, cs.SocketPath, bad); !strings.HasPrefix(resp, "error:") {
 			t.Errorf("%q: expected error, got %q", bad, resp)
 		}
+	}
+}
+
+// helperHeldPathEnv names the directory a re-executed helper runs the held-path
+// Start check in (as an unprivileged uid: root may delete anything).
+const helperHeldPathEnv = "GOPHERD_TEST_HELD_PATH_DIR"
+
+// checkStartFailsOnHeldPath leaves a socket node in a directory the caller
+// cannot write and expects Start to report ErrSocketPathHeld instead of a
+// plain bind error the daemon would only warn about.
+func checkStartFailsOnHeldPath(dir string) error {
+	sockPath := filepath.Join(dir, "control.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		return fmt.Errorf("plant node: %w", err)
+	}
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	_ = ln.Close()
+	if err := os.Chmod(dir, 0o555); err != nil {
+		return err
+	}
+	defer os.Chmod(dir, 0o755) //nolint:errcheck // best-effort cleanup
+
+	cs := NewServer(Config{SocketPath: sockPath})
+	err = cs.Start()
+	if err == nil {
+		cs.Stop()
+		return errors.New("Start succeeded although the stale node could not be removed")
+	}
+	if !errors.Is(err, ErrSocketPathHeld) {
+		return fmt.Errorf("Start error %q does not wrap ErrSocketPathHeld", err)
+	}
+	return nil
+}
+
+// TestHelperStartHeldPath is not a test: it is the body TestStartFailsOnHeldPath
+// re-executes under an unprivileged uid when the suite runs as root.
+func TestHelperStartHeldPath(t *testing.T) {
+	dir := os.Getenv(helperHeldPathEnv)
+	if dir == "" {
+		t.Skip("helper process only")
+	}
+	if err := checkStartFailsOnHeldPath(dir); err != nil {
+		fmt.Printf("HELPER-FAIL: %v\n", err)
+		return
+	}
+	fmt.Println("HELPER-OK")
+}
+
+// A node at the socket path that Start cannot replace must be reported as
+// ErrSocketPathHeld, so the daemon refuses to run with that node as the
+// endpoint instead of continuing without a control socket.
+func TestStartFailsOnHeldPath(t *testing.T) {
+	if os.Geteuid() != 0 {
+		if err := checkStartFailsOnHeldPath(t.TempDir()); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	base, err := os.MkdirTemp("", "held-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(base, "d"), 0o755); _ = os.RemoveAll(base) })
+	if err := os.Chmod(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Skipf("cannot stage a copy of the test binary: %v", err)
+	}
+	helperBin := filepath.Join(base, "helper.test")
+	if err := os.WriteFile(helperBin, self, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(base, "d")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(dir, 65534, 65534); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(helperBin, "-test.run=^TestHelperStartHeldPath$")
+	cmd.Env = append(os.Environ(), helperHeldPathEnv+"="+dir)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 65534, Gid: 65534}}
+	out, err := cmd.CombinedOutput()
+	if err != nil && !strings.Contains(string(out), "HELPER-") {
+		t.Skipf("helper could not run as uid 65534: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "HELPER-OK") {
+		t.Fatalf("held socket path not reported as ErrSocketPathHeld:\n%s", out)
 	}
 }

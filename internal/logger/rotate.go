@@ -207,7 +207,10 @@ func (fw *rotatingFileWriter) rotate() error {
 		}
 	}
 
-	f, err := os.OpenFile(fw.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW, 0o640)
+	// The rename above freed fw.path, so the fresh leaf must be one we create:
+	// O_EXCL refuses a node another principal placed there in the meantime,
+	// which would otherwise receive every later line for this target.
+	f, _, err := openLogLeaf(fw.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND)
 	if err != nil {
 		return fmt.Errorf("reopen %s: %w", fw.path, err)
 	}
@@ -216,14 +219,24 @@ func (fw *rotatingFileWriter) rotate() error {
 	return nil
 }
 
+// gzipFile compresses src (the just-rotated leaf) into dst. Both live in the
+// log directory, so neither is trusted by name: src must still be a regular
+// file reached without following a link, and dst is created exclusively.
 func gzipFile(src, dst string) (err error) {
-	in, err := os.Open(src) //nolint:gosec // src built from validated log path
+	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file (%s)", src, info.Mode().Type())
+	}
 
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0o640)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, 0o640)
 	if err != nil {
 		return err
 	}

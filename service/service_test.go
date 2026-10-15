@@ -15,12 +15,14 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -86,8 +88,9 @@ func TestPrepareStartLogCaptureWiring(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareStart: %v", err)
 	}
-	if plan.cmd.Stdout != svc.Stdout || plan.cmd.Stderr != svc.Stderr {
-		t.Error("capture on: cmd should use the service PrefixWriters")
+	// The plan owns no OS resources: FinishStart wires gopherd-owned pipes.
+	if plan.cmd.Stdout != nil || plan.cmd.Stderr != nil {
+		t.Error("capture on: PrepareStart must leave Stdout/Stderr for FinishStart")
 	}
 }
 
@@ -1223,6 +1226,33 @@ func TestPrepareStartFileRefsExpandBeforeVars(t *testing.T) {
 	}
 }
 
+// The other direction: text inside a file inlined by {{file}} is data. A
+// "{{.VAR}}" in it must not pick up a value from the service environment, or
+// whoever writes that file can copy env secrets into a world-readable argv.
+func TestPrepareStartFileContentIsNotReExpanded(t *testing.T) {
+	dir := t.TempDir()
+	data := filepath.Join(dir, "data")
+	if err := os.WriteFile(data, []byte("--token={{.DB_PASSWORD}}"), 0o600); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	svc := mustNew(t, Process{
+		Command:     "/bin/true",
+		Args:        []string{`{{file "` + data + `"}}`},
+		Environment: map[string]string{"DB_PASSWORD": "s3cr3t", "FROM_FILE": `{{file "` + data + `"}}`},
+	}, "")
+	plan, err := svc.PrepareStart()
+	if err != nil {
+		t.Fatalf("PrepareStart: %v", err)
+	}
+	const literal = "--token={{.DB_PASSWORD}}"
+	if got := plan.cmd.Args[len(plan.cmd.Args)-1]; got != literal {
+		t.Errorf("argv = %q, want the file's literal content %q", got, literal)
+	}
+	if !slices.Contains(plan.cmd.Env, "FROM_FILE="+literal) {
+		t.Errorf("FROM_FILE not the file's literal content: %v", plan.cmd.Env)
+	}
+}
+
 // TestWaitSDNotifyReadyWithoutListener pins that the readiness gate fails
 // closed. A nil listener means the service never opted in, its spawn failed, or
 // a reload turned sd-notify off; returning nil there reports "ready" for a
@@ -1655,5 +1685,81 @@ func TestParseUmask(t *testing.T) {
 		if (err == nil) != tc.ok || got != tc.want {
 			t.Errorf("ParseUmask(%q) = %o, %v; want %o, ok=%v", tc.in, got, err, tc.want, tc.ok)
 		}
+	}
+}
+
+// With log capture, output still reaches the service's PrefixWriter through
+// the gopherd-owned pipes.
+func TestLogCaptureForwardsOutput(t *testing.T) {
+	captureOn := true
+	svc := mustNew(t, Process{Command: "/bin/sh", Args: []string{"-c", "echo capture-out; echo capture-err >&2"}, LogCapture: &captureOn}, "")
+	pid, err := svc.Start()
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	var ws syscall.WaitStatus
+	_, _ = syscall.Wait4(pid, &ws, 0, nil)
+	svc.MarkExited()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		out, errOut := svc.Stdout.Recent(), svc.Stderr.Recent()
+		if len(out) > 0 && len(errOut) > 0 {
+			if !bytes.Contains(out[0], []byte("capture-out")) || !bytes.Contains(errOut[0], []byte("capture-err")) {
+				t.Fatalf("stdout %q / stderr %q", out, errOut)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("captured output never arrived: stdout %q stderr %q", out, errOut)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A descendant that outlives the leader keeps the capture pipes' write ends
+// open, so EOF never arrives. The parent must still release the read ends and
+// copy goroutines once the instance has exited, or every restart leaks two of
+// each into PID 1 until the descriptor limit turns a restart into a shutdown.
+func TestLogCaptureReleasedWhileDescendantHoldsPipe(t *testing.T) {
+	captureOn := true
+	countFDs := func() int {
+		ents, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			t.Skipf("no /proc/self/fd: %v", err)
+		}
+		return len(ents)
+	}
+	baseFDs, baseG := countFDs(), runtime.NumGoroutine()
+
+	const cycles = 5
+	var groups []int
+	t.Cleanup(func() {
+		for _, pgid := range groups {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		}
+	})
+	for range cycles {
+		svc := mustNew(t, Process{Command: "/bin/sh", Args: []string{"-c", "sleep 60 & exit 3"}, LogCapture: &captureOn}, "")
+		pid, err := svc.Start()
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		groups = append(groups, pid)
+		var ws syscall.WaitStatus
+		_, _ = syscall.Wait4(pid, &ws, 0, nil)
+		svc.MarkExited()
+	}
+
+	deadline := time.Now().Add(captureDrainGrace + 5*time.Second)
+	for {
+		fds, g := countFDs(), runtime.NumGoroutine()
+		if fds <= baseFDs && g <= baseG+1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after %d exited instances: fds %d -> %d, goroutines %d -> %d; capture pipes not released",
+				cycles, baseFDs, fds, baseG, g)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

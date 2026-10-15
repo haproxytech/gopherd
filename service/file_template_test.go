@@ -379,3 +379,27 @@ func BenchmarkExpandFileRefsRead(b *testing.B) {
 		_, _ = ExpandFileRefs(in)
 	}
 }
+
+// {{file}}/dotenv descriptors must not leak into a service forked during the
+// read: PrepareStart runs off d.mu, concurrently with other services' fork/exec.
+func TestOpenConfinedIsCloseOnExec(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(path, []byte("x"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	for _, follow := range []bool{false, true} {
+		f, err := openConfined(path, follow)
+		if err != nil {
+			t.Fatalf("follow=%v: %v", follow, err)
+		}
+		flags, _, errno := syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), syscall.F_GETFD, 0)
+		_ = f.Close()
+		if errno != 0 {
+			t.Fatalf("follow=%v: fcntl: %v", follow, errno)
+		}
+		if flags&syscall.FD_CLOEXEC == 0 {
+			t.Errorf("follow=%v: descriptor is inheritable across exec", follow)
+		}
+	}
+}

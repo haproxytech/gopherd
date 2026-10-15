@@ -42,6 +42,22 @@ import (
 // huge config file cannot OOM-kill PID 1. 4 MiB is generous for real configs.
 const maxConfigFileSize = 4 << 20
 
+// openConfigFile opens the config leaf for readConfigFile.
+func openConfigFile(path string) (*os.File, error) {
+	// O_NOFOLLOW fails with ELOOP if path is a symlink, making the symlink
+	// check atomic with the open (no separate Lstat needed). O_CLOEXEC keeps
+	// a service forked during a reload from inheriting the descriptor: raw
+	// syscall.Open does not add it the way os.OpenFile does.
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		if err == syscall.ELOOP {
+			return nil, fmt.Errorf("config %s is a symlink; refusing to open", path)
+		}
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), path), nil
+}
+
 // readConfigFile opens path, verifies it is not a symlink and passes permission
 // checks, then returns its contents. All checks run on the open file descriptor
 // to eliminate the TOCTOU window of a separate Lstat+Stat preceding ReadFile.
@@ -51,16 +67,10 @@ const maxConfigFileSize = 4 << 20
 // often sits under a system symlink like /var/run that an ancestor walk would
 // wrongly reject.
 func readConfigFile(path string) ([]byte, error) {
-	// O_NOFOLLOW fails with ELOOP if path is a symlink, making the symlink
-	// check atomic with the open (no separate Lstat needed).
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openConfigFile(path)
 	if err != nil {
-		if err == syscall.ELOOP {
-			return nil, fmt.Errorf("config %s is a symlink; refusing to open", path)
-		}
 		return nil, err
 	}
-	f := os.NewFile(uintptr(fd), path)
 	defer f.Close()
 
 	// fstat(2) on the open fd: permission checks hit the same inode we read,
@@ -561,6 +571,25 @@ func (d *daemon) startOrder() ([]string, error) {
 	return order.TopoSort(buildOrderServices(d.cfg))
 }
 
+// runCheckAsOwner makes an exec check run as its owning service's user, with
+// only the environment gopherd would hand that service: without pass-env the
+// probe gets PATH alone instead of gopherd's full environment.
+func runCheckAsOwner(c *check.Checker, svc *service.Service) error {
+	cred, err := service.ResolveCredential(svc.Proc.User, svc.Proc.Group, svc.Proc.UserID, svc.Proc.GroupID, svc.Proc.StrictGroups)
+	if err != nil || cred == nil {
+		return err
+	}
+	c.SetCredential(cred)
+	if svc.Proc.PassEnv == nil || !*svc.Proc.PassEnv {
+		env := []string{}
+		if path, ok := os.LookupEnv("PATH"); ok {
+			env = append(env, "PATH="+path)
+		}
+		c.SetEnv(env)
+	}
+	return nil
+}
+
 func (d *daemon) startChecks() {
 	// Map each check to the service referencing it (via on-check-failure or
 	// ready-check) so exec checks run as that service's user instead of root.
@@ -584,11 +613,8 @@ func (d *daemon) startChecks() {
 		}
 		c.SetReaper(d.reaper)
 		if svc, ok := checkOwner[name]; ok && checkCfg.Exec != nil {
-			cred, err := service.ResolveCredential(svc.Proc.User, svc.Proc.Group, svc.Proc.UserID, svc.Proc.GroupID, svc.Proc.StrictGroups)
-			if err != nil {
+			if err := runCheckAsOwner(c, svc); err != nil {
 				log.Printf("warning: check %s: resolve credential: %v", name, err)
-			} else if cred != nil {
-				c.SetCredential(cred)
 			}
 		}
 		d.checkers = append(d.checkers, c)

@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -163,6 +164,11 @@ func run(entrypointArgs []string) int {
 	// services appear as "pending".
 	ctrlServer := d.setupControl()
 	if err := ctrlServer.Start(); err != nil {
+		// A path held by another principal stays reachable as "gopherd" if we
+		// carry on without a socket; any other bind failure only loses control.
+		if errors.Is(err, control.ErrSocketPathHeld) {
+			log.Fatalf("control socket: %v", err)
+		}
 		log.Printf("warning: control socket: %v", err)
 	} else {
 		log.Printf("control socket: %s", ctrlServer.SocketPath)

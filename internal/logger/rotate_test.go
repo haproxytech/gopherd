@@ -20,7 +20,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestParseByteSize(t *testing.T) {
@@ -400,5 +402,87 @@ func TestRotateRefusesSymlinkedAncestor(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(evil, "app.log.1")); err == nil {
 		t.Error("rotate redirected through the symlink into the attacker dir")
+	}
+}
+
+// A FIFO planted at the log path must fail the open instead of blocking it:
+// openFile runs on the startup path and inside reload with d.mu held.
+func TestOpenFileRejectsFIFOWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "app.log")
+	if err := syscall.Mkfifo(path, 0o640); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		w, err := openFile(path, TargetConfig{})
+		if err == nil {
+			_ = w.Close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("openFile accepted a FIFO")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("openFile blocked on a FIFO without a reader")
+	}
+}
+
+// The reopen after rotation must create the leaf itself: a node another
+// principal placed at the freed path would receive every later line.
+func TestOpenLogLeafExclusiveRefusesExistingLeaf(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "app.log")
+	if err := os.WriteFile(path, []byte("planted\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if f, _, err := openLogLeaf(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND); err == nil {
+		_ = f.Close()
+		t.Fatal("exclusive reopen adopted an existing leaf")
+	}
+}
+
+func TestOpenLogLeafRejectsForeignOwner(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to create a file owned by another uid")
+	}
+	path := filepath.Join(t.TempDir(), "app.log")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(path, 65534, 65534); err != nil {
+		t.Fatal(err)
+	}
+	if f, _, err := openLogLeaf(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND); err == nil {
+		_ = f.Close()
+		t.Fatal("accepted a log file owned by another uid")
+	} else if !strings.Contains(err.Error(), "owned by uid 65534") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// gzip must not follow a link swapped in for the rotated file, or a root
+// gopherd would copy the link target into the log directory.
+func TestGzipFileRefusesSymlinkedSource(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	if err := os.WriteFile(secret, []byte("s3cr3t"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(dir, "app.log.1")
+	if err := os.Symlink(secret, src); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "app.log.1.gz")
+	if err := gzipFile(src, dst); err == nil {
+		t.Fatal("gzipFile followed a symlinked source")
+	}
+	if _, err := os.Lstat(dst); !os.IsNotExist(err) {
+		t.Fatalf("gzip output left behind: %v", err)
 	}
 }

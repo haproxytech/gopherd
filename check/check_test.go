@@ -135,6 +135,23 @@ func TestExecSuccess(t *testing.T) {
 	}
 }
 
+// A probe given an explicit env must not see gopherd's: it may run as a
+// service uid that can read /proc/<probe>/environ.
+func TestExecEnvIsolatedFromDaemon(t *testing.T) {
+	t.Setenv("GOPHERD_CHECK_CANARY", "daemon-only")
+
+	inherit, _ := New("exec-inherit", Config{Exec: &Exec{Command: "/bin/sh", Args: []string{"-c", `[ "$GOPHERD_CHECK_CANARY" = daemon-only ]`}}, Period: "1s", Timeout: "2s"}, nil, nil)
+	if err := inherit.Execute(); err != nil {
+		t.Fatalf("default env: probe did not inherit gopherd's environment: %v", err)
+	}
+
+	isolated, _ := New("exec-isolated", Config{Exec: &Exec{Command: "/bin/sh", Args: []string{"-c", `[ -z "$GOPHERD_CHECK_CANARY" ] && [ "$PATH" = /usr/bin:/bin ]`}}, Period: "1s", Timeout: "2s"}, nil, nil)
+	isolated.SetEnv([]string{"PATH=/usr/bin:/bin"})
+	if err := isolated.Execute(); err != nil {
+		t.Fatalf("SetEnv: probe saw gopherd's environment or lost its PATH: %v", err)
+	}
+}
+
 func TestExecFailure(t *testing.T) {
 	t.Parallel()
 	c, _ := New("exec-fail", Config{Exec: &Exec{Command: "false"}, Period: "1s", Timeout: "2s"}, nil, nil)

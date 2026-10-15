@@ -252,14 +252,28 @@ func TestHelperListenAsOtherUID(t *testing.T) {
 	}
 	defer ln.Close()
 	fmt.Println("HELPER-READY")
-	// Accept and discard until the parent kills us.
+	// Answer every connection as if it were gopherd until the parent kills us.
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
+		_, _ = fmt.Fprintln(conn, "FAKE-GOPHERD-REPLY")
 		conn.Close()
 	}
+}
+
+// helperClientEnv carries the CLI arguments for a re-executed RunClient.
+const helperClientEnv = "GOPHERD_TEST_RUNCLIENT_ARGS"
+
+// TestHelperRunClient is not a test: it is the body of the child that runs
+// RunClient (which exits the process) for TestIsAliveRejectsForeignOwner.
+func TestHelperRunClient(t *testing.T) {
+	args := os.Getenv(helperClientEnv)
+	if args == "" {
+		t.Skip("helper process only")
+	}
+	RunClient(strings.Fields(args))
 }
 
 // TestIsAliveRejectsForeignOwner pins that "is another gopherd already running?"
@@ -323,6 +337,21 @@ func TestIsAliveRejectsForeignOwner(t *testing.T) {
 	if IsAlive(sock) {
 		t.Error("IsAlive accepted a listener owned by another uid; only a socket " +
 			"held by root or our own user is evidence that gopherd is running")
+	}
+
+	// The CLI must apply the same check before sending a command: otherwise
+	// the squatter receives it and its reply is printed as gopherd's.
+	client := exec.Command(os.Args[0], "-test.run=^TestHelperRunClient$")
+	client.Env = append(os.Environ(), helperClientEnv+"=stop worker", "GOPHERD_SOCKET="+sock)
+	out, err := client.CombinedOutput()
+	if err == nil {
+		t.Errorf("RunClient exited 0 against a foreign-uid listener:\n%s", out)
+	}
+	if strings.Contains(string(out), "FAKE-GOPHERD-REPLY") {
+		t.Errorf("RunClient printed the squatter's reply as gopherd output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "refusing to talk to") {
+		t.Errorf("RunClient did not report the untrusted peer:\n%s", out)
 	}
 
 	// Positive control: our own listener is recognised.

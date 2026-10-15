@@ -75,6 +75,7 @@ type Checker struct {
 	onFailureFn  func(checkName string)          // called when threshold breached
 	metricsFn    func(checkName string, ok bool) // called after every check
 	credential   *syscall.Credential             // optional: run exec checks as this user
+	env          []string                        // exec check environment; nil inherits gopherd's
 	reaper       *reaper.Registry                // optional: reap loop delivers exec exit statuses
 	httpClient   *http.Client
 	httpReq      *http.Request // cached base request, cloned per-check
@@ -368,6 +369,7 @@ func (c *Checker) checkExec(ctx context.Context) error {
 	if c.credential != nil {
 		cmd.SysProcAttr.Credential = c.credential
 	}
+	cmd.Env = c.env
 	// Signal the whole process group on cancel so forked grandchildren die too;
 	// the default Cancel only kills the leader, leaving descendants reparented to
 	// PID 1 with side effects still in flight. WaitDelay bounds the grace period
@@ -406,6 +408,7 @@ func (c *Checker) checkExecReaped(ctx context.Context) error {
 	if c.credential != nil {
 		cmd.SysProcAttr.Credential = c.credential
 	}
+	cmd.Env = c.env
 	pid, status, err := c.reaper.Start(func() (int, error) {
 		if err := cmd.Start(); err != nil {
 			return 0, err
@@ -455,4 +458,11 @@ func (c *Checker) SetReaper(r *reaper.Registry) {
 // as the associated service's user instead of as root.
 func (c *Checker) SetCredential(cred *syscall.Credential) {
 	c.credential = cred
+}
+
+// SetEnv sets the exec check environment. A nil env (the default) inherits
+// gopherd's; a probe dropped to a service's credential must not, or that
+// service's uid could read gopherd's environment from /proc/<probe>/environ.
+func (c *Checker) SetEnv(env []string) {
+	c.env = env
 }

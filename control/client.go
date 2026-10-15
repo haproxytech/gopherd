@@ -85,9 +85,16 @@ func IsAlive(socketPath string) bool {
 		return false
 	}
 	defer conn.Close()
+	return peerTrusted(conn)
+}
+
+// peerTrusted reports whether the listener on conn runs as root or our euid,
+// i.e. is a gopherd we may hand a command to and whose answer we may print.
+// Non-Linux: peerUID is -1 and filesystem permissions are the only guard.
+func peerTrusted(conn net.Conn) bool {
 	uid := peerUID(conn)
 	if uid == -1 {
-		return true // non-Linux: no peer creds, fall back to reachability
+		return true
 	}
 	return uid == 0 || uid == os.Geteuid()
 }
@@ -193,6 +200,12 @@ func RunClient(args []string) {
 		os.Exit(1)
 	}
 	defer conn.Close()
+	// Same identity check as IsAlive: a listener owned by another uid at the
+	// socket path would otherwise receive the command and answer for gopherd.
+	if !peerTrusted(conn) {
+		fmt.Fprintf(os.Stderr, "refusing to talk to %s: peer uid %d is neither root nor uid %d\n", socketPath, peerUID(conn), os.Geteuid())
+		os.Exit(1)
+	}
 
 	fmt.Fprintf(conn, "%s\n", command)
 

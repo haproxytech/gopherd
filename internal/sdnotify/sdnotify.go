@@ -20,12 +20,17 @@
 // avoided.
 //
 // Abstract sockets have no filesystem permissions, so the listener enables
-// SO_PASSCRED and accepts records only from the child's uid or root.
+// SO_PASSCRED and accepts records only from the child's uid or root. Names are
+// first-come-first-served for every process in the network namespace, so each
+// listener carries a random suffix: a predictable name could be bound by any
+// supervised service first, failing the start of the service it belongs to.
 package sdnotify
 
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -54,14 +59,18 @@ type Listener struct {
 	wg       sync.WaitGroup
 }
 
-// Listen creates a datagram socket at @gopherd-sd-notify-<pid>-<name> and
-// begins reading. name is a stable service identifier; pid disambiguates
-// concurrent gopherd instances.
+// Listen creates a datagram socket at @gopherd-sd-notify-<pid>-<name>-<nonce>
+// and begins reading. name is a stable service identifier; pid disambiguates
+// concurrent gopherd instances; nonce is 64 random bits drawn per listener so
+// no other process can bind the name ahead of us. The child learns the name
+// from $NOTIFY_SOCKET, so the protocol is unchanged.
 //
 // On Linux, records are accepted only from sender uid allowedUID (the child's
 // uid) or root; other senders are dropped. Non-Linux accepts all (no creds).
 func Listen(name string, pid, allowedUID int) (*Listener, error) {
-	path := fmt.Sprintf("@gopherd-sd-notify-%d-%s", pid, name)
+	var nonce [8]byte
+	_, _ = rand.Read(nonce[:]) // never fails since Go 1.24
+	path := fmt.Sprintf("@gopherd-sd-notify-%d-%s-%s", pid, name, hex.EncodeToString(nonce[:]))
 	addr := &net.UnixAddr{Net: "unixgram", Name: path}
 	conn, err := net.ListenUnixgram("unixgram", addr)
 	if err != nil {

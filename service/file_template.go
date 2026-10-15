@@ -37,7 +37,8 @@ const maxFileSize = 1 << 20
 // Modifiers: "trim" right-trims trailing whitespace; "follow" permits symlinks
 // (K8s ..data/ secret volumes); ":-default" is a fallback for a missing file.
 //
-// Runs before env expansion so file contents with "{{...}}" are not re-expanded.
+// It expands {{file}} only. Feeding its output to a {{.VAR}} pass would expand
+// placeholders found inside file contents; ExpandRefs does both in one pass.
 func ExpandFileRefs(s string) (string, error) {
 	if !strings.Contains(s, "{{") {
 		return s, nil
@@ -50,16 +51,7 @@ func ExpandFileRefs(s string) (string, error) {
 	prev := 0
 	for _, loc := range locs {
 		b.WriteString(s[prev:loc[0]])
-		path := s[loc[2]:loc[3]]
-		mods := s[loc[4]:loc[5]]
-		doTrim := strings.Contains(mods, "trim")
-		follow := strings.Contains(mods, "follow")
-		hasDefault := loc[6] >= 0
-		var defaultVal string
-		if hasDefault {
-			defaultVal = s[loc[6]:loc[7]]
-		}
-		val, err := readFileTemplate(path, doTrim, follow, hasDefault, defaultVal)
+		val, err := fileRefValue(s, loc)
 		if err != nil {
 			return "", err
 		}
@@ -68,6 +60,18 @@ func ExpandFileRefs(s string) (string, error) {
 	}
 	b.WriteString(s[prev:])
 	return b.String(), nil
+}
+
+// fileRefValue resolves one fileRe match (loc from FindAllStringSubmatchIndex).
+func fileRefValue(s string, loc []int) (string, error) {
+	path := s[loc[2]:loc[3]]
+	mods := s[loc[4]:loc[5]]
+	hasDefault := loc[6] >= 0
+	var defaultVal string
+	if hasDefault {
+		defaultVal = s[loc[6]:loc[7]]
+	}
+	return readFileTemplate(path, strings.Contains(mods, "trim"), strings.Contains(mods, "follow"), hasDefault, defaultVal)
 }
 
 // openConfined opens clean for reading with symlink protection, returning the
@@ -91,7 +95,11 @@ func openConfined(clean string, follow bool) (*os.File, error) {
 	if err := checkAncestorsNotSymlinked(clean); err != nil {
 		return nil, err
 	}
-	fd, err := syscall.Open(clean, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	// O_CLOEXEC: raw syscall.Open does not add it (os.OpenFile and os.Root do).
+	// PrepareStart runs off d.mu, so a service forked concurrently with this
+	// read would otherwise inherit the descriptor and read a file its uid is
+	// denied.
+	fd, err := syscall.Open(clean, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}

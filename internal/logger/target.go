@@ -344,27 +344,9 @@ func openFile(location string, cfg TargetConfig) (io.WriteCloser, error) {
 		maxFiles = defaultMaxFiles
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW, 0o640)
+	f, info, err := openLogLeaf(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND)
 	if err != nil {
-		return nil, fmt.Errorf("open log file %s: %w", path, err)
-	}
-	// Service output may carry secrets: reject a pre-seeded file owned by
-	// another uid or world-accessible. Checked via the fd to avoid TOCTOU.
-	info, err := f.Stat()
-	if err != nil {
-		_ = f.Close()
-		return nil, fmt.Errorf("stat log file %s: %w", path, err)
-	}
-	if st, ok := info.Sys().(*syscall.Stat_t); ok {
-		euid := uint32(os.Geteuid())
-		if st.Uid != 0 && st.Uid != euid {
-			_ = f.Close()
-			return nil, fmt.Errorf("log file %s is owned by uid %d (expected root or uid %d); refusing to append", path, st.Uid, euid)
-		}
-		if perm := info.Mode().Perm(); perm&0o006 != 0 {
-			_ = f.Close()
-			return nil, fmt.Errorf("log file %s is world-accessible (mode %04o); refusing to append (service output may contain secrets)", path, perm)
-		}
+		return nil, err
 	}
 	// Seed size from the existing file so appends honour the rotation
 	// threshold immediately, not only after the first gopherd-written byte.
@@ -377,6 +359,43 @@ func openFile(location string, cfg TargetConfig) (io.WriteCloser, error) {
 		maxFiles: maxFiles,
 		compress: cfg.Compress,
 	}, nil
+}
+
+// openLogLeaf opens a log leaf with flags and validates it on the descriptor:
+// a regular file owned by root or the daemon euid and not world-accessible,
+// since service output may carry secrets. Every open of a file gopherd writes
+// log output to goes through here, including the reopen after rotation.
+//
+// O_NOFOLLOW guards the leaf. O_NONBLOCK makes a FIFO without a reader fail
+// with ENXIO instead of parking the caller in open(2), which happens on the
+// startup path and inside reload with d.mu held; it is a no-op for regular
+// files.
+func openLogLeaf(path string, flags int) (*os.File, os.FileInfo, error) {
+	f, err := os.OpenFile(path, flags|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0o640)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open log file %s: %w", path, err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("stat log file %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("log file %s is not a regular file (%s); refusing to append", path, info.Mode().Type())
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		euid := uint32(os.Geteuid())
+		if st.Uid != 0 && st.Uid != euid {
+			_ = f.Close()
+			return nil, nil, fmt.Errorf("log file %s is owned by uid %d (expected root or uid %d); refusing to append", path, st.Uid, euid)
+		}
+		if perm := info.Mode().Perm(); perm&0o006 != 0 {
+			_ = f.Close()
+			return nil, nil, fmt.Errorf("log file %s is world-accessible (mode %04o); refusing to append (service output may contain secrets)", path, perm)
+		}
+	}
+	return f, info, nil
 }
 
 // checkAncestorsNotSymlinked walks every ancestor of path from "/" down to

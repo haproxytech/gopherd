@@ -14,12 +14,70 @@
 
 package service
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
+
+// ExpandRefs replaces {{file "..."}} and {{.VAR}} placeholders in a single pass
+// over s: both kinds are located in the original string and each replacement is
+// copied to the output without being scanned again. Inlined file content stays
+// literal data and an env value cannot introduce a {{file}} read. missing, when
+// non-nil, is called for a bare {{.VAR}} that is unset. {{mem}} / {{cpu}} forms
+// are left untouched.
+func ExpandRefs(s string, env map[string]string, missing func(name string)) (string, error) {
+	if !strings.Contains(s, "{{") {
+		return s, nil
+	}
+	type ref struct {
+		loc  []int
+		file bool
+	}
+	var refs []ref
+	for _, loc := range fileRe.FindAllStringSubmatchIndex(s, -1) {
+		refs = append(refs, ref{loc: loc, file: true})
+	}
+	for _, loc := range templateRe.FindAllStringSubmatchIndex(s, -1) {
+		refs = append(refs, ref{loc: loc})
+	}
+	if refs == nil {
+		return s, nil
+	}
+	slices.SortFunc(refs, func(a, b ref) int { return a.loc[0] - b.loc[0] })
+	var b strings.Builder
+	prev := 0
+	for _, r := range refs {
+		if r.loc[0] < prev {
+			continue // overlaps the previous placeholder
+		}
+		b.WriteString(s[prev:r.loc[0]])
+		if r.file {
+			v, err := fileRefValue(s, r.loc)
+			if err != nil {
+				return "", err
+			}
+			b.WriteString(v)
+		} else {
+			name := s[r.loc[2]:r.loc[3]]
+			v, ok := env[name]
+			if (!ok || v == "") && r.loc[4] >= 0 {
+				v = s[r.loc[4]:r.loc[5]]
+			} else if !ok && missing != nil {
+				missing(name)
+			}
+			b.WriteString(v)
+		}
+		prev = r.loc[1]
+	}
+	b.WriteString(s[prev:])
+	return b.String(), nil
+}
 
 // ExpandEnvRefs replaces {{.VAR}} and {{.VAR:-default}} references in s against
 // the given env map. For an unset/empty var, the bare form expands to "" and the
-// default form expands to the literal default. Used for config-time fields that
-// bypass expandTemplates (currently: Startup).
+// default form expands to the literal default. It expands {{.VAR}} only; code
+// that also accepts {{file}} must use ExpandRefs so neither kind's output is
+// re-scanned by the other.
 //
 // Unlike expandTemplates, it does NOT warn on missing variables. A bare {{.VAR}}
 // silently expanding to "" is a footgun, so callers MUST handle the empty case

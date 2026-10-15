@@ -103,3 +103,57 @@ func TestBuildDirCreatesTheDirPrivately(t *testing.T) {
 			"not be readable or writable by other users", dir, perm)
 	}
 }
+
+// The build dir name is predictable, so whatever already sits at that path
+// must be refused unless it is our own private directory: the suite runs the
+// binaries it builds there.
+func TestBuildDirRefusesPathItDoesNotOwn(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	root := filepath.Join(t.TempDir(), "tree")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dir := buildDirName(root)
+
+	elsewhere := t.TempDir()
+	if err := os.Symlink(elsewhere, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildDir(root); err == nil {
+		t.Error("buildDir accepted a symlink at the build dir path")
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Mkdir(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildDir(root); err == nil {
+		t.Error("buildDir accepted a world-writable directory at the build dir path")
+	}
+
+	if os.Geteuid() == 0 {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chown(dir, 65534, 65534); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := buildDir(root); err == nil {
+			t.Error("buildDir accepted a directory owned by another uid")
+		}
+		_ = os.Chown(dir, 0, 0)
+	}
+
+	// Our own private directory is reused, which concurrent runs rely on.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildDir(root); err != nil {
+		t.Errorf("buildDir rejected its own private directory: %v", err)
+	}
+}

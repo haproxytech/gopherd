@@ -144,9 +144,27 @@ func buildDirName(root string) string {
 }
 
 // buildDir creates and returns the scratch directory for root.
+//
+// The name is predictable and lives in the shared temp directory, and the
+// suite executes what it builds there, so an existing path is used only if it
+// is a real directory owned by us with no group/other access. MkdirAll would
+// accept another user's directory or a symlink to one, letting that user
+// replace the binaries before they run.
 func buildDir(root string) (string, error) {
 	dir := buildDirName(root)
-	return dir, os.MkdirAll(dir, 0o700)
+	err := os.Mkdir(dir, 0o700)
+	if err == nil || !os.IsExist(err) {
+		return dir, err
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return "", err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !fi.IsDir() || !ok || int(st.Uid) != os.Geteuid() || fi.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("build dir %s is not a private directory owned by uid %d (mode %v); refusing to build into it", dir, os.Geteuid(), fi.Mode())
+	}
+	return dir, nil
 }
 
 // buildTo compiles pkg (relative to root) and atomically renames the result

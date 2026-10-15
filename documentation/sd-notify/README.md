@@ -27,7 +27,7 @@ processes:
 
 ## NOTIFY_SOCKET details
 
-gopherd binds the notify socket in the Linux **abstract namespace**, so `$NOTIFY_SOCKET` is a `@`-prefixed name (e.g. `@gopherd-sd-notify-<pid>-notifier`), not a filesystem path. To send to it, a client must replace the leading `@` with a NUL byte and use a `SOCK_DGRAM` `AF_UNIX` socket — in Go:
+gopherd binds the notify socket in the Linux **abstract namespace**, so `$NOTIFY_SOCKET` is a `@`-prefixed name (e.g. `@gopherd-sd-notify-<pid>-notifier-<random>`), not a filesystem path. The random suffix changes on every start, so read the name from `$NOTIFY_SOCKET` rather than constructing it. To send to it, a client must replace the leading `@` with a NUL byte and use a `SOCK_DGRAM` `AF_UNIX` socket — in Go:
 
 ```go
 addr := os.Getenv("NOTIFY_SOCKET")

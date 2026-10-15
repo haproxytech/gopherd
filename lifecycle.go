@@ -59,11 +59,8 @@ func (d *daemon) startGated(ctx context.Context, cfg *yml.Config, svc *service.S
 		defer c.Stop()
 		c.SetReaper(d.reaper)
 		if checkCfg.Exec != nil {
-			cred, credErr := service.ResolveCredential(svc.Proc.User, svc.Proc.Group, svc.Proc.UserID, svc.Proc.GroupID, svc.Proc.StrictGroups)
-			if credErr != nil {
+			if credErr := runCheckAsOwner(c, svc); credErr != nil {
 				log.Printf("warning: %s: ready-check credential: %v", svc.Name, credErr)
-			} else if cred != nil {
-				c.SetCredential(cred)
 			}
 		}
 		readyTimeout := 60 * time.Second

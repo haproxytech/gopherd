@@ -17,6 +17,7 @@ package control
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -35,6 +36,12 @@ const DefaultSocketMode = os.FileMode(0o600)
 
 // DefaultSocketPath is the default Unix socket path.
 const DefaultSocketPath = "/run/gopherd.sock"
+
+// ErrSocketPathHeld reports that a node gopherd could not replace occupies
+// the socket path (e.g. another uid's socket in a sticky directory). Serving
+// without the control socket would leave that node as the endpoint clients
+// and GOPHERD_SOCKET-exporting services reach, so callers must not continue.
+var ErrSocketPathHeld = errors.New("socket path is held by a node gopherd cannot replace")
 
 // Server listens on a Unix socket and handles service control commands.
 type Server struct {
@@ -101,7 +108,9 @@ func (cs *Server) Start() error {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("control socket: %s is a symlink, refusing to replace", cs.SocketPath)
 		}
-		_ = os.Remove(cs.SocketPath)
+		if err := os.Remove(cs.SocketPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("control socket: remove stale %s: %w: %w", cs.SocketPath, ErrSocketPathHeld, err)
+		}
 	}
 
 	// Restrictive umask so the socket is never world-accessible between
@@ -110,6 +119,9 @@ func (cs *Server) Start() error {
 	ln, err := net.Listen("unix", cs.SocketPath)
 	syscall.Umask(oldMask)
 	if err != nil {
+		if errors.Is(err, syscall.EADDRINUSE) {
+			return fmt.Errorf("control socket: %w: %w", ErrSocketPathHeld, err)
+		}
 		return fmt.Errorf("control socket: %w", err)
 	}
 	// Post-bind check: a symlink planted between Remove and Listen could redirect

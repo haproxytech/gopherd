@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/haproxytech/gopherd/check"
 	"github.com/haproxytech/gopherd/control"
 	"github.com/haproxytech/gopherd/internal/logger"
 	"github.com/haproxytech/gopherd/internal/metrics"
@@ -1276,5 +1277,57 @@ func TestDependentClosure(t *testing.T) {
 		if !got[name] {
 			t.Errorf("closure missing %s: %v", name, got)
 		}
+	}
+}
+
+// An exec check dropped to its owning service's uid gets that service's view of
+// the environment: gopherd's own only with pass-env, otherwise PATH alone.
+func TestRunCheckAsOwnerIsolatesEnv(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to drop the probe to another uid")
+	}
+	t.Setenv("GOPHERD_CHECK_CANARY", "daemon-only")
+	nobody := 65534
+	probe := func(t *testing.T, passEnv *bool, script string) error {
+		t.Helper()
+		svc, err := service.New(service.Process{Name: "owner", Command: "/bin/true", UserID: &nobody, GroupID: &nobody, PassEnv: passEnv}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := check.New("probe", check.Config{Exec: &check.Exec{Command: "/bin/sh", Args: []string{"-c", script}}, Period: "1s", Timeout: "5s"}, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runCheckAsOwner(c, svc); err != nil {
+			t.Fatal(err)
+		}
+		return c.Execute()
+	}
+	if err := probe(t, nil, `[ "$(id -u)" = 65534 ] && [ -z "$GOPHERD_CHECK_CANARY" ] && [ -n "$PATH" ]`); err != nil {
+		t.Errorf("without pass-env the probe must run as the service uid with PATH only: %v", err)
+	}
+	on := true
+	if err := probe(t, &on, `[ "$GOPHERD_CHECK_CANARY" = daemon-only ]`); err != nil {
+		t.Errorf("with pass-env the probe keeps inheriting gopherd's environment: %v", err)
+	}
+}
+
+// A service forked during a reload must not inherit the config descriptor.
+func TestOpenConfigFileIsCloseOnExec(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gopherd.yml")
+	if err := os.WriteFile(path, []byte("processes: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := openConfigFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	flags, _, errno := syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), syscall.F_GETFD, 0)
+	if errno != 0 {
+		t.Fatalf("fcntl: %v", errno)
+	}
+	if flags&syscall.FD_CLOEXEC == 0 {
+		t.Error("config descriptor is inheritable across exec")
 	}
 }
