@@ -34,8 +34,8 @@ func mustCron(t *testing.T, expr string) *cron.Schedule {
 	return s
 }
 
-// Inside a synctest bubble the fake clock starts at 2000-01-01 00:00:00 UTC,
-// so an every-minute schedule first fires at 00:01:00.
+// Inside a synctest bubble the clock starts at 2000-01-01T00:00:00Z, read
+// back in time.Local, so an every-minute schedule first fires one minute in.
 
 func TestSchedRunnerFiresAtTicks(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -57,21 +57,24 @@ func TestSchedRunnerFiresAtTicks(t *testing.T) {
 func TestSchedRunnerHonorsCronTimes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var starts atomic.Int32
-		// Daily at 03:00: from the bubble epoch the first fire is in 3h.
-		r := newSchedRunner("job", mustCron(t, "0 3 * * *"),
+		sched := mustCron(t, "0 3 * * *")
+		r := newSchedRunner("job", sched,
 			func() { starts.Add(1) },
 			func() bool { return false })
 		go r.loop()
 
-		time.Sleep(2*time.Hour + 59*time.Minute)
+		// The bubble clock reads in time.Local, not UTC, so the first 03:00 is
+		// not a fixed 3h away: derive it from the schedule itself.
+		tick := sched.Next(time.Now())
+		time.Sleep(time.Until(tick) - time.Second)
 		synctest.Wait()
 		if got := starts.Load(); got != 0 {
-			t.Fatalf("starts before 03:00 = %d, want 0", got)
+			t.Fatalf("starts before %s = %d, want 0", tick.Format(time.TimeOnly), got)
 		}
-		time.Sleep(2 * time.Minute)
+		time.Sleep(2 * time.Second)
 		synctest.Wait()
 		if got := starts.Load(); got != 1 {
-			t.Errorf("starts after 03:00 = %d, want 1", got)
+			t.Errorf("starts after %s = %d, want 1", tick.Format(time.TimeOnly), got)
 		}
 		// Next fire is tomorrow 03:00.
 		time.Sleep(24 * time.Hour)
