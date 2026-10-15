@@ -3,8 +3,8 @@ version: "3"
 
 vars:
   CHECK_COMMIT: github.com/haproxytech/check-commit/v5@v5.8.1
-  BETTERALIGN: github.com/dkorunic/betteralign/cmd/betteralign@v0.15.0
-  STATICCHECK: honnef.co/go/tools/cmd/staticcheck@v0.8.1
+  BETTERALIGN: github.com/dkorunic/betteralign/cmd/betteralign@v0.15.3
+  STATICCHECK: honnef.co/go/tools/cmd/staticcheck@v0.8.2
   GOVULNCHECK: golang.org/x/vuln/cmd/govulncheck@v1.7.0
   GOFUMPT: mvdan.cc/gofumpt@v0.11.0
   REVIVE: github.com/mgechev/revive@v1.16.0
