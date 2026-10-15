@@ -195,6 +195,19 @@ func TestE2EPassthroughNotFound(t *testing.T) {
 	}
 }
 
+// Passthrough execs the target, so its status must reach the caller verbatim.
+// 1 is gopherd's own error code, so probe a different value.
+func TestE2EPassthroughExitCode(t *testing.T) {
+	err := exec.Command(testBinary, "/bin/sh", "-c", "exit 42").Run()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("expected ExitError with code 42, got: %v", err)
+	}
+	if exitErr.ExitCode() != 42 {
+		t.Errorf("exit code = %d, want 42 (passthrough must not mask the child's status)", exitErr.ExitCode())
+	}
+}
+
 func TestE2EVersionCommand(t *testing.T) {
 	cmd := exec.Command(testBinary, "version")
 	out, err := cmd.Output()

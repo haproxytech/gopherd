@@ -57,6 +57,15 @@ func TestPassthroughNotFound(t *testing.T) {
 	}
 }
 
+// As an image ENTRYPOINT, gopherd must hand the container's exit status to the
+// child's, so `docker run <image> sh -c 'exit N'` reports N.
+func TestPassthroughExitCode(t *testing.T) {
+	code, out := runGopherdCmd(t, "/bin/sh", "-c", "exit 42")
+	if code != 42 {
+		t.Errorf("exit code = %d, want 42 (passthrough must not mask the child's status)\noutput:\n%s", code, out)
+	}
+}
+
 func TestEntrypointFlagArgs(t *testing.T) {
 	dir, code, out := runContainer(t, map[string]string{
 		"gopherd.yml": `
