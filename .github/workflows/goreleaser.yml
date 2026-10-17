@@ -10,6 +10,10 @@ on:
         description: "Tag to rebuild and re-release (e.g. v0.5.0); empty = latest tag"
         required: false
         default: ""
+  # Weekly rebuild of the latest tag with the current Go toolchain; schedules
+  # only run on the default branch.
+  schedule:
+    - cron: "0 3 * * 0"
 # Creates the GitHub release and pushes the container images.
 permissions:
   contents: write
@@ -24,7 +28,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
       - name: Check out latest tag
-        if: github.event_name == 'workflow_dispatch' && inputs.tag == ''
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.tag == '')
         run: git checkout "$(git tag --sort=-v:refname | head -n1)"
       - name: Set up Go
         uses: actions/setup-go@v7
