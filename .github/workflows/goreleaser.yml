@@ -30,6 +30,15 @@ jobs:
       - name: Check out latest tag
         if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.tag == '')
         run: git checkout "$(git tag --sort=-v:refname | head -n1)"
+      - name: Keep the latest image tag on the newest release
+        # Rebuilding an older tag must not drag the registry's latest tag back.
+        run: |
+          latest="$(git tag --sort=-v:refname | head -n1)"
+          current="$(git describe --tags --exact-match)"
+          if [ "$current" != "$latest" ]; then
+            echo "PUBLISH_LATEST=false" >> "$GITHUB_ENV"
+            echo "Building $current, not the newest tag ($latest); the latest image tag stays untouched."
+          fi
       - name: Set up Go
         uses: actions/setup-go@v7
         with:

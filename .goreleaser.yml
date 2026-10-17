@@ -100,7 +100,8 @@ dockers_v2:
     tags:
       - "{{ .Version }}"
       - "{{ .Major }}.{{ .Minor }}"
-      - "{{ if not .Prerelease }}latest{{ end }}"
+      # latest follows tag order, never whichever tag was rebuilt.
+      - '{{ if and (not .Prerelease) (ne .Env.PUBLISH_LATEST "false") }}latest{{ end }}'
     labels:
       "org.opencontainers.image.title": "gopherd"
       "org.opencontainers.image.description": "Minimal PID 1 init process and service supervisor for containers"
