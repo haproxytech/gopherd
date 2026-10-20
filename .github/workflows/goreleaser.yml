@@ -33,12 +33,15 @@ jobs:
         run: git checkout "$(git tag --sort=-v:refname | head -n1)"
       - name: Rebuild the container images only
         # GitHub release assets are pinned: a rebuild refreshes images, never
-        # binaries. The tag's frozen config predates this, so rewrite it here.
-        # An older tag must not drag the major.minor/latest image tags back.
+        # binaries. GoReleaser refuses a dirty checkout, and even an untracked
+        # file counts, so the tag's frozen config is rewritten outside the
+        # tree. An older tag must not drag the major.minor/latest tags back.
         if: github.event_name != 'push'
         run: |
-          sed -i 's/^release:/release:\n  disable: true/' .goreleaser.yml
-          if ! grep -A1 '^release:' .goreleaser.yml | grep -q 'disable: true'; then
+          cfg="$RUNNER_TEMP/goreleaser.yml"
+          cp .goreleaser.yml "$cfg"
+          sed -i 's/^release:/release:\n  disable: true/' "$cfg"
+          if ! grep -A1 '^release:' "$cfg" | grep -q 'disable: true'; then
             echo "::error::no release section to disable in .goreleaser.yml" >&2
             exit 1
           fi
@@ -48,8 +51,8 @@ jobs:
             sed -i \
               -e '/{{ \.Major }}\.{{ \.Minor }}/d' \
               -e '/{{ if not \.Prerelease }}latest{{ end }}/d' \
-              .goreleaser.yml
-            if grep -qE '\.(Major|Minor)|latest' .goreleaser.yml; then
+              "$cfg"
+            if grep -qE '\.(Major|Minor)|latest' "$cfg"; then
               echo "::error::unrecognized image tag lines in .goreleaser.yml; update the rebuild filter" >&2
               exit 1
             fi
@@ -57,6 +60,7 @@ jobs:
           else
             echo "Rebuilding $current, the newest tag; its image tags move, the pinned release does not."
           fi
+          echo "GORELEASER_ARGS=--config $cfg" >> "$GITHUB_ENV"
       - name: Resolve the current Go release
         id: pick
         # The go-versions manifest lags fresh releases, but setup-go downloads
@@ -96,6 +100,6 @@ jobs:
         with:
           distribution: goreleaser
           version: latest
-          args: release
+          args: release ${{ env.GORELEASER_ARGS }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
