@@ -11,6 +11,12 @@ on:
         description: "Tag to rebuild and re-release (e.g. v0.5.0); empty = latest tag"
         required: false
         default: ""
+      # go fetches this straight from the module proxy, ahead of the setup-go
+      # version feed, and it beats the tag's own go.mod pin.
+      go-version:
+        description: "Go toolchain to build with (e.g. 1.27.4); empty = latest stable"
+        required: false
+        default: ""
   # Weekly image refresh of the latest tag with the current Go toolchain;
   # schedules only run on the default branch.
   schedule:
@@ -63,8 +69,22 @@ jobs:
           go-version-file: 'go.mod'
           check-latest: true
       # setup-go exports GOTOOLCHAIN=local via GITHUB_ENV; a later write wins.
-      - name: Allow Go toolchain downloads
-        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+      - name: Pick the Go toolchain
+        # setup-go resolves through the go-versions manifest, which lags fresh
+        # releases; GOTOOLCHAIN pulls from the module proxy instead. A tag push
+        # keeps its go.mod pin, a rebuild takes the toolchain that shipped.
+        run: |
+          pick="${{ github.event_name == 'workflow_dispatch' && inputs.go-version || '' }}"
+          if [ -z "$pick" ] && [ "${{ github.event_name }}" != "push" ]; then
+            pick="$(curl -fsSL 'https://go.dev/VERSION?m=text')"
+            pick="${pick%%[[:space:]]*}"
+          fi
+          if [ -n "$pick" ]; then
+            echo "GOTOOLCHAIN=go${pick#go}" >> "$GITHUB_ENV"
+            echo "Building with the go${pick#go} toolchain."
+          else
+            echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+          fi
       - name: Install Task
         uses: go-task/setup-task@v2
         with:
