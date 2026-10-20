@@ -3,15 +3,16 @@ on:
   push:
     tags:
       - "*"
-  # Rebuild an existing tag with the current Go toolchain (e.g. CVE fix in Go).
+  # Rebuild an existing tag's images with the current Go toolchain (e.g. CVE
+  # fix in Go). GitHub release assets are pinned, so binaries stay as-is.
   workflow_dispatch:
     inputs:
       tag:
         description: "Tag to rebuild and re-release (e.g. v0.5.0); empty = latest tag"
         required: false
         default: ""
-  # Weekly rebuild of the latest tag with the current Go toolchain; schedules
-  # only run on the default branch.
+  # Weekly image refresh of the latest tag with the current Go toolchain;
+  # schedules only run on the default branch.
   schedule:
     - cron: "0 3 * * 0"
 # Creates the GitHub release and pushes the container images.
@@ -30,14 +31,31 @@ jobs:
       - name: Check out latest tag
         if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.tag == '')
         run: git checkout "$(git tag --sort=-v:refname | head -n1)"
-      - name: Keep the latest image tag on the newest release
-        # Rebuilding an older tag must not drag the registry's latest tag back.
+      - name: Rebuild the container images only
+        # GitHub release assets are pinned: a rebuild refreshes images, never
+        # binaries. The tag's frozen config predates this, so rewrite it here.
+        # An older tag must not drag the major.minor/latest image tags back.
+        if: github.event_name != 'push'
         run: |
+          sed -i 's/^release:/release:\n  disable: true/' .goreleaser.yml
+          if ! grep -A1 '^release:' .goreleaser.yml | grep -q 'disable: true'; then
+            echo "::error::no release section to disable in .goreleaser.yml" >&2
+            exit 1
+          fi
           latest="$(git tag --sort=-v:refname | head -n1)"
           current="$(git describe --tags --exact-match)"
           if [ "$current" != "$latest" ]; then
-            echo "PUBLISH_LATEST=false" >> "$GITHUB_ENV"
-            echo "Building $current, not the newest tag ($latest); the latest image tag stays untouched."
+            sed -i \
+              -e '/{{ \.Major }}\.{{ \.Minor }}/d' \
+              -e '/{{ if not \.Prerelease }}latest{{ end }}/d' \
+              .goreleaser.yml
+            if grep -qE '\.(Major|Minor)|latest' .goreleaser.yml; then
+              echo "::error::unrecognized image tag lines in .goreleaser.yml; update the rebuild filter" >&2
+              exit 1
+            fi
+            echo "Rebuilding $current, not the newest tag ($latest); only its exact image tag moves."
+          else
+            echo "Rebuilding $current, the newest tag; its image tags move, the pinned release does not."
           fi
       - name: Set up Go
         uses: actions/setup-go@v7
